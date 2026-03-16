@@ -1,0 +1,94 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
+)
+
+type contextKey string
+
+const claimsKey contextKey = "claims"
+
+// ClaimsFromContext retrieves JWT claims stored by the auth middleware.
+func ClaimsFromContext(ctx context.Context) *auth.Claims {
+	v, _ := ctx.Value(claimsKey).(*auth.Claims)
+	return v
+}
+
+// TODO: Consolidate these two functions!!
+// RequireAuth validates the Bearer token and injects claims into the request context.
+func RequireAuth(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, "Bearer ") {
+				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header")
+				return
+			}
+			claims, err := auth.ParseToken(strings.TrimPrefix(header, "Bearer "), secret)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
+			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireAdmin extends RequireAuth — additionally checks the adm claim.
+func RequireAdmin(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, "Bearer ") {
+				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header")
+				return
+			}
+			claims, err := auth.ParseToken(strings.TrimPrefix(header, "Bearer "), secret)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
+			if !claims.IsAdmin {
+				writeError(w, http.StatusForbidden, "admin access required")
+				return
+			}
+			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// writeError writes a consistent JSON error response.
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error":      http.StatusText(status),
+		"message":    message,
+		"statusCode": status,
+	})
+}
+
+// writeJSON writes a value as a JSON response.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("writeJSON encode", "err", err)
+	}
+}
+
+// requestLogger is a simple structured request logging middleware.
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("request", "method", r.Method, "path", r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
+}
