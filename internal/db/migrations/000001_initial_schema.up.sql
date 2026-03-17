@@ -36,7 +36,7 @@ VALUES (
     'admin',
     true,
     'local',
-    '{"password_hash": "$2a$12$YwqOBCGGjlimOCaFCKXH6OFat1jqKy3xMJXBXbJYO0eBdwQWFNXNW"}'
+    '{"password_hash": "$2a$10$4jXsM1XJS0KMA/YWo.EEIuBF8WwnbIusxElCkxe9hoZ7fzTLjGyTm"}'
 );
 
 CREATE TABLE collections (
