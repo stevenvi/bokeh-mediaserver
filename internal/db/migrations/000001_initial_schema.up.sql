@@ -49,8 +49,7 @@ CREATE TABLE collections (
                                         'video:home_movie',
                                         'audio:album',
                                         'audio:radio',
-                                        'image:photo',
-                                        
+                                        'image:photo'                                        
                                     )),
     root_path                   text,
     is_enabled                  boolean NOT NULL DEFAULT true,
