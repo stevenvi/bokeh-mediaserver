@@ -68,7 +68,7 @@ func run() error {
 	workerPool := jobs.NewPool(cfg.WorkerCount)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(pool, workerPool, cfg.JWTSecret, cfg.DataPath)
+	router := api.NewRouter(pool, workerPool, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

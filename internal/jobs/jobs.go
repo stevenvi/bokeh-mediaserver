@@ -44,8 +44,10 @@ func NewPool(workers int) *Pool {
 					if !ok {
 						return
 					}
-					fn()
-					p.wg.Done()
+					func() {
+						defer p.wg.Done()
+						fn()
+					}()
 				case <-p.closeCh:
 					return
 				}
@@ -214,7 +216,6 @@ func RecoverStuckJobs(ctx context.Context, db *pgxpool.Pool) error {
 		slog.Warn("photos pending variant generation — will process on next scan",
 			"count", count)
 	}
-
 
 	return nil
 }

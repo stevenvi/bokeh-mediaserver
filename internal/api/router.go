@@ -10,7 +10,7 @@ import (
 )
 
 // NewRouter builds and returns the fully configured Chi router.
-func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, dataPath string) http.Handler {
+func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Recoverer)
@@ -20,7 +20,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, dataPath string) ht
 	auth := newAuthHandler(db, jwtSecret)
 	collections := &collectionsHandler{db: db}
 	photos := &photosHandler{db: db, dataPath: dataPath}
-	admin := &adminHandler{db: db, pool: pool, dataPath: dataPath}
+	admin := &adminHandler{db: db, pool: pool, mediaPath: mediaPath, dataPath: dataPath}
 
 	// ── Public ────────────────────────────────────────────────────────────────
 	r.Get("/api/v1/system/health", func(w http.ResponseWriter, r *http.Request) {

@@ -17,23 +17,24 @@ import (
 )
 
 type adminHandler struct {
-	db       *pgxpool.Pool
-	pool     *jobs.Pool
-	dataPath string
+	db        *pgxpool.Pool
+	pool      *jobs.Pool
+	mediaPath string
+	dataPath  string
 }
 
 // POST /api/v1/admin/collections
 func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name     string  `json:"name"`
-		Type     string  `json:"type"`
-		RootPath string  `json:"root_path"`
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		RootPath string `json:"root_path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	
+
 	body.Name = strings.TrimSpace(body.Name)
 	body.Type = strings.TrimSpace(body.Type)
 	body.RootPath = strings.TrimSpace(body.RootPath)
@@ -129,15 +130,19 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dispatch to worker pool — returns immediately.
+	// Dispatch to worker pool asynchronously — don't block the HTTP response.
 	// Use context.Background() so the scan outlives the HTTP request context.
 	scanCtx := context.Background()
+	mediaPath := h.mediaPath
 	dataPath := h.dataPath
 	pool := h.pool
 	db := h.db
-	h.pool.Submit(func() {
-		indexer.RunScan(scanCtx, db, pool, jobID, collectionID, rootPath, dataPath)
-	})
+	go func() {
+		slog.Info("Enqueuing scan job", "job_id", jobID)
+		pool.Submit(func() {
+			indexer.RunScan(scanCtx, db, pool, jobID, collectionID, rootPath, mediaPath, dataPath)
+		})
+	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]int{"job_id": jobID})
 }
