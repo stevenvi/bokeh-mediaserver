@@ -36,7 +36,9 @@ var supportedExtensions = map[string]string{
 // RunScan performs a full index scan of a collection's root_path.
 // Intended to run in a goroutine — updates the job row as it progresses.
 func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
-	jobID, collectionID int, rootPath, dataPath string) {
+	jobID, collectionID int, rootPath string, mediaPath string, dataPath string) {
+
+	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
 	jobStart := time.Now()
 
@@ -45,12 +47,16 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 		return
 	}
 
+	slog.Info("Job marked running", "job_id", jobID)
+
 	logMsg := func(msg string) {
 		slog.Info(msg, "job_id", jobID, "collection_id", collectionID)
 		_ = jobs.UpdateProgress(ctx, db, jobID, msg)
 	}
 
-	logMsg(fmt.Sprintf("scan started: %s", rootPath))
+	// Construct full path: mediaPath is base, rootPath is relative path within media
+	collectionPath := filepath.Join(mediaPath, rootPath)
+	logMsg(fmt.Sprintf("scan started: %s", collectionPath))
 
 	// Start a persistent exiftool process for this scan.
 	// All files are piped through one process — avoids per-file Perl startup cost.
@@ -61,12 +67,14 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 		return
 	}
 	defer et.close()
+	slog.Info("Exiftool process started", "job_id", jobID)
 
 	// Phase 1 — walk directory tree and upsert sub-collections (folders)
-	if err := walkFolders(ctx, db, collectionID, rootPath); err != nil {
+	if err := walkFolders(ctx, db, collectionID, collectionPath); err != nil {
 		_ = jobs.MarkFailed(ctx, db, jobID, err.Error())
 		return
 	}
+	slog.Info("Folder walk complete", "job_id", jobID)
 
 	// Phase 2 — enumerate files, dispatch to worker pool
 	var (
@@ -75,7 +83,8 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 		mu        sync.Mutex
 	)
 
-	err = filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(collectionPath, func(path string, d os.DirEntry, err error) error {
+		slog.Info("Walking path", "path", path)
 		if err != nil {
 			return nil // skip unreadable entries
 		}
@@ -89,12 +98,14 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 			return nil
 		}
 
+		slog.Info("Enqueuing file for processing", "path", path)
+
 		// Capture loop vars for goroutine
 		filePath := path
 		fileMime := mimeType
 
 		pool.Submit(func() {
-			if err := processFile(ctx, db, et, filePath, fileMime, dataPath); err != nil {
+			if err := processFile(ctx, db, et, filePath, fileMime, dataPath, mediaPath); err != nil {
 				slog.Error("process file", "path", filePath, "err", err)
 				mu.Lock()
 				errCount++
@@ -108,9 +119,11 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 
 		return nil
 	})
+	slog.Info("File walk complete", "job_id", jobID, "err", err)
 
 	// Wait for all workers before post-scan cleanup
 	pool.Wait()
+	slog.Info("All workers complete", "job_id", jobID)
 
 	if err != nil {
 		_ = jobs.MarkFailed(ctx, db, jobID, err.Error())
@@ -150,6 +163,7 @@ func walkFolders(ctx context.Context, db *pgxpool.Pool, rootCollectionID int, ro
 	pathToID := map[string]int{rootPath: rootCollectionID}
 
 	return filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		slog.Debug("walk folder", "path", path)
 		if err != nil || !d.IsDir() || path == rootPath {
 			return nil
 		}
@@ -185,7 +199,9 @@ func walkFolders(ctx context.Context, db *pgxpool.Pool, rootCollectionID int, ro
 
 // processFile handles a single file: change detection, EXIF, DB upsert, variant generation.
 func processFile(ctx context.Context, db *pgxpool.Pool, et *exiftoolProcess,
-	path, mimeType, dataPath string) error {
+	path string, mimeType, dataPath string, mediaPath string) error {
+
+	slog.Debug("Starting to process file", "path", path)
 
 	stat, err := os.Stat(path)
 	if err != nil {
@@ -218,9 +234,16 @@ func processFile(ctx context.Context, db *pgxpool.Pool, et *exiftoolProcess,
 	// Find the sub-collection (folder) for this file
 	// TODO: This is inefficient, how many times are we going to call this for the same folder?!
 	dirPath := filepath.Dir(path)
+	// Strip mediaPath to get the relative path for the query
+	relativeDirPath := strings.TrimPrefix(dirPath, mediaPath)
+	// Clean up leading slashes
+	relativeDirPath = strings.TrimPrefix(relativeDirPath, "/")
+	if relativeDirPath == "" {
+		relativeDirPath = "."
+	}
 	var folderCollectionID int
 	err = db.QueryRow(ctx,
-		`SELECT id FROM collections WHERE root_path = $1`, dirPath,
+		`SELECT id FROM collections WHERE root_path = $1`, relativeDirPath,
 	).Scan(&folderCollectionID)
 	if err != nil {
 		return fmt.Errorf("fetching collection id for %s: %w", dirPath, err)
@@ -323,6 +346,9 @@ func processFile(ctx context.Context, db *pgxpool.Pool, et *exiftoolProcess,
 		 WHERE media_item_id = $1`,
 		itemID, placeholder,
 	)
+
+	slog.Debug("Finished processing file", "path", path)
+
 	return err
 }
 
@@ -365,8 +391,8 @@ func newExiftoolProcess() (*exiftoolProcess, error) {
 		"-common_args",
 		"-json",
 		"-struct",
-		"-n",             // numeric output for GPS, FNumber etc.
-		"-GPSLatitude#",  // force numeric GPS
+		"-n",            // numeric output for GPS, FNumber etc.
+		"-GPSLatitude#", // force numeric GPS
 		"-GPSLongitude#",
 		"-largefilesupport",
 	)
@@ -411,7 +437,7 @@ func (e *exiftoolProcess) extract(path string) (map[string]any, error) {
 			break
 		}
 		sb.WriteString(line)
-//		sb.WriteByte('\n')
+		//		sb.WriteByte('\n')
 	}
 	if err := e.stdout.Err(); err != nil {
 		return nil, fmt.Errorf("read from exiftool: %w", err)

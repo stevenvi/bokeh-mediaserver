@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -122,17 +126,79 @@ func setupLogger(level, logPath string) {
 		lvl = slog.LevelError
 	}
 
-	opts := &slog.HandlerOptions{Level: lvl}
-
 	var out *os.File = os.Stdout
 	if logPath != "" {
 		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			slog.Warn("could not open log file, falling back to stdout", "path", logPath, "err", err)
+			// Can't use slog here yet — it isn't set up. Write directly.
+			fmt.Fprintf(os.Stderr, "could not open log file %s: %v, falling back to stdout\n", logPath, err)
 		} else {
 			out = f
 		}
 	}
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(out, opts)))
+	slog.SetDefault(slog.New(&flatHandler{out: out, level: lvl}))
+}
+
+// flatHandler formats log lines as:
+// [2006-01-02 15:04:05] [LEVEL] [internal/indexer/indexer.go:42] message key=value key=value
+type flatHandler struct {
+	out   *os.File
+	level slog.Level
+	mu    sync.Mutex
+}
+
+func (h *flatHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+func (h *flatHandler) Handle(_ context.Context, r slog.Record) error {
+	// [timestamp]
+	ts := r.Time.Format("2006-01-02T15:04:05")
+
+	// [level] — fixed width for alignment
+	lvl := fmt.Sprintf("%-5s", r.Level.String())
+
+	// [source] — requires AddSource in the record, populated by runtime.Callers.
+	// slog populates this when slog.HandlerOptions.AddSource is true, but since
+	// we're implementing the handler directly we read it from the record's PC.
+	src := ""
+	if r.PC != 0 {
+		frames := runtime.CallersFrames([]uintptr{r.PC})
+		frame, _ := frames.Next()
+		// Trim to module-relative path: everything from "internal/" onwards
+		file := frame.File
+		if i := strings.Index(file, "internal/"); i >= 0 {
+			file = file[i:]
+		} else {
+			file = filepath.Base(file)
+		}
+		src = fmt.Sprintf("%s:%d", file, frame.Line)
+	}
+
+	// key=value attrs
+	var attrs []string
+	r.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, fmt.Sprintf("%s=%v", a.Key, a.Value))
+		return true
+	})
+
+	line := fmt.Sprintf("%s [%s] [%s] %s", ts, lvl, src, r.Message)
+	if len(attrs) > 0 {
+		line += " " + strings.Join(attrs, " ")
+	}
+	line += "\n"
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, err := fmt.Fprint(h.out, line)
+	return err
+}
+
+func (h *flatHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *flatHandler) WithGroup(name string) slog.Handler {
+	return h
 }

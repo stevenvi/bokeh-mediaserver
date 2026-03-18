@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -85,10 +86,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// statusRecorder wraps an http.ResponseWriter to capture the response status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
 // requestLogger is a simple structured request logging middleware.
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slog.Debug("request", "method", r.Method, "path", r.URL.Path)
-		next.ServeHTTP(w, r)
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+		slog.Debug(fmt.Sprintf("[%d] %s %s", rec.status, r.Method, r.URL.Path))
 	})
 }
