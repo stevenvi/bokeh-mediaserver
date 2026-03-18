@@ -14,13 +14,14 @@ import (
 )
 
 type photosHandler struct {
-	db       *pgxpool.Pool
-	dataPath string
+	db        *pgxpool.Pool
+	dataPath  string
+	mediaPath string
 }
 
 // GET /api/v1/media/:id
 func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -66,7 +67,7 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 
 // GET /images/:id/exif
 func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -86,18 +87,27 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
-func (h *photosHandler) getItemFsPath(id int, r *http.Request) (string, error) {
-	var fsPath string
-	if err := h.db.QueryRow(r.Context(), `SELECT fs_path FROM media_items WHERE id = $1`, id,).Scan(&fsPath); err != nil {
+// TODO: Are having both of these functions that query the DB for the same media item inefficient? Should we combine them into one query and pass the data down?
+func (h *photosHandler) getItemFsPath(id int64, r *http.Request) (string, error) {
+	var relativePath string
+	if err := h.db.QueryRow(r.Context(), `SELECT relative_path FROM media_items WHERE id = $1`, id).Scan(&relativePath); err != nil {
 		return "", err
 	}
-	return fsPath, nil
+	return filepath.Join(h.mediaPath, relativePath), nil
+}
+
+func (h *photosHandler) getItemHash(id int64, r *http.Request) (string, error) {
+	var hash string
+	if err := h.db.QueryRow(r.Context(), `SELECT file_hash FROM media_items WHERE id = $1`, id).Scan(&hash); err != nil {
+		return "", err
+	}
+	return hash, nil
 }
 
 // GET /images/:id/:variant
 // Serves AVIF to clients that send Accept: image/avif, JPEG otherwise.
 func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -111,6 +121,12 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hash, err := h.getItemHash(id, r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "media item not found")
+		return
+	}
+
 	acceptsAVIF := strings.Contains(r.Header.Get("Accept"), "image/avif")
 
 	// Walk the fallback chain until we find a variant that exists on disk.
@@ -120,7 +136,7 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 	if acceptsAVIF {
 		for _, v := range fallbackChain {
-			path := imaging.VariantPath(h.dataPath, id, v, "avif")
+			path := imaging.VariantPath(h.dataPath, hash, v, "avif")
 			if fileExists(path) {
 				http.ServeFile(w, r, path)
 				return
@@ -139,8 +155,8 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 	// JPEG: check if jpeg exists, otherwise do on-the-fly from the best available AVIF
 	for _, v := range fallbackChain {
-		jpegPath := imaging.VariantPath(h.dataPath, id, v, "jpg")
-		avifPath := imaging.VariantPath(h.dataPath, id, v, "avif")
+		jpegPath := imaging.VariantPath(h.dataPath, hash, v, "jpg")
+		avifPath := imaging.VariantPath(h.dataPath, hash, v, "avif")
 		if fileExists(jpegPath) {
 			http.ServeFile(w, r, jpegPath)
 			return
@@ -164,22 +180,34 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 // GET /images/:id/tiles/image.dzi
 func (h *photosHandler) serveDZIManifest(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
-	dziPath := filepath.Join(imaging.TilesPath(h.dataPath, id), "image.dzi")
+	hash, err := h.getItemHash(id, r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "media item not found")
+		return
+	}
+
+	dziPath := filepath.Join(imaging.TilesPath(h.dataPath, hash), "image.dzi")
 	http.ServeFile(w, r, dziPath)
 }
 
 // GET /images/:id/tiles/*
 // Serves DZI tile files. The wildcard captures the level/col_row.avif path.
 func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	hash, err := h.getItemHash(id, r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "media item not found")
 		return
 	}
 
@@ -189,7 +217,7 @@ func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
 	tilePath = filepath.Clean("/" + tilePath)
 
 	fullPath := filepath.Join(
-		imaging.TilesPath(h.dataPath, id),
+		imaging.TilesPath(h.dataPath, hash),
 		"image_files",
 		tilePath,
 	)

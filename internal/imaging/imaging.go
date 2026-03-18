@@ -45,33 +45,27 @@ func Shutdown() {
 	vips.Shutdown()
 }
 
-// ItemDataPath returns the base directory for a media item's derived data.
-// Three-level hex sharding prevents large flat directories at scale.
+// ItemDataPath returns the base directory for a media item's derived data,
+// addressed by the item's BLAKE2b-256 content hash.
+// Three-level hex sharding: {base}/{hash[0:2]}/{hash[2:4]}/{hash[4:]}/
 //
-//	{basePath}/{hex[0:2]}/{hex[2:4]}/{hex[4:8]}/
-//
-// Example: item 1048576 (0x00100000) → {base}/00/10/0000/
-func ItemDataPath(basePath string, itemID int) string {
-	hex := fmt.Sprintf("%08x", itemID)
-	return filepath.Join(
-		basePath,
-		hex[0:2],
-		hex[2:4],
-		hex[4:8],
-	)
+// Using the hash as the key means renamed or moved files reuse existing
+// derived data without re-processing.
+func ItemDataPath(basePath string, hash string) string {
+	return filepath.Join(basePath, hash[0:2], hash[2:4], hash[4:])
 }
 
 // VariantPath returns the full path for a named variant file.
-func VariantPath(basePath string, itemID int, variant string, ext string) string {
-	return filepath.Join(ItemDataPath(basePath, itemID), variant+"."+ext)
+func VariantPath(basePath string, hash string, variant string, ext string) string {
+	return filepath.Join(ItemDataPath(basePath, hash), variant+"."+ext)
 }
 
 // TilesPath returns the DZI directory for a media item.
-func TilesPath(basePath string, itemID int) string {
-	return filepath.Join(ItemDataPath(basePath, itemID), "tiles")
+func TilesPath(basePath string, hash string) string {
+	return filepath.Join(ItemDataPath(basePath, hash), "tiles")
 }
 
-func GenerateVariant(srcPath string, dataPath string, itemID int, variantName string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
+func GenerateVariant(srcPath string, dataPath string, hash string, variantName string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
 	// Skip variants at or above source resolution — no point upscaling.
 	if spec.size >= srcLongestEdge {
 		slog.Debug("skipping variant — source too small",
@@ -105,7 +99,7 @@ func GenerateVariant(srcPath string, dataPath string, itemID int, variantName st
 	if err != nil {
 		return fmt.Errorf("export %s avif: %w", variantName, err)
 	}
-	avifPath := VariantPath(dataPath, itemID, variantName, "avif")
+	avifPath := VariantPath(dataPath, hash, variantName, "avif")
 	if err := os.WriteFile(avifPath, avifBytes, 0o644); err != nil {
 		return fmt.Errorf("write %s avif: %w", variantName, err)
 	}
@@ -114,14 +108,14 @@ func GenerateVariant(srcPath string, dataPath string, itemID int, variantName st
 	// Re-uses the already-resized img — no second resize needed.
 	if variantName == VariantThumb {
 		jpegParams := vips.JpegExportParams{
-			Quality:        spec.quality,
-			StripMetadata:  true,
+			Quality:       spec.quality,
+			StripMetadata: true,
 		}
 		jpegBytes, _, err := img.ExportJpeg(&jpegParams)
 		if err != nil {
 			return fmt.Errorf("export thumb jpeg: %w", err)
 		}
-		jpegPath := VariantPath(dataPath, itemID, variantName, "jpg")
+		jpegPath := VariantPath(dataPath, hash, variantName, "jpg")
 		if err := os.WriteFile(jpegPath, jpegBytes, 0o644); err != nil {
 			return fmt.Errorf("write thumb jpeg: %w", err)
 		}
@@ -132,8 +126,8 @@ func GenerateVariant(srcPath string, dataPath string, itemID int, variantName st
 
 // GenerateAllVariants creates all AVIF variants and the pre-generated JPEG thumb.
 // Called by the indexer worker pool for each new or changed photo.
-func GenerateAllVariants(srcPath string, dataPath string, itemID int) error {
-	outDir := ItemDataPath(dataPath, itemID)
+func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
+	outDir := ItemDataPath(dataPath, hash)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
@@ -149,7 +143,7 @@ func GenerateAllVariants(srcPath string, dataPath string, itemID int) error {
 	srcLongestEdge := max(src.Width(), src.Height())
 
 	for variantName, spec := range variants {
-		GenerateVariant(srcPath, dataPath, itemID, variantName, spec, src, srcLongestEdge)
+		GenerateVariant(srcPath, dataPath, hash, variantName, spec, src, srcLongestEdge)
 	}
 
 	return nil
@@ -161,8 +155,8 @@ func GenerateAllVariants(srcPath string, dataPath string, itemID int) error {
 // NOTE: govips does not support dzsave, so we shell out to the CLI. 
 //       It's janky but is sufficient and is only called once per photo.
 // TODO: Implement this into govips and remove the CLI dependency.
-func GenerateDZI(srcPath, dataPath string, itemID int) error {
-	tilesDir := TilesPath(dataPath, itemID)
+func GenerateDZI(srcPath string, dataPath string, hash string) error {
+	tilesDir := TilesPath(dataPath, hash)
 	if err := os.MkdirAll(tilesDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir tiles: %w", err)
 	}

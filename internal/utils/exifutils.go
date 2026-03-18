@@ -1,0 +1,179 @@
+package utils
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// ─── Exiftool stay-open process ───────────────────────────────────────────────
+
+// ExiftoolProcess wraps a persistent exiftool process using stay_open mode.
+// One process is started per processing worker and reused for every file —
+// avoids per-file Perl startup overhead which would be ~150ms × file count.
+type ExiftoolProcess struct {
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Scanner
+	mu     sync.Mutex
+}
+
+func NewExiftoolProcess() (*ExiftoolProcess, error) {
+	cmd := exec.Command("exiftool",
+		"-stay_open", "true",
+		"-@", "-",
+		"-common_args",
+		"-json",
+		"-struct",
+		"-n",             // numeric output for GPS, FNumber etc.
+		"-GPSLatitude#",  // force numeric GPS even with -n
+		"-GPSLongitude#", // force numeric GPS even with -n
+		"-largefilesupport",
+	)
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start exiftool: %w", err)
+	}
+
+	return &ExiftoolProcess{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: bufio.NewScanner(stdoutPipe),
+	}, nil
+}
+
+// Extract sends a single file path to the running exiftool process and
+// returns its metadata as a raw map. Thread-safe via mutex.
+func (e *ExiftoolProcess) Extract(path string) (map[string]any, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Send filename + -execute sentinel
+	if _, err := fmt.Fprintf(e.stdin, "%s\n-execute\n", path); err != nil {
+		return nil, fmt.Errorf("write to exiftool: %w", err)
+	}
+
+	// Read lines until exiftool writes "{ready}" as the completion sentinel
+	var sb strings.Builder
+	for e.stdout.Scan() {
+		line := e.stdout.Text()
+		if line == "{ready}" {
+			break
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	if err := e.stdout.Err(); err != nil {
+		return nil, fmt.Errorf("read from exiftool: %w", err)
+	}
+
+	// exiftool -json always returns an array
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(sb.String()), &results); err != nil {
+		return nil, fmt.Errorf("parse exiftool json: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no exiftool results for %s", path)
+	}
+
+	return results[0], nil
+}
+
+func (e *ExiftoolProcess) Close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, _ = fmt.Fprintln(e.stdin, "-stay_open\nfalse")
+	_ = e.stdin.Close()
+	_ = e.cmd.Wait()
+}
+
+// ─── Exiftool field helpers ───────────────────────────────────────────────────
+// These extract typed values from the raw map exiftool returns.
+// All return pointers (not primitives) because the DB columns they populate
+// are nullable — pgx requires *T for nullable column bindings.
+// All return nil on missing or unparseable fields — never panic.
+
+func ExifStr(m map[string]any, key string) *string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	s := fmt.Sprintf("%v", v)
+	return &s
+}
+
+func ExifInt(m map[string]any, key string) *int {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	// encoding/json always unmarshals numbers into float64 when target is any,
+	// so the float64 case handles all JSON-sourced numeric values.
+	switch t := v.(type) {
+	case float64:
+		i := int(t)
+		return &i
+	case string:
+		i, err := strconv.Atoi(t)
+		if err != nil {
+			return nil
+		}
+		return &i
+	}
+	return nil
+}
+
+func ExifFloat(m map[string]any, key string) *float64 {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	// encoding/json always unmarshals numbers into float64 when target is any,
+	// so the float64 case handles all JSON-sourced numeric values.
+	switch t := v.(type) {
+	case float64:
+		return &t
+	case string:
+		f, err := strconv.ParseFloat(t, 64)
+		if err != nil {
+			return nil
+		}
+		return &f
+	}
+	return nil
+}
+
+// ExifTime parses an exiftool date/time field (e.g. DateTimeOriginal) into a *time.Time.
+// Exiftool format: "2023:06:15 14:30:00"
+func ExifTime(m map[string]any, key string) *time.Time {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil
+	}
+	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, time.Local)
+	if err != nil {
+		return nil
+	}
+	return &t
+}

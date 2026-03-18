@@ -10,14 +10,15 @@ import (
 )
 
 type Config struct {
-	DatabaseURL string  // Database connection URL (e.g. postgres://user:pass@host:port/dbname)
-	DataPath    string	// Base path for storing generated media variants
-	MediaPath   string	// Base path for the media library
-	Port        string	// Port to listen on
-	JWTSecret   string	// Secret for signing JWTs
-	WorkerCount int		// Number of worker goroutines to use
-	LogLevel    string	// Log level (debug, info, warn, error)
-	LogPath     string	// Path to output log files to (empty for stdout)
+	DatabaseURL            string // Database connection URL (e.g. postgres://user:pass@host:port/dbname)
+	DataPath               string // Base path for storing generated media variants
+	MediaPath              string // Base path for the media library
+	Port                   string // Port to listen on
+	JWTSecret              string // Secret for signing JWTs
+	WorkerCount            int    // Number of worker goroutines to use
+	ProcessingWorkerCount  int    // Number of worker goroutines for media processing (EXIF, variants)
+	LogLevel               string // Log level (debug, info, warn, error)
+	LogPath                string // Path to output log files to (empty for stdout)
 }
 
 func Load() (*Config, error) {
@@ -36,6 +37,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid WORKER_COUNT: %w", err)
 	}
 	cfg.WorkerCount = workerCount
+
+	processingWorkerCount, err := strconv.Atoi(env("PROCESSING_WORKER_COUNT", "2"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid PROCESSING_WORKER_COUNT: %w", err)
+	}
+	cfg.ProcessingWorkerCount = processingWorkerCount
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")

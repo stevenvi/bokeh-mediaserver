@@ -19,7 +19,7 @@ type collectionsHandler struct {
 // TODO: Add access control by reading which collections a user has permission to access as part of the query here
 func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(),
-		`SELECT id, name, type, root_path,
+		`SELECT id, name, type, relative_path,
 		        is_enabled, last_scanned_at, created_at
 		 FROM collections
 		 WHERE parent_collection_id IS NULL AND is_enabled = true
@@ -35,7 +35,7 @@ func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Collection
 		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Type, &c.RootPath,
+			&c.ID, &c.Name, &c.Type, &c.RelativePath,
 			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt,
 		); err != nil {
 			slog.Warn("Row scan error", "error", err)
@@ -49,7 +49,7 @@ func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/collections/:id
 func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -71,7 +71,7 @@ func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/collections/:id/collections — direct children
 func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -105,7 +105,7 @@ func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request
 
 // GET /api/v1/collections/:id/items — paginated media items
 func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -155,7 +155,7 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 // TODO: Allow pagination of slideshow if possible
 // TODO: What is this payload size going to look like if you have a huge collection?
 func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -190,13 +190,13 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type slideshowItem struct {
-		ID           int    `json:"id"`
-		Title        string `json:"title"`
-		MimeType     string `json:"mime_type"`
-		TakenAt      any    `json:"taken_at"`
-		Placeholder  any    `json:"placeholder"`
-		WidthPx      any    `json:"width_px"`
-		HeightPx     any    `json:"height_px"`
+		ID          int64  `json:"id"`
+		Title       string `json:"title"`
+		MimeType    string `json:"mime_type"`
+		TakenAt     any    `json:"taken_at"`
+		Placeholder any    `json:"placeholder"`
+		WidthPx     any    `json:"width_px"`
+		HeightPx    any    `json:"height_px"`
 	}
 
 	var items []slideshowItem

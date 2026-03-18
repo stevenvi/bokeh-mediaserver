@@ -19,7 +19,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 
 	auth := newAuthHandler(db, jwtSecret)
 	collections := &collectionsHandler{db: db}
-	photos := &photosHandler{db: db, dataPath: dataPath}
+	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	admin := &adminHandler{db: db, pool: pool, mediaPath: mediaPath, dataPath: dataPath}
 
 	// ── Public ────────────────────────────────────────────────────────────────
@@ -67,6 +67,10 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 
 		r.Get("/api/v1/admin/jobs/{id}", admin.getJob)
 		r.Get("/api/v1/admin/jobs/{id}/events", admin.jobEvents)
+
+		// Maintenance
+		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)
+		r.Post("/api/v1/admin/maintenance/integrity-check", admin.triggerIntegrityCheck)
 	})
 
 	return r

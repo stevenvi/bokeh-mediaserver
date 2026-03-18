@@ -2,12 +2,15 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 )
 
@@ -20,10 +23,12 @@ import (
 // Concurrency is bounded on the consumer side: exactly `workers` goroutines
 // pull from the queue simultaneously. The queue itself grows as needed.
 type Pool struct {
-	work    chan func()
-	wg      sync.WaitGroup
-	once    sync.Once
-	closeCh chan struct{}
+	work        chan func()
+	wg          sync.WaitGroup
+	once        sync.Once
+	closeCh     chan struct{}
+	workerCount int
+	activeCount atomic.Int32
 }
 
 // NewPool starts a pool with the given number of concurrent workers.
@@ -32,8 +37,9 @@ func NewPool(workers int) *Pool {
 	p := &Pool{
 		// Buffered to reduce lock contention on bursts, but the real
 		// unbounded capacity comes from the goroutine below that feeds it.
-		work:    make(chan func(), workers*4),
-		closeCh: make(chan struct{}),
+		work:        make(chan func(), workers*4),
+		closeCh:     make(chan struct{}),
+		workerCount: workers,
 	}
 
 	for range workers {
@@ -44,8 +50,10 @@ func NewPool(workers int) *Pool {
 					if !ok {
 						return
 					}
+					p.activeCount.Add(1)
 					func() {
 						defer p.wg.Done()
+						defer p.activeCount.Add(-1)
 						fn()
 					}()
 				case <-p.closeCh:
@@ -97,11 +105,51 @@ func (p *Pool) Close() {
 	})
 }
 
+// IdleWorkers returns the number of workers not currently executing a task.
+func (p *Pool) IdleWorkers() int {
+	return p.workerCount - int(p.activeCount.Load())
+}
+
+// Workers returns the configured number of workers in this pool.
+func (p *Pool) Workers() int {
+	return p.workerCount
+}
+
 // ─── DB helpers ───────────────────────────────────────────────────────────────
 
+// ClaimNextJob atomically claims the next queued job of one of the given types.
+// Returns nil, nil if no job is available. Uses SKIP LOCKED to avoid contention.
+func ClaimNextJob(ctx context.Context, db utils.DBTX, jobTypes []string) (*models.Job, error) {
+	var j models.Job
+	err := db.QueryRow(ctx,
+		`UPDATE jobs SET status = 'running', started_at = now()
+		 WHERE id = (
+		     SELECT id FROM jobs
+		     WHERE status = 'queued' AND type = ANY($1)
+		     ORDER BY queued_at
+		     LIMIT 1
+		     FOR UPDATE SKIP LOCKED
+		 ) RETURNING id, type, status, related_id, related_type,
+		             log, error_message,
+		             queued_at, started_at, completed_at`,
+		jobTypes,
+	).Scan(
+		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
+		&j.Log, &j.ErrorMessage,
+		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &j, nil
+}
+
 // Create inserts a new job row and returns its ID.
-func Create(ctx context.Context, db *pgxpool.Pool, jobType string, relatedID *int, relatedType *string) (int, error) {
-	var id int
+func Create(ctx context.Context, db utils.DBTX, jobType string, relatedID *int64, relatedType *string) (int64, error) {
+	var id int64
 	err := db.QueryRow(ctx,
 		`INSERT INTO jobs (type, related_id, related_type)
 		 VALUES ($1, $2, $3)
@@ -112,7 +160,7 @@ func Create(ctx context.Context, db *pgxpool.Pool, jobType string, relatedID *in
 }
 
 // MarkRunning sets a job to running status with the current timestamp.
-func MarkRunning(ctx context.Context, db *pgxpool.Pool, jobID int) error {
+func MarkRunning(ctx context.Context, db utils.DBTX, jobID int64) error {
 	_, err := db.Exec(ctx,
 		`UPDATE jobs SET status = 'running', started_at = now() WHERE id = $1`,
 		jobID,
@@ -121,10 +169,10 @@ func MarkRunning(ctx context.Context, db *pgxpool.Pool, jobID int) error {
 }
 
 // UpdateProgress updates the progress and appends a line to the log.
-func UpdateProgress(ctx context.Context, db *pgxpool.Pool, jobID int, msg string) error {
+func UpdateProgress(ctx context.Context, db utils.DBTX, jobID int64, msg string) error {
 	_, err := db.Exec(ctx,
 		`UPDATE jobs
-		 SET log = COALESCE(log, '') || $3
+		 SET log = COALESCE(log, '') || $2
 		 WHERE id = $1`,
 		jobID, msg+"\n",
 	)
@@ -132,7 +180,7 @@ func UpdateProgress(ctx context.Context, db *pgxpool.Pool, jobID int, msg string
 }
 
 // MarkDone sets a job to done status.
-func MarkDone(ctx context.Context, db *pgxpool.Pool, jobID int) error {
+func MarkDone(ctx context.Context, db utils.DBTX, jobID int64) error {
 	_, err := db.Exec(ctx,
 		`UPDATE jobs
 		 SET status = 'done', completed_at = now()
@@ -143,7 +191,7 @@ func MarkDone(ctx context.Context, db *pgxpool.Pool, jobID int) error {
 }
 
 // MarkFailed sets a job to failed status with an error message.
-func MarkFailed(ctx context.Context, db *pgxpool.Pool, jobID int, errMsg string) error {
+func MarkFailed(ctx context.Context, db utils.DBTX, jobID int64, errMsg string) error {
 	_, err := db.Exec(ctx,
 		`UPDATE jobs
 		 SET status = 'failed', error_message = $2, completed_at = now()
@@ -153,8 +201,15 @@ func MarkFailed(ctx context.Context, db *pgxpool.Pool, jobID int, errMsg string)
 	return err
 }
 
+// Delete removes a job row. Used for process_media jobs on success — these
+// generate high volumes of history with no ongoing value once complete.
+func Delete(ctx context.Context, db utils.DBTX, jobID int64) error {
+	_, err := db.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
+	return err
+}
+
 // GetByID returns a single job by ID.
-func GetByID(ctx context.Context, db *pgxpool.Pool, jobID int) (*models.Job, error) {
+func GetByID(ctx context.Context, db utils.DBTX, jobID int64) (*models.Job, error) {
 	var j models.Job
 	err := db.QueryRow(ctx,
 		`SELECT id, type, status, related_id, related_type,
@@ -173,9 +228,21 @@ func GetByID(ctx context.Context, db *pgxpool.Pool, jobID int) (*models.Job, err
 	return &j, nil
 }
 
+// IsActiveByType returns true if any job of the given type is queued or running,
+// regardless of related ID. Used for singleton jobs like integrity_check.
+func IsActiveByType(ctx context.Context, db utils.DBTX, jobType string) (bool, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM jobs
+		 WHERE type = $1 AND status IN ('queued', 'running')`,
+		jobType,
+	).Scan(&count)
+	return count > 0, err
+}
+
 // IsActive returns true if a job of the given type is queued or running
 // for the given related ID. Used to prevent duplicate job submission.
-func IsActive(ctx context.Context, db *pgxpool.Pool, jobType string, relatedID int) (bool, error) {
+func IsActive(ctx context.Context, db utils.DBTX, jobType string, relatedID int64) (bool, error) {
 	var count int
 	err := db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM jobs
@@ -187,7 +254,7 @@ func IsActive(ctx context.Context, db *pgxpool.Pool, jobType string, relatedID i
 
 // RecoverStuckJobs resets any jobs left in 'running' state from a previous
 // hard-killed server instance back to 'queued'. Called during startup.
-func RecoverStuckJobs(ctx context.Context, db *pgxpool.Pool) error {
+func RecoverStuckJobs(ctx context.Context, db utils.DBTX) error {
 	tag, err := db.Exec(ctx,
 		`UPDATE jobs SET status = 'queued', started_at = NULL
 		 WHERE status = 'running'`,
@@ -221,7 +288,7 @@ func RecoverStuckJobs(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 // PollJobStatus polls a job until it reaches a terminal state.
-func PollJobStatus(ctx context.Context, db *pgxpool.Pool, jobID int, interval time.Duration) (*models.Job, error) {
+func PollJobStatus(ctx context.Context, db utils.DBTX, jobID int64, interval time.Duration) (*models.Job, error) {
 	for {
 		select {
 		case <-ctx.Done():

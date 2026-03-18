@@ -18,7 +18,9 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/config"
 	"github.com/stevenvi/bokeh-mediaserver/internal/db"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 )
 
 func main() {
@@ -46,11 +48,11 @@ func run() error {
 
 	// ── Database pool ─────────────────────────────────────────────────────────
 	ctx := context.Background()
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	db_pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("db: %w", err)
 	}
-	defer pool.Close()
+	defer db_pool.Close()
 
 	// ── Imaging module initialization ─────────────────────────────────────────
 	slog.Info("initializing imaging module")
@@ -59,7 +61,7 @@ func run() error {
 
 	// ── Startup recovery ──────────────────────────────────────────────────────
 	slog.Info("running startup recovery")
-	if err := jobs.RecoverStuckJobs(ctx, pool); err != nil {
+	if err := jobs.RecoverStuckJobs(ctx, db_pool); err != nil {
 		return fmt.Errorf("recovery: %w", err)
 	}
 
@@ -68,11 +70,28 @@ func run() error {
 		return fmt.Errorf("data path: %w", err)
 	}
 
-	// ── Worker pool ───────────────────────────────────────────────────────────
-	workerPool := jobs.NewPool(cfg.WorkerCount)
+	// ── Worker pools ──────────────────────────────────────────────────────────
+	mainPool := jobs.NewPool(cfg.WorkerCount)
+	processingPool := jobs.NewPool(cfg.ProcessingWorkerCount)
+
+	// Create per-worker exiftool process managers for the processing pool
+	processingWorkers := indexer.NewProcessingWorkers(cfg.ProcessingWorkerCount)
+	defer processingWorkers.CloseAll()
+
+	// ── Job dispatcher ────────────────────────────────────────────────────────
+	dispatcher := jobs.NewDispatcher(db_pool, mainPool, processingPool)
+	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath), false)
+	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath), true)
+	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
+	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath), false)
+	dispatcher.Start(ctx)
+
+	// ── Scheduler ─────────────────────────────────────────────────────────────
+	scheduler := jobs.NewScheduler(db_pool)
+	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(pool, workerPool, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
+	router := api.NewRouter(db_pool, mainPool, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -97,17 +116,24 @@ func run() error {
 	<-quit
 	slog.Info("shutdown signal received")
 
+	// Stop scheduler first — no more new jobs
+	scheduler.Stop()
+
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Stop accepting new requests; let in-flight requests finish
+	// Stop accepting new HTTP requests
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
-	// Wait for any running worker pool jobs to complete
-	slog.Info("waiting for background workers to finish")
-	workerPool.Wait()
+	// Stop dispatcher — waits for in-flight jobs
+	slog.Info("waiting for job dispatcher to finish")
+	dispatcher.Stop()
+
+	// Close worker pools
+	mainPool.Close()
+	processingPool.Close()
 
 	slog.Info("shutdown complete")
 	return nil

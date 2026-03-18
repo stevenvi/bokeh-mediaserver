@@ -1,24 +1,20 @@
 package indexer
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 var supportedExtensions = map[string]string{
@@ -33,21 +29,19 @@ var supportedExtensions = map[string]string{
 	".avif": "image/avif",
 }
 
-// RunScan performs a full index scan of a collection's root_path.
-// Intended to run in a goroutine — updates the job row as it progresses.
-func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
-	jobID, collectionID int, rootPath string, mediaPath string, dataPath string) {
+// RunScan performs a lightweight enumeration scan of a collection's relative_path.
+// It walks the directory tree, upserts media_items, and queues process_media
+// jobs for new or changed files. Heavy processing (EXIF, variants, DZI) is
+// handled by the process_media handler in the processing worker pool.
+//
+// Called by HandleScanJob — the job is already marked as 'running' by the dispatcher.
+// Returns an error on failure; the dispatcher handles MarkDone/MarkFailed.
+func RunScan(ctx context.Context, db utils.DBTX,
+	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string) error {
 
 	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
 	jobStart := time.Now()
-
-	if err := jobs.MarkRunning(ctx, db, jobID); err != nil {
-		slog.Error("mark job running", "err", err)
-		return
-	}
-
-	slog.Info("Job marked running", "job_id", jobID)
 
 	logMsg := func(msg string) {
 		slog.Info(msg, "job_id", jobID, "collection_id", collectionID)
@@ -55,37 +49,26 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 	}
 
 	// Construct full path: mediaPath is base, rootPath is relative path within media
-	collectionPath := filepath.Join(mediaPath, rootPath)
+	collectionPath := filepath.Join(mediaPath, relativePath)
 	logMsg(fmt.Sprintf("scan started: %s", collectionPath))
 
-	// Start a persistent exiftool process for this scan.
-	// All files are piped through one process — avoids per-file Perl startup cost.
-	// TODO: Only do this for image collections, it is a waste of time for any other media type.
-	et, err := newExiftoolProcess()
-	if err != nil {
-		_ = jobs.MarkFailed(ctx, db, jobID, fmt.Sprintf("exiftool init: %s", err))
-		return
-	}
-	defer et.close()
-	slog.Info("Exiftool process started", "job_id", jobID)
-
 	// Phase 1 — walk directory tree and upsert sub-collections (folders)
-	if err := walkFolders(ctx, db, collectionID, collectionPath); err != nil {
-		_ = jobs.MarkFailed(ctx, db, jobID, err.Error())
-		return
+	pathToID, err := walkFolders(ctx, db, collectionID, collectionPath, mediaPath)
+	if err != nil {
+		return fmt.Errorf("walk folders: %w", err)
 	}
 	slog.Info("Folder walk complete", "job_id", jobID)
 
-	// Phase 2 — enumerate files, dispatch to worker pool
+	// Phase 2 — enumerate files, upsert media_items, queue process_media jobs
 	var (
-		processed int64
-		errCount  int64
-		mu        sync.Mutex
+		enumerated int64
+		unchanged  int64
+		queued     int64
+		errCount   int64
 	)
 
-	err = filepath.WalkDir(collectionPath, func(path string, d os.DirEntry, err error) error {
-		slog.Info("Walking path", "path", path)
-		if err != nil {
+	err = filepath.WalkDir(collectionPath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
 			return nil // skip unreadable entries
 		}
 		if d.IsDir() || ctx.Err() != nil {
@@ -98,40 +81,100 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 			return nil
 		}
 
-		slog.Info("Enqueuing file for processing", "path", path)
+		enumerated++
 
-		// Capture loop vars for goroutine
-		filePath := path
-		fileMime := mimeType
+		// Stat and hash for change detection
+		stat, err := os.Stat(path)
+		if err != nil {
+			slog.Warn("stat failed", "path", path, "err", err)
+			errCount++
+			return nil
+		}
+		fileSize := stat.Size()
 
-		pool.Submit(func() {
-			if err := processFile(ctx, db, et, filePath, fileMime, dataPath, mediaPath); err != nil {
-				slog.Error("process file", "path", filePath, "err", err)
-				mu.Lock()
-				errCount++
-				mu.Unlock()
-			} else {
-				mu.Lock()
-				processed++
-				mu.Unlock()
-			}
-		})
+		fileHash, err := computeFileHash(path, fileSize)
+		if err != nil {
+			slog.Warn("hash failed", "path", path, "err", err)
+			errCount++
+			return nil
+		}
+
+		// Compute relative path for DB storage
+		relativePath, err := filepath.Rel(mediaPath, path)
+		if err != nil {
+			slog.Warn("compute relative path", "path", path, "err", err)
+			errCount++
+			return nil
+		}
+
+		// Look up collection from cache (no DB query)
+		dirPath := filepath.Dir(path)
+		folderCollectionID, ok := pathToID[dirPath]
+		if !ok {
+			slog.Warn("collection lookup failed", "path", dirPath)
+			errCount++
+			return nil
+		}
+
+		title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+
+		// Single-trip upsert: captures pre-existing state in CTE to detect changes
+		var itemID int64
+		var wasUnchanged bool
+		err = db.QueryRow(ctx, `
+			WITH prev AS (
+				SELECT id, file_size_bytes, file_hash
+				FROM media_items
+				WHERE relative_path = $3
+			),
+			upserted AS (
+				INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
+				VALUES ($1, $2, $3, $4, $5, $6)
+				ON CONFLICT (relative_path) DO UPDATE SET
+					indexed_at      = now(),
+					missing_since   = NULL,
+					collection_id   = EXCLUDED.collection_id,
+					file_size_bytes = EXCLUDED.file_size_bytes,
+					file_hash       = EXCLUDED.file_hash,
+					mime_type       = EXCLUDED.mime_type
+				RETURNING id
+			)
+			SELECT
+				u.id,
+				(p.id IS NOT NULL AND p.file_size_bytes = $4 AND p.file_hash = $5) AS was_unchanged
+			FROM upserted u
+			LEFT JOIN prev p ON true`,
+			folderCollectionID, title, relativePath, fileSize, fileHash, mimeType,
+		).Scan(&itemID, &wasUnchanged)
+		if err != nil {
+			slog.Warn("upsert media_item failed", "path", path, "err", err)
+			errCount++
+			return nil
+		}
+
+		if wasUnchanged {
+			unchanged++
+			return nil
+		}
+
+		// Queue a process_media job for this item
+		relatedType := "media_item"
+		_, err = jobs.Create(ctx, db, "process_media", &itemID, &relatedType)
+		if err != nil {
+			slog.Warn("queue process_media job", "item_id", itemID, "err", err)
+			errCount++
+			return nil
+		}
+		queued++
 
 		return nil
 	})
-	slog.Info("File walk complete", "job_id", jobID, "err", err)
-
-	// Wait for all workers before post-scan cleanup
-	pool.Wait()
-	slog.Info("All workers complete", "job_id", jobID)
 
 	if err != nil {
-		_ = jobs.MarkFailed(ctx, db, jobID, err.Error())
-		return
+		return fmt.Errorf("walk files: %w", err)
 	}
 
 	// Phase 3 — mark files not seen this scan as missing
-	// TODO: BUG: we need to consider sub-collections as well, this only looks at the top-level collection.
 	tag, err := db.Exec(ctx,
 		`UPDATE media_items
 		 SET missing_since = now()
@@ -141,31 +184,35 @@ func RunScan(ctx context.Context, db *pgxpool.Pool, pool *jobs.Pool,
 		collectionID, jobStart,
 	)
 	if err != nil {
-		_ = jobs.MarkFailed(ctx, db, jobID, err.Error())
-		return
+		return fmt.Errorf("mark missing: %w", err)
 	}
 
-	summary := fmt.Sprintf("scan complete: %d processed, %d errors, %d marked missing",
-		processed, errCount, tag.RowsAffected())
+	summary := fmt.Sprintf("scan complete: %d enumerated, %d unchanged, %d queued for processing, %d errors, %d marked missing",
+		enumerated, unchanged, queued, errCount, tag.RowsAffected())
 	logMsg(summary)
 
-	// TODO: Pseudo-BUG: This only updates the top-level collection again, but likely is irrelevant
 	_, _ = db.Exec(ctx,
 		`UPDATE collections SET last_scanned_at = now() WHERE id = $1`,
 		collectionID,
 	)
 
-	_ = jobs.MarkDone(ctx, db, jobID)
+	return nil
 }
 
 // walkFolders upserts a sub-collection row for each directory under rootPath.
-func walkFolders(ctx context.Context, db *pgxpool.Pool, rootCollectionID int, rootPath string) error {
-	pathToID := map[string]int{rootPath: rootCollectionID}
+// Returns a map from absolute directory path to collection ID for use during file enumeration.
+func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
+	pathToID := map[string]int64{rootPath: rootCollectionID}
 
-	return filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
 		slog.Debug("walk folder", "path", path)
-		if err != nil || !d.IsDir() || path == rootPath {
+		if walkErr != nil || !d.IsDir() || path == rootPath {
 			return nil
+		}
+
+		relPath, err := filepath.Rel(mediaPath, path)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", path, err)
 		}
 
 		parentPath := filepath.Dir(path)
@@ -175,18 +222,18 @@ func walkFolders(ctx context.Context, db *pgxpool.Pool, rootCollectionID int, ro
 		}
 
 		name := filepath.Base(path)
-		var id int
+		var id int64
 		err = db.QueryRow(ctx,
 			// TODO: ON CONFLICT clause seems redundant, is there a better way to do this?
-			`INSERT INTO collections (parent_collection_id, name, type, root_path)
+			`INSERT INTO collections (parent_collection_id, name, type, relative_path)
 			 VALUES ($1, $2,
 			     (SELECT type FROM collections WHERE id = $3),
 			     $4)
-			 ON CONFLICT (root_path) WHERE root_path IS NOT NULL
+			 ON CONFLICT (relative_path) WHERE relative_path IS NOT NULL
 			     DO UPDATE SET name                 = EXCLUDED.name,
 			                   parent_collection_id = EXCLUDED.parent_collection_id
 			 RETURNING id`,
-			parentID, name, rootCollectionID, path,
+			parentID, name, rootCollectionID, relPath,
 		).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("upsert folder %s: %w", path, err)
@@ -195,341 +242,62 @@ func walkFolders(ctx context.Context, db *pgxpool.Pool, rootCollectionID int, ro
 		pathToID[path] = id
 		return nil
 	})
+
+	return pathToID, err
 }
 
-// processFile handles a single file: change detection, EXIF, DB upsert, variant generation.
-func processFile(ctx context.Context, db *pgxpool.Pool, et *exiftoolProcess,
-	path string, mimeType, dataPath string, mediaPath string) error {
 
-	slog.Debug("Starting to process file", "path", path)
+const (
+	fullHashThreshold = 2 * 1024 * 1024 // 2 MB — files at or below this are fully hashed
+	partialHashBlock  = 1 * 1024 * 1024 // 1 MB — read from start and end for larger files
+)
 
-	stat, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat: %w", err)
-	}
-	fileSize := stat.Size()
-
-	hashPrefix, err := hashFilePrefix(path)
-	if err != nil {
-		return fmt.Errorf("hash: %w", err)
-	}
-
-	// Change detection — touch indexed_at and move on if unchanged
-	var existingID int
-	var existingSize int64
-	var existingHash string
-	err = db.QueryRow(ctx,
-		`SELECT id, file_size_bytes, file_hash_prefix FROM media_items WHERE fs_path = $1`,
-		path,
-	).Scan(&existingID, &existingSize, &existingHash)
-
-	if err == nil && existingSize == fileSize && existingHash == hashPrefix {
-		_, err = db.Exec(ctx,
-			`UPDATE media_items SET indexed_at = now(), missing_since = NULL WHERE id = $1`,
-			existingID,
-		)
-		return err
-	}
-
-	// Find the sub-collection (folder) for this file
-	// TODO: This is inefficient, how many times are we going to call this for the same folder?!
-	dirPath := filepath.Dir(path)
-	// Strip mediaPath to get the relative path for the query
-	relativeDirPath := strings.TrimPrefix(dirPath, mediaPath)
-	// Clean up leading slashes
-	relativeDirPath = strings.TrimPrefix(relativeDirPath, "/")
-	if relativeDirPath == "" {
-		relativeDirPath = "."
-	}
-	var folderCollectionID int
-	err = db.QueryRow(ctx,
-		`SELECT id FROM collections WHERE root_path = $1`, relativeDirPath,
-	).Scan(&folderCollectionID)
-	if err != nil {
-		return fmt.Errorf("fetching collection id for %s: %w", dirPath, err)
-	}
-
-	// TODO: Can image titles be stored in EXIF or IPTC data? The title being the filname is
-	//       likely never what we want to do. Nobody cares what the name of the file on disk is.
-	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-
-	// Extract EXIF via persistent exiftool process
-	exifData, err := et.extract(path)
-	if err != nil {
-		slog.Warn("exiftool extract failed", "path", path, "err", err)
-		exifData = map[string]any{}
-	}
-
-	// Upsert media_item
-	var itemID int
-	err = db.QueryRow(ctx,
-		`INSERT INTO media_items
-		     (collection_id, title, fs_path, file_size_bytes, file_hash_prefix, mime_type)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 ON CONFLICT (fs_path)
-		     DO UPDATE SET
-		         collection_id    = EXCLUDED.collection_id,
-		         title            = EXCLUDED.title,
-		         file_size_bytes  = EXCLUDED.file_size_bytes,
-		         file_hash_prefix = EXCLUDED.file_hash_prefix,
-		         indexed_at       = now(),
-		         missing_since    = NULL
-		 RETURNING id`,
-		folderCollectionID, title, path, fileSize, hashPrefix, mimeType,
-	).Scan(&itemID)
-	if err != nil {
-		return fmt.Errorf("upsert media_item: %w", err)
-	}
-
-	// Build photo_metadata fields from exiftool output
-	rawJSON, _ := json.Marshal(exifData)
-
-	_, err = db.Exec(ctx,
-		`INSERT INTO photo_metadata
-		     (media_item_id, width_px, height_px, taken_at,
-		      camera_make, camera_model, lens_model,
-		      shutter_speed, aperture, iso,
-		      focal_length_mm, focal_length_35mm_equiv,
-		      gps_lat, gps_lng, color_space, exif_raw)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-		 ON CONFLICT (media_item_id) DO UPDATE SET
-		     width_px                = EXCLUDED.width_px,
-		     height_px               = EXCLUDED.height_px,
-		     taken_at                = EXCLUDED.taken_at,
-		     camera_make             = EXCLUDED.camera_make,
-		     camera_model            = EXCLUDED.camera_model,
-		     lens_model              = EXCLUDED.lens_model,
-		     shutter_speed           = EXCLUDED.shutter_speed,
-		     aperture                = EXCLUDED.aperture,
-		     iso                     = EXCLUDED.iso,
-		     focal_length_mm         = EXCLUDED.focal_length_mm,
-		     focal_length_35mm_equiv = EXCLUDED.focal_length_35mm_equiv,
-		     gps_lat                 = EXCLUDED.gps_lat,
-		     gps_lng                 = EXCLUDED.gps_lng,
-		     color_space             = EXCLUDED.color_space,
-		     exif_raw                = EXCLUDED.exif_raw,
-		     variants_generated_at   = NULL`,
-		itemID,
-		exifInt(exifData, "ImageWidth"), exifInt(exifData, "ImageHeight"),
-		exifTime(exifData, "DateTimeOriginal"),
-		exifStr(exifData, "Make"), exifStr(exifData, "Model"), exifStr(exifData, "LensModel"),
-		exifStr(exifData, "ExposureTime"),
-		exifFloat(exifData, "FNumber"),
-		exifInt(exifData, "ISO"),
-		exifFloat(exifData, "FocalLength"),
-		exifFloat(exifData, "FocalLengthIn35mmFormat"),
-		exifFloat(exifData, "GPSLatitude"), exifFloat(exifData, "GPSLongitude"),
-		exifStr(exifData, "ColorSpace"),
-		rawJSON,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert photo_metadata: %w", err)
-	}
-
-	// Generate image variants and DZI tile pyramid
-	if err := imaging.GenerateAllVariants(path, dataPath, itemID); err != nil {
-		return fmt.Errorf("generate variants: %w", err)
-	}
-	if err := imaging.GenerateDZI(path, dataPath, itemID); err != nil {
-		return fmt.Errorf("generate DZI: %w", err)
-	}
-
-	// Generate tiny AVIF placeholder (replaces blurhash — no external dependency)
-	placeholder, err := imaging.GeneratePlaceholder(path)
-	if err != nil {
-		slog.Warn("placeholder generation failed", "path", path, "err", err)
-	}
-
-	_, err = db.Exec(ctx,
-		`UPDATE photo_metadata
-		 SET placeholder = $2, variants_generated_at = now()
-		 WHERE media_item_id = $1`,
-		itemID, placeholder,
-	)
-
-	slog.Debug("Finished processing file", "path", path)
-
-	return err
-}
-
-// hashFilePrefix reads the first 64KB of a file and returns an FNV-1a hex string.
-// Used for change detection — not a security hash.
-func hashFilePrefix(path string) (string, error) {
+// computeFileHash returns a BLAKE2b-256 hex hash of the file's content.
+// Files ≤ 2 MB are fully hashed. Larger files use a partial strategy:
+// hash(first 1 MB ∥ last 1 MB ∥ uint64(size)), which is fast for large
+// video files while remaining practically collision-free.
+// The result is stored on the media_item record and used to address derived data on disk.
+func computeFileHash(path string, size int64) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 
-	h := fnv.New64a()
-	buf := make([]byte, 64*1024)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.ErrUnexpectedEOF {
+	h, err := blake2b.New256(nil)
+	if err != nil {
 		return "", err
 	}
-	h.Write(buf[:n])
-	return fmt.Sprintf("%x", h.Sum64()), nil
-}
 
-// ─── Exiftool stay-open process ───────────────────────────────────────────────
-
-// exiftoolProcess wraps a persistent exiftool process using stay_open mode.
-// One process is started per scan job and reused for every file — avoids
-// per-file Perl startup overhead which would be ~150ms × file count.
-type exiftoolProcess struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Scanner
-	mu     sync.Mutex
-}
-
-func newExiftoolProcess() (*exiftoolProcess, error) {
-	// TODO: Evaluate if all these args are appropriate
-	cmd := exec.Command("exiftool",
-		"-stay_open", "true",
-		"-@", "-",
-		"-common_args",
-		"-json",
-		"-struct",
-		"-n",            // numeric output for GPS, FNumber etc.
-		"-GPSLatitude#", // force numeric GPS
-		"-GPSLongitude#",
-		"-largefilesupport",
-	)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start exiftool: %w", err)
-	}
-
-	return &exiftoolProcess{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewScanner(stdoutPipe),
-	}, nil
-}
-
-// extract sends a single file path to the running exiftool process and
-// returns its metadata as a raw map. Thread-safe via mutex.
-func (e *exiftoolProcess) extract(path string) (map[string]any, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Send filename + -execute sentinel
-	if _, err := fmt.Fprintf(e.stdin, "%s\n-execute\n", path); err != nil {
-		return nil, fmt.Errorf("write to exiftool: %w", err)
-	}
-
-	// Read lines until exiftool writes "{ready}" as the completion sentinel
-	var sb strings.Builder
-	for e.stdout.Scan() {
-		line := e.stdout.Text()
-		if line == "{ready}" {
-			break
+	if size <= fullHashThreshold {
+		if _, err := io.Copy(h, f); err != nil {
+			return "", err
 		}
-		sb.WriteString(line)
-		//		sb.WriteByte('\n')
-	}
-	if err := e.stdout.Err(); err != nil {
-		return nil, fmt.Errorf("read from exiftool: %w", err)
-	}
+	} else {
+		buf := make([]byte, partialHashBlock)
 
-	// exiftool -json always returns an array
-	var results []map[string]any
-	if err := json.Unmarshal([]byte(sb.String()), &results); err != nil {
-		return nil, fmt.Errorf("parse exiftool json: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("no exiftool results for %s", path)
-	}
-
-	return results[0], nil
-}
-
-func (e *exiftoolProcess) close() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	_, _ = fmt.Fprintln(e.stdin, "-stay_open\nfalse")
-	_ = e.stdin.Close()
-	_ = e.cmd.Wait()
-}
-
-// ─── Exiftool field helpers ───────────────────────────────────────────────────
-// These extract typed values from the raw map exiftool returns.
-// All return nil/zero on missing or unparseable fields — never panic.
-// TODO: Why are these returning pointers and not primitives??
-
-func exifStr(m map[string]any, key string) *string {
-	v, ok := m[key]
-	if !ok || v == nil {
-		return nil
-	}
-	s := fmt.Sprintf("%v", v)
-	return &s
-}
-
-func exifInt(m map[string]any, key string) *int {
-	v, ok := m[key]
-	if !ok || v == nil {
-		return nil
-	}
-	switch t := v.(type) {
-	case float64:
-		i := int(t)
-		return &i
-	case string:
-		i, err := strconv.Atoi(t)
-		if err != nil {
-			return nil
+		// First 1 MB
+		n, err := io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return "", err
 		}
-		return &i
-	}
-	// TODO: What if the type is already an int? Is that possible?
-	return nil
-}
+		h.Write(buf[:n])
 
-func exifFloat(m map[string]any, key string) *float64 {
-	v, ok := m[key]
-	if !ok || v == nil {
-		return nil
-	}
-	switch t := v.(type) {
-	case float64:
-		return &t
-	case string:
-		f, err := strconv.ParseFloat(t, 64)
-		if err != nil {
-			return nil
+		// Last 1 MB
+		if _, err := f.Seek(-partialHashBlock, io.SeekEnd); err != nil {
+			return "", err
 		}
-		return &f
-	}
-	// TODO: Can it be an int?
-	return nil
-}
+		n, err = io.ReadFull(f, buf)
+		if err != nil && err != io.ErrUnexpectedEOF {
+			return "", err
+		}
+		h.Write(buf[:n])
 
-func exifTime(m map[string]any, key string) *time.Time {
-	v, ok := m[key]
-	if !ok || v == nil {
-		return nil
+		// File size as big-endian uint64 — distinguishes files that differ only in size
+		var sizeBuf [8]byte
+		binary.BigEndian.PutUint64(sizeBuf[:], uint64(size))
+		h.Write(sizeBuf[:])
 	}
-	s, ok := v.(string)
-	if !ok {
-		return nil
-	}
-	// Exiftool DateTimeOriginal format: "2023:06:15 14:30:00"
-	// TODO: Do we handle TZ at all??
-	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, time.Local)
-	if err != nil {
-		return nil
-	}
-	return &t
+
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

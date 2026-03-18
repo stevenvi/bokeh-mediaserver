@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 )
@@ -26,9 +24,9 @@ type adminHandler struct {
 // POST /api/v1/admin/collections
 func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name     string `json:"name"`
-		Type     string `json:"type"`
-		RootPath string `json:"root_path"`
+		Name         string `json:"name"`
+		Type         string `json:"type"`
+		RelativePath string `json:"relative_path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -37,31 +35,40 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 	body.Name = strings.TrimSpace(body.Name)
 	body.Type = strings.TrimSpace(body.Type)
-	body.RootPath = strings.TrimSpace(body.RootPath)
-	if body.Name == "" || body.Type == "" || body.RootPath == "" {
-		writeError(w, http.StatusBadRequest, "name, type, and root_path are required")
+	body.RelativePath = strings.TrimSpace(body.RelativePath)
+	if body.Name == "" || body.Type == "" || body.RelativePath == "" {
+		writeError(w, http.StatusBadRequest, "name, type, and relative_path are required")
 		return
 	}
 
-	var id int
+	var id int64
 	err := h.db.QueryRow(r.Context(),
-		`INSERT INTO collections (name, type, root_path)
+		`INSERT INTO collections (name, type, relative_path)
 		 VALUES ($1, $2, $3)
 		 RETURNING id`,
-		body.Name, body.Type, body.RootPath,
+		body.Name, body.Type, body.RelativePath,
 	).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create collection: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]int{"id": id})
+	// Auto-queue a scan for the newly created collection
+	relatedType := "collection"
+	jobID, err := jobs.Create(r.Context(), h.db, "library_scan", &id, &relatedType)
+	if err != nil {
+		slog.Warn("auto-queue scan for new collection", "collection_id", id, "err", err)
+	} else {
+		slog.Info("auto-queued scan for new collection", "collection_id", id, "job_id", jobID)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "scan_job_id": jobID})
 }
 
 // GET /api/v1/admin/collections
 func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(),
-		`SELECT id, name, type, root_path,
+		`SELECT id, name, type, relative_path,
 		        is_enabled, last_scanned_at, created_at
 		 FROM collections ORDER BY name`,
 	)
@@ -75,7 +82,7 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Collection
 		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Type, &c.RootPath,
+			&c.ID, &c.Name, &c.Type, &c.RelativePath,
 			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt,
 		); err != nil {
 			slog.Warn("Row scan error", "error", err)
@@ -89,19 +96,17 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/admin/collections/:id/scan
 func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
-	collectionID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
-	// Fetch collection to get root_path
-	var rootPath string
 	var isEnabled bool
 	err = h.db.QueryRow(r.Context(),
-		`SELECT COALESCE(root_path, ''), is_enabled FROM collections WHERE id = $1`,
+		`SELECT is_enabled FROM collections WHERE id = $1`,
 		collectionID,
-	).Scan(&rootPath, &isEnabled)
+	).Scan(&isEnabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -122,7 +127,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the job row
+	// Create the job row — the dispatcher picks it up on next poll
 	relatedType := "collection"
 	jobID, err := jobs.Create(r.Context(), h.db, "library_scan", &collectionID, &relatedType)
 	if err != nil {
@@ -130,26 +135,13 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dispatch to worker pool asynchronously — don't block the HTTP response.
-	// Use context.Background() so the scan outlives the HTTP request context.
-	scanCtx := context.Background()
-	mediaPath := h.mediaPath
-	dataPath := h.dataPath
-	pool := h.pool
-	db := h.db
-	go func() {
-		slog.Info("Enqueuing scan job", "job_id", jobID)
-		pool.Submit(func() {
-			indexer.RunScan(scanCtx, db, pool, jobID, collectionID, rootPath, mediaPath, dataPath)
-		})
-	}()
-
-	writeJSON(w, http.StatusAccepted, map[string]int{"job_id": jobID})
+	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID)
+	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }
 
 // GET /api/v1/admin/jobs/:id
 func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
-	jobID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
@@ -164,10 +156,32 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+// POST /api/v1/admin/maintenance/orphan-cleanup
+func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobs.Create(r.Context(), h.db, "orphan_cleanup", nil, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+	slog.Info("orphan cleanup job queued", "job_id", jobID)
+	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
+// POST /api/v1/admin/maintenance/integrity-check
+func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Request) {
+	jobID, err := jobs.Create(r.Context(), h.db, "integrity_check", nil, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+	slog.Info("integrity check job queued", "job_id", jobID)
+	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
 // GET /api/v1/admin/jobs/:id/events — SSE progress stream
 // TODO: We need to actually properly send down progress updates while jobs are in progress
 func (h *adminHandler) jobEvents(w http.ResponseWriter, r *http.Request) {
-	jobID, err := strconv.Atoi(chi.URLParam(r, "id"))
+	jobID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
