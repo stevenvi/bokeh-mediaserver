@@ -21,6 +21,7 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 func main() {
@@ -61,8 +62,16 @@ func run() error {
 
 	// ── Startup recovery ──────────────────────────────────────────────────────
 	slog.Info("running startup recovery")
-	if err := jobs.RecoverStuckJobs(ctx, db_pool); err != nil {
+	jobRepo := repository.NewJobRepository(db_pool)
+	mediaRepo := repository.NewMediaItemRepository(db_pool)
+	if err := jobRepo.RecoverStuck(ctx); err != nil {
 		return fmt.Errorf("recovery: %w", err)
+	}
+	if count, err := mediaRepo.CountPendingVariants(ctx); err != nil {
+		return fmt.Errorf("count incomplete variants: %w", err)
+	} else if count > 0 {
+		slog.Warn("photos pending variant generation — will process on next scan",
+			"count", count)
 	}
 
 	// ── Ensure data path exists ───────────────────────────────────────────────

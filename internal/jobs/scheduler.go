@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
@@ -20,14 +21,18 @@ const (
 // appropriate times. Schedules are re-read from the DB periodically to pick
 // up admin changes without requiring a restart.
 type Scheduler struct {
-	db     utils.DBTX
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	jobs        *repository.JobRepository
+	collections *repository.CollectionRepository
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewScheduler creates a new scheduler.
 func NewScheduler(db utils.DBTX) *Scheduler {
-	return &Scheduler{db: db}
+	return &Scheduler{
+		jobs:        repository.NewJobRepository(db),
+		collections: repository.NewCollectionRepository(db),
+	}
 }
 
 // Start begins the scheduler loop.
@@ -54,10 +59,7 @@ type ScheduleConfig struct {
 }
 
 func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
-	var scanSched, integritySched *string
-	err := s.db.QueryRow(ctx,
-		`SELECT scan_schedule, integrity_schedule FROM server_config WHERE id = 1`,
-	).Scan(&scanSched, &integritySched)
+	scanSched, integritySched, err := s.jobs.LoadSchedules(ctx)
 	if err != nil {
 		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
 		return ScheduleConfig{
@@ -150,30 +152,14 @@ func (s *Scheduler) run(ctx context.Context) {
 func (s *Scheduler) TriggerScans(ctx context.Context) {
 	slog.Info("scheduled scan triggered")
 
-	rows, err := s.db.Query(ctx,
-		`SELECT id FROM collections
-		 WHERE parent_collection_id IS NULL AND is_enabled`,
-	)
+	collIDs, err := s.collections.ListTopLevelEnabled(ctx)
 	if err != nil {
 		slog.Error("query collections for scheduled scan", "err", err)
 		return
 	}
 
-	// Collect all IDs before processing — pgx requires the rows cursor
-	// to be closed before issuing further queries on the same connection.
-	var collIDs []int64
-	for rows.Next() {
-		var collID int64
-		if err := rows.Scan(&collID); err != nil {
-			slog.Warn("scan collection row", "err", err)
-			continue
-		}
-		collIDs = append(collIDs, collID)
-	}
-	rows.Close()
-
 	for _, collID := range collIDs {
-		active, err := IsActive(ctx, s.db, "library_scan", collID)
+		active, err := s.jobs.IsActive(ctx, "library_scan", collID)
 		if err != nil {
 			slog.Warn("check active scan", "collection_id", collID, "err", err)
 			continue
@@ -184,7 +170,7 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 		}
 
 		relatedType := "collection"
-		jobID, err := Create(ctx, s.db, "library_scan", &collID, &relatedType)
+		jobID, err := s.jobs.Create(ctx, "library_scan", &collID, &relatedType)
 		if err != nil {
 			slog.Error("create scheduled scan job", "collection_id", collID, "err", err)
 			continue
@@ -197,7 +183,7 @@ func (s *Scheduler) TriggerIntegrityCheck(ctx context.Context) {
 	slog.Info("scheduled integrity check triggered")
 
 	// Only create if not already active
-	active, err := IsActiveByType(ctx, s.db, "integrity_check")
+	active, err := s.jobs.IsActiveByType(ctx, "integrity_check")
 	if err != nil {
 		slog.Error("check active integrity job", "err", err)
 		return
@@ -207,7 +193,7 @@ func (s *Scheduler) TriggerIntegrityCheck(ctx context.Context) {
 		return
 	}
 
-	jobID, err := Create(ctx, s.db, "integrity_check", nil, nil)
+	jobID, err := s.jobs.Create(ctx, "integrity_check", nil, nil)
 	if err != nil {
 		slog.Error("create scheduled integrity job", "err", err)
 		return

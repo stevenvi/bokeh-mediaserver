@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 // JobHandler processes a single job. The job is already marked as 'running' in the DB.
@@ -22,9 +23,10 @@ type handlerEntry struct {
 // Dispatcher polls the database for queued jobs and routes them to the
 // appropriate worker pool based on their registered handler.
 type Dispatcher struct {
-	db       utils.DBTX
-	handlers map[string]handlerEntry
-	mu       sync.RWMutex
+	handlerDB utils.DBTX // passed to job handlers
+	jobs      *repository.JobRepository
+	handlers  map[string]handlerEntry
+	mu        sync.RWMutex
 
 	mainPool       *Pool
 	processingPool *Pool
@@ -37,7 +39,8 @@ type Dispatcher struct {
 // mainPool handles scan/maintenance jobs; processingPool handles media processing.
 func NewDispatcher(db utils.DBTX, mainPool, processingPool *Pool) *Dispatcher {
 	return &Dispatcher{
-		db:             db,
+		handlerDB:      db,
+		jobs:           repository.NewJobRepository(db),
 		handlers:       make(map[string]handlerEntry),
 		mainPool:       mainPool,
 		processingPool: processingPool,
@@ -121,7 +124,7 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 			return
 		}
 
-		job, err := ClaimNextJob(ctx, d.db, jobTypes)
+		job, err := d.jobs.ClaimNext(ctx, jobTypes)
 		if err != nil {
 			slog.Error("claim next job", "err", err)
 			return
@@ -133,7 +136,7 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 		entry, ok := d.handlers[job.Type]
 		if !ok {
 			slog.Error("no handler registered for job type", "type", job.Type)
-			_ = MarkFailed(ctx, d.db, job.ID, "no handler registered for job type: "+job.Type)
+			_ = d.jobs.MarkFailed(ctx, job.ID, "no handler registered for job type: "+job.Type)
 			continue
 		}
 
@@ -142,11 +145,11 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 		capturedJob := job
 		capturedHandler := entry.handler
 		pool.Submit(func() {
-			if err := capturedHandler(ctx, d.db, capturedJob); err != nil {
+			if err := capturedHandler(ctx, d.handlerDB, capturedJob); err != nil {
 				slog.Error("job failed", "job_id", capturedJob.ID, "type", capturedJob.Type, "err", err)
-				_ = MarkFailed(ctx, d.db, capturedJob.ID, err.Error())
+				_ = d.jobs.MarkFailed(ctx, capturedJob.ID, err.Error())
 			} else {
-				_ = MarkDone(ctx, d.db, capturedJob.ID)
+				_ = d.jobs.MarkDone(ctx, capturedJob.ID)
 			}
 		})
 	}

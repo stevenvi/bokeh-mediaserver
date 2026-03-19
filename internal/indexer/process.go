@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
-	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
@@ -22,31 +22,30 @@ import (
 //
 // The worker parameter provides a persistent exiftool process scoped to the
 // processing pool worker goroutine that runs this handler.
-func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath string) jobs.JobHandler {
+func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		if job.RelatedID == nil {
 			return fmt.Errorf("process_media job %d has no related_id", job.ID)
 		}
 		itemID := *job.RelatedID
 
+		mediaRepo := repository.NewMediaItemRepository(db)
+		jobRepo := repository.NewJobRepository(db)
+
 		// Fetch the media item
-		var relativePath, mimeType, fileHash string
-		err := db.QueryRow(ctx,
-			`SELECT relative_path, mime_type, file_hash FROM media_items WHERE id = $1 AND missing_since IS NULL`,
-			itemID,
-		).Scan(&relativePath, &mimeType, &fileHash)
+		relativePath, mimeType, fileHash, err := mediaRepo.GetForProcessing(ctx, itemID)
 		if err != nil {
 			return fmt.Errorf("fetch media item %d: %w", itemID, err)
 		}
 
 		fsPath := filepath.Join(mediaPath, relativePath)
 
-		_ = jobs.UpdateProgress(ctx, db, job.ID, fmt.Sprintf("processing %s", fsPath))
+		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("processing %s", fsPath))
 
 		// Only process images for now
 		if !strings.HasPrefix(mimeType, "image/") {
-			_ = jobs.UpdateProgress(ctx, db, job.ID, "skipping non-image media")
-			_ = jobs.Delete(ctx, db, job.ID)
+			_ = jobRepo.UpdateProgress(ctx, job.ID, "skipping non-image media")
+			_ = jobRepo.Delete(ctx, job.ID)
 			return nil
 		}
 
@@ -64,38 +63,14 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 
 		// Update title from exiftool composite Title if available; fall back to filename already set at scan time.
 		if title := utils.ExifStr(exifData, "Title"); title != nil && *title != "" {
-			if _, err := db.Exec(ctx, `UPDATE media_items SET title = $2 WHERE id = $1`, itemID, *title); err != nil {
+			if err := mediaRepo.UpdateTitle(ctx, itemID, *title); err != nil {
 				slog.Warn("update title from exif", "item_id", itemID, "err", err)
 			}
 		}
 
 		// Upsert photo_metadata
 		rawJSON, _ := json.Marshal(exifData)
-		_, err = db.Exec(ctx,
-			`INSERT INTO photo_metadata
-			     (media_item_id, width_px, height_px, created_at,
-			      camera_make, camera_model, lens_model,
-			      shutter_speed, aperture, iso,
-			      focal_length_mm, focal_length_35mm_equiv,
-			      color_space, description, exif_raw)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-			 ON CONFLICT (media_item_id) DO UPDATE SET
-			     width_px                = EXCLUDED.width_px,
-			     height_px               = EXCLUDED.height_px,
-			     created_at              = EXCLUDED.created_at,
-			     camera_make             = EXCLUDED.camera_make,
-			     camera_model            = EXCLUDED.camera_model,
-			     lens_model              = EXCLUDED.lens_model,
-			     shutter_speed           = EXCLUDED.shutter_speed,
-			     aperture                = EXCLUDED.aperture,
-			     iso                     = EXCLUDED.iso,
-			     focal_length_mm         = EXCLUDED.focal_length_mm,
-			     focal_length_35mm_equiv = EXCLUDED.focal_length_35mm_equiv,
-			     color_space             = EXCLUDED.color_space,
-			     description             = EXCLUDED.description,
-			     exif_raw                = EXCLUDED.exif_raw,
-			     variants_generated_at   = NULL`,
-			itemID,
+		err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
 			utils.ExifInt(exifData, "ImageWidth"), utils.ExifInt(exifData, "ImageHeight"),
 			takenAt(fsPath, exifData),
 			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
@@ -112,7 +87,7 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			return fmt.Errorf("upsert photo_metadata: %w", err)
 		}
 
-		_ = jobs.UpdateProgress(ctx, db, job.ID, "generating variants")
+		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
 
 		// Generate image variants and DZI tile pyramid
 		if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
@@ -123,23 +98,19 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		}
 
 		// Generate tiny placeholder
-		placeholder, err := imaging.GeneratePlaceholder(fsPath)
-		if err != nil {
+		var placeholder *string
+		if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
 			slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
+		} else {
+			placeholder = &p
 		}
 
-		_, err = db.Exec(ctx,
-			`UPDATE photo_metadata
-			 SET placeholder = $2, variants_generated_at = now()
-			 WHERE media_item_id = $1`,
-			itemID, placeholder,
-		)
-		if err != nil {
+		if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
 			return fmt.Errorf("update variants_generated_at: %w", err)
 		}
 
 		slog.Debug("finished processing media item", "item_id", itemID)
-		_ = jobs.Delete(ctx, db, job.ID)
+		_ = jobRepo.Delete(ctx, job.ID)
 		return nil
 	}
 }
@@ -186,25 +157,3 @@ func takenAt(fsPath string, exifData map[string]any) *time.Time {
 	return earliest
 }
 
-// HandleScanJob is a job handler for library_scan jobs.
-// It performs enumeration only — heavy processing is queued as separate process_media jobs.
-func HandleScanJob(mediaPath, dataPath string) jobs.JobHandler {
-	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		if job.RelatedID == nil {
-			return fmt.Errorf("library_scan job %d has no related_id", job.ID)
-		}
-		collectionID := *job.RelatedID
-
-		// Fetch collection relative_path
-		var relativePath string
-		err := db.QueryRow(ctx,
-			`SELECT COALESCE(relative_path, '') FROM collections WHERE id = $1`,
-			collectionID,
-		).Scan(&relativePath)
-		if err != nil {
-			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
-		}
-
-		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath)
-	}
-}

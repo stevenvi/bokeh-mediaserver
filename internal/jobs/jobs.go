@@ -2,16 +2,12 @@ package jobs
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 // Pool is a worker pool with an unbounded submit queue.
@@ -115,186 +111,14 @@ func (p *Pool) Workers() int {
 	return p.workerCount
 }
 
-// ─── DB helpers ───────────────────────────────────────────────────────────────
-
-// ClaimNextJob atomically claims the next queued job of one of the given types.
-// Returns nil, nil if no job is available. Uses SKIP LOCKED to avoid contention.
-func ClaimNextJob(ctx context.Context, db utils.DBTX, jobTypes []string) (*models.Job, error) {
-	var j models.Job
-	err := db.QueryRow(ctx,
-		`UPDATE jobs SET status = 'running', started_at = now()
-		 WHERE id = (
-		     SELECT id FROM jobs
-		     WHERE status = 'queued' AND type = ANY($1)
-		     ORDER BY queued_at
-		     LIMIT 1
-		     FOR UPDATE SKIP LOCKED
-		 ) RETURNING id, type, status, related_id, related_type,
-		             log, error_message,
-		             queued_at, started_at, completed_at`,
-		jobTypes,
-	).Scan(
-		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
-		&j.Log, &j.ErrorMessage,
-		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &j, nil
-}
-
-// Create inserts a new job row and returns its ID.
-func Create(ctx context.Context, db utils.DBTX, jobType string, relatedID *int64, relatedType *string) (int64, error) {
-	var id int64
-	err := db.QueryRow(ctx,
-		`INSERT INTO jobs (type, related_id, related_type)
-		 VALUES ($1, $2, $3)
-		 RETURNING id`,
-		jobType, relatedID, relatedType,
-	).Scan(&id)
-	return id, err
-}
-
-// MarkRunning sets a job to running status with the current timestamp.
-func MarkRunning(ctx context.Context, db utils.DBTX, jobID int64) error {
-	_, err := db.Exec(ctx,
-		`UPDATE jobs SET status = 'running', started_at = now() WHERE id = $1`,
-		jobID,
-	)
-	return err
-}
-
-// UpdateProgress updates the progress and appends a line to the log.
-func UpdateProgress(ctx context.Context, db utils.DBTX, jobID int64, msg string) error {
-	_, err := db.Exec(ctx,
-		`UPDATE jobs
-		 SET log = COALESCE(log, '') || $2
-		 WHERE id = $1`,
-		jobID, msg+"\n",
-	)
-	return err
-}
-
-// MarkDone sets a job to done status.
-func MarkDone(ctx context.Context, db utils.DBTX, jobID int64) error {
-	_, err := db.Exec(ctx,
-		`UPDATE jobs
-		 SET status = 'done', completed_at = now()
-		 WHERE id = $1`,
-		jobID,
-	)
-	return err
-}
-
-// MarkFailed sets a job to failed status with an error message.
-func MarkFailed(ctx context.Context, db utils.DBTX, jobID int64, errMsg string) error {
-	_, err := db.Exec(ctx,
-		`UPDATE jobs
-		 SET status = 'failed', error_message = $2, completed_at = now()
-		 WHERE id = $1`,
-		jobID, errMsg,
-	)
-	return err
-}
-
-// Delete removes a job row. Used for process_media jobs on success — these
-// generate high volumes of history with no ongoing value once complete.
-func Delete(ctx context.Context, db utils.DBTX, jobID int64) error {
-	_, err := db.Exec(ctx, `DELETE FROM jobs WHERE id = $1`, jobID)
-	return err
-}
-
-// GetByID returns a single job by ID.
-func GetByID(ctx context.Context, db utils.DBTX, jobID int64) (*models.Job, error) {
-	var j models.Job
-	err := db.QueryRow(ctx,
-		`SELECT id, type, status, related_id, related_type,
-		        log, error_message,
-		        queued_at, started_at, completed_at
-		 FROM jobs WHERE id = $1`,
-		jobID,
-	).Scan(
-		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
-		&j.Log, &j.ErrorMessage,
-		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &j, nil
-}
-
-// IsActiveByType returns true if any job of the given type is queued or running,
-// regardless of related ID. Used for singleton jobs like integrity_check.
-func IsActiveByType(ctx context.Context, db utils.DBTX, jobType string) (bool, error) {
-	var count int
-	err := db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM jobs
-		 WHERE type = $1 AND status IN ('queued', 'running')`,
-		jobType,
-	).Scan(&count)
-	return count > 0, err
-}
-
-// IsActive returns true if a job of the given type is queued or running
-// for the given related ID. Used to prevent duplicate job submission.
-func IsActive(ctx context.Context, db utils.DBTX, jobType string, relatedID int64) (bool, error) {
-	var count int
-	err := db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM jobs
-		 WHERE type = $1 AND related_id = $2 AND status IN ('queued', 'running')`,
-		jobType, relatedID,
-	).Scan(&count)
-	return count > 0, err
-}
-
-// RecoverStuckJobs resets any jobs left in 'running' state from a previous
-// hard-killed server instance back to 'queued'. Called during startup.
-func RecoverStuckJobs(ctx context.Context, db utils.DBTX) error {
-	tag, err := db.Exec(ctx,
-		`UPDATE jobs SET status = 'queued', started_at = NULL
-		 WHERE status = 'running'`,
-	)
-	if err != nil {
-		return fmt.Errorf("recover stuck jobs: %w", err)
-	}
-	if tag.RowsAffected() > 0 {
-		slog.Warn("recovered stuck jobs from previous run",
-			"count", tag.RowsAffected())
-	}
-
-	// Re-queue any photo_metadata rows where variant generation was interrupted
-	var count int
-	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM photo_metadata
-		WHERE variants_generated_at IS NULL
-		AND media_item_id IN (
-			SELECT id FROM media_items WHERE missing_since IS NULL
-		)`,
-	).Scan(&count)
-	if err != nil {
-		return fmt.Errorf("count incomplete variants: %w", err)
-	}
-	if count > 0 {
-		slog.Warn("photos pending variant generation — will process on next scan",
-			"count", count)
-	}
-
-	return nil
-}
-
-// PollJobStatus polls a job until it reaches a terminal state.
-func PollJobStatus(ctx context.Context, db utils.DBTX, jobID int64, interval time.Duration) (*models.Job, error) {
+// PollStatus polls a job until it reaches a terminal state (done or failed).
+func PollStatus(ctx context.Context, jobs *repository.JobRepository, jobID int64, interval time.Duration) (*models.Job, error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(interval):
-			job, err := GetByID(ctx, db, jobID)
+			job, err := jobs.GetByID(ctx, jobID)
 			if err != nil {
 				return nil, err
 			}

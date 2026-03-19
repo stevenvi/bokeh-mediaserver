@@ -2,7 +2,6 @@ package testutil
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/db"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -132,11 +132,8 @@ func findRepoRoot() string {
 // InsertCollection is a test helper that creates a collection and returns its ID.
 func InsertCollection(t *testing.T, db utils.DBTX, name, colType, relativePath string) int64 {
 	t.Helper()
-	var id int64
-	err := db.QueryRow(context.Background(),
-		`INSERT INTO collections (name, type, relative_path) VALUES ($1, $2, $3) RETURNING id`,
-		name, colType, relativePath,
-	).Scan(&id)
+	repo := repository.NewCollectionRepository(db)
+	id, err := repo.Create(context.Background(), name, colType, relativePath)
 	require.NoError(t, err)
 	return id
 }
@@ -144,14 +141,18 @@ func InsertCollection(t *testing.T, db utils.DBTX, name, colType, relativePath s
 // InsertMediaItem is a test helper that creates a media_item and returns its ID.
 func InsertMediaItem(t *testing.T, db utils.DBTX, collectionID int64, title, relativePath, mimeType string) int64 {
 	t.Helper()
-	var id int64
-	err := db.QueryRow(context.Background(),
-		`INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
-		 VALUES ($1, $2, $3, 1024, 'abc123', $4) RETURNING id`,
-		collectionID, title, relativePath, mimeType,
-	).Scan(&id)
+	repo := repository.NewMediaItemRepository(db)
+	id, _, err := repo.Upsert(context.Background(), collectionID, title, relativePath, 1024, "abc123", mimeType)
 	require.NoError(t, err)
 	return id
+}
+
+// MustExec executes a SQL statement in a test, failing the test on error.
+// Use for test-specific setup that doesn't warrant a repository method.
+func MustExec(t *testing.T, db utils.DBTX, sql string, args ...any) {
+	t.Helper()
+	_, err := db.Exec(context.Background(), sql, args...)
+	require.NoError(t, err)
 }
 
 // IntPtr returns a pointer to the given int.
@@ -162,10 +163,3 @@ func Int64Ptr(v int64) *int64 { return &v }
 
 // StrPtr returns a pointer to the given string.
 func StrPtr(v string) *string { return &v }
-
-// MustExec runs a SQL statement and fails the test on error.
-func MustExec(t *testing.T, db utils.DBTX, sql string, args ...any) {
-	t.Helper()
-	_, err := db.Exec(context.Background(), sql, args...)
-	require.NoError(t, err, fmt.Sprintf("MustExec: %s", sql))
-}

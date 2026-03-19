@@ -69,3 +69,30 @@ type User struct {
 	IsAdmin   bool      `json:"is_admin"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// CollectionSummary is a lightweight view of a collection for user-facing lists.
+type CollectionSummary struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// SlideshowItem is a projection used by the slideshow endpoint.
+type SlideshowItem struct {
+	ID          int64   `json:"id"`
+	Title       string  `json:"title"`
+	MimeType    string  `json:"mime_type"`
+	TakenAt     any     `json:"taken_at"`
+	Placeholder any     `json:"placeholder"`
+	WidthPx     any     `json:"width_px"`
+	HeightPx    any     `json:"height_px"`
+}
+
+type SessionView struct {
+	ID         int64     `json:"id"`
+	DeviceName *string   `json:"device_name"`
+	IPAddress  *string   `json:"ip_address"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}

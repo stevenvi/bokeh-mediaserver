@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,11 +13,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 type adminHandler struct {
-	db          *pgxpool.Pool
+	db          *pgxpool.Pool // kept for Begin() in setCollectionAccess
+	users       *repository.UserRepository
+	sessions    *repository.SessionRepository
+	collections *repository.CollectionRepository
+	media       *repository.MediaItemRepository
+	jobs        *repository.JobRepository
 	pool        *jobs.Pool
 	authPlugins map[string]auth.Plugin
 	authHandler *authHandler
@@ -46,13 +50,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var id int64
-	err := h.db.QueryRow(r.Context(),
-		`INSERT INTO collections (name, type, relative_path)
-		 VALUES ($1, $2, $3)
-		 RETURNING id`,
-		body.Name, body.Type, body.RelativePath,
-	).Scan(&id)
+	id, err := h.collections.Create(r.Context(), body.Name, body.Type, body.RelativePath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create collection: "+err.Error())
 		return
@@ -60,7 +58,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 	// Auto-queue a scan for the newly created collection
 	relatedType := "collection"
-	jobID, err := jobs.Create(r.Context(), h.db, "library_scan", &id, &relatedType)
+	jobID, err := h.jobs.Create(r.Context(), "library_scan", &id, &relatedType)
 	if err != nil {
 		slog.Warn("auto-queue scan for new collection", "collection_id", id, "err", err)
 	} else {
@@ -72,30 +70,11 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 // GET /api/v1/admin/collections
 func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Query(r.Context(),
-		`SELECT id, name, type, relative_path,
-		        is_enabled, last_scanned_at, created_at
-		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
-	)
+	collections, err := h.collections.ListTopLevel(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
-
-	var collections []models.Collection
-	for rows.Next() {
-		var c models.Collection
-		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Type, &c.RelativePath,
-			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt,
-		); err != nil {
-			slog.Warn("Row scan error", "error", err)
-			continue
-		}
-		collections = append(collections, c)
-	}
-
 	writeJSON(w, http.StatusOK, collections)
 }
 
@@ -107,11 +86,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isEnabled bool
-	err = h.db.QueryRow(r.Context(),
-		`SELECT is_enabled FROM collections WHERE id = $1`,
-		collectionID,
-	).Scan(&isEnabled)
+	isEnabled, err := h.collections.GetEnabled(r.Context(), collectionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -122,7 +97,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent duplicate scans
-	active, err := jobs.IsActive(r.Context(), h.db, "library_scan", collectionID)
+	active, err := h.jobs.IsActive(r.Context(), "library_scan", collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "job check failed")
 		return
@@ -134,7 +109,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 
 	// Create the job row — the dispatcher picks it up on next poll
 	relatedType := "collection"
-	jobID, err := jobs.Create(r.Context(), h.db, "library_scan", &collectionID, &relatedType)
+	jobID, err := h.jobs.Create(r.Context(), "library_scan", &collectionID, &relatedType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
@@ -152,7 +127,7 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := jobs.GetByID(r.Context(), h.db, jobID)
+	job, err := h.jobs.GetByID(r.Context(), jobID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -163,7 +138,7 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/admin/maintenance/orphan-cleanup
 func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Request) {
-	jobID, err := jobs.Create(r.Context(), h.db, "orphan_cleanup", nil, nil)
+	jobID, err := h.jobs.Create(r.Context(), "orphan_cleanup", nil, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
@@ -174,7 +149,7 @@ func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Reque
 
 // POST /api/v1/admin/maintenance/integrity-check
 func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Request) {
-	jobID, err := jobs.Create(r.Context(), h.db, "integrity_check", nil, nil)
+	jobID, err := h.jobs.Create(r.Context(), "integrity_check", nil, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
@@ -216,7 +191,7 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.IsAdmin {
-		if _, err = h.db.Exec(r.Context(), `UPDATE users SET is_admin = true WHERE id = $1`, userID); err != nil {
+		if err := h.users.SetAdmin(r.Context(), userID, true); err != nil {
 			writeError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -240,12 +215,12 @@ func (h *adminHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tag, err := h.db.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, targetID)
+	affected, err := h.users.Delete(r.Context(), targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -261,10 +236,8 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var providerName string
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT auth_provider FROM users WHERE id = $1`, targetID,
-	).Scan(&providerName); err != nil {
+	providerName, err := h.users.GetAuthProvider(r.Context(), targetID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -288,47 +261,12 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.authHandler.deleteAllSessions(r.Context(), targetID); err != nil {
+	if err := h.sessions.DeleteAllForUser(r.Context(), targetID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// validateTopLevelCollections checks that all provided IDs exist and are top-level collections.
-// Returns a user-facing error message and HTTP status, or ("", 0) if all IDs are valid.
-func validateTopLevelCollections(ctx context.Context, db *pgxpool.Pool, ids []int64) (string, int) {
-	rows, err := db.Query(ctx,
-		`SELECT id, parent_collection_id IS NOT NULL AS is_sub
-		 FROM collections WHERE id = ANY($1::bigint[])`,
-		ids,
-	)
-	if err != nil {
-		return "db error", http.StatusInternalServerError
-	}
-	defer rows.Close()
-
-	found := make(map[int64]bool)
-	for rows.Next() {
-		var id int64
-		var isSub bool
-		if err := rows.Scan(&id, &isSub); err != nil {
-			continue
-		}
-		if isSub {
-			return fmt.Sprintf("collection %d is a sub-collection; access can only be granted to top-level collections", id), http.StatusBadRequest
-		}
-		found[id] = true
-	}
-	rows.Close()
-
-	for _, id := range ids {
-		if !found[id] {
-			return fmt.Sprintf("collection %d does not exist", id), http.StatusBadRequest
-		}
-	}
-	return "", 0
 }
 
 // GET /api/v1/admin/users/:id/sessions
@@ -354,15 +292,12 @@ func (h *adminHandler) revokeUserSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tag, err := h.db.Exec(r.Context(),
-		`DELETE FROM user_sessions WHERE id = $1 AND user_id = $2`,
-		sessionID, targetID,
-	)
+	affected, err := h.sessions.Delete(r.Context(), sessionID, targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -378,7 +313,7 @@ func (h *adminHandler) revokeAllUserSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.authHandler.deleteAllSessions(r.Context(), targetID); err != nil {
+	if err := h.sessions.DeleteAllForUser(r.Context(), targetID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -402,18 +337,12 @@ func (h *adminHandler) grantCollectionAccess(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if msg, status := validateTopLevelCollections(r.Context(), h.db, body.CollectionIDs); msg != "" {
+	if msg, status := h.collections.ValidateTopLevel(r.Context(), body.CollectionIDs); msg != "" {
 		writeError(w, status, msg)
 		return
 	}
 
-	_, err = h.db.Exec(r.Context(),
-		`INSERT INTO collection_access (user_id, collection_id)
-		 SELECT $1, unnest($2::bigint[])
-		 ON CONFLICT DO NOTHING`,
-		userID, body.CollectionIDs,
-	)
-	if err != nil {
+	if err := h.collections.GrantAccess(r.Context(), userID, body.CollectionIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -438,12 +367,13 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(body.CollectionIDs) > 0 {
-		if msg, status := validateTopLevelCollections(r.Context(), h.db, body.CollectionIDs); msg != "" {
+		if msg, status := h.collections.ValidateTopLevel(r.Context(), body.CollectionIDs); msg != "" {
 			writeError(w, status, msg)
 			return
 		}
 	}
 
+	// Transaction: atomically replace all access for this user
 	tx, err := h.db.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -451,20 +381,15 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback(r.Context())
 
-	if _, err = tx.Exec(r.Context(),
-		`DELETE FROM collection_access WHERE user_id = $1`, userID,
-	); err != nil {
+	txCollections := repository.NewCollectionRepository(tx)
+
+	if err := txCollections.DeleteAllAccess(r.Context(), userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
 	if len(body.CollectionIDs) > 0 {
-		if _, err = tx.Exec(r.Context(),
-			`INSERT INTO collection_access (user_id, collection_id)
-			 SELECT $1, unnest($2::bigint[])
-			 ON CONFLICT DO NOTHING`,
-			userID, body.CollectionIDs,
-		); err != nil {
+		if err := txCollections.GrantAccess(r.Context(), userID, body.CollectionIDs); err != nil {
 			writeError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -491,15 +416,39 @@ func (h *adminHandler) revokeCollectionAccess(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	_, err = h.db.Exec(r.Context(),
-		`DELETE FROM collection_access WHERE user_id = $1 AND collection_id = $2`,
-		userID, collectionID,
-	)
-	if err != nil {
+	if err := h.collections.RevokeAccess(r.Context(), userID, collectionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/v1/admin/media/:id/hide
+func (h *adminHandler) hideMediaItem(w http.ResponseWriter, r *http.Request) {
+	itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.media.SetHidden(r.Context(), itemID, true); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/v1/admin/media/:id/hide
+func (h *adminHandler) unhideMediaItem(w http.ResponseWriter, r *http.Request) {
+	itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.media.SetHidden(r.Context(), itemID, false); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -531,7 +480,7 @@ func (h *adminHandler) jobEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			job, err := jobs.GetByID(r.Context(), h.db, jobID)
+			job, err := h.jobs.GetByID(r.Context(), jobID)
 			if err != nil {
 				return
 			}

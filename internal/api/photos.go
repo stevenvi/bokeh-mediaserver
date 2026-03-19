@@ -8,13 +8,18 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
-	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
+func userIDFromRequest(r *http.Request) int64 {
+	claims := ClaimsFromContext(r.Context())
+	id, _ := strconv.ParseInt(claims.Subject, 10, 64)
+	return id
+}
+
 type photosHandler struct {
-	db        *pgxpool.Pool
+	media     *repository.MediaItemRepository
 	dataPath  string
 	mediaPath string
 }
@@ -27,37 +32,15 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var item models.MediaItem
-	err = h.db.QueryRow(r.Context(),
-		`SELECT id, collection_id, title, mime_type, ordinal
-		 FROM media_items WHERE id = $1`,
-		id,
-	).Scan(&item.ID, &item.CollectionID, &item.Title, &item.MimeType, &item.Ordinal)
+	item, err := h.media.GetByID(r.Context(), id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
 	}
 
-	var photo models.PhotoMetadata
-	err = h.db.QueryRow(r.Context(),
-		`SELECT width_px, height_px, created_at,
-		        camera_make, camera_model, lens_model,
-		        shutter_speed, aperture, iso,
-		        focal_length_mm, focal_length_35mm_equiv,
-		        color_space,
-		        placeholder
-		 FROM photo_metadata WHERE media_item_id = $1`,
-		id,
-	).Scan(
-		&photo.WidthPx, &photo.HeightPx, &photo.CreatedAt,
-		&photo.CameraMake, &photo.CameraModel, &photo.LensModel,
-		&photo.ShutterSpeed, &photo.Aperture, &photo.ISO,
-		&photo.FocalLengthMM, &photo.FocalLength35mmEquiv,
-		&photo.ColorSpace,
-		&photo.Placeholder,
-	)
+	photo, err := h.media.GetPhotoMetadata(r.Context(), id)
 	if err == nil {
-		item.Photo = &photo
+		item.Photo = photo
 	}
 
 	writeJSON(w, http.StatusOK, item)
@@ -71,10 +54,7 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var raw []byte
-	err = h.db.QueryRow(r.Context(),
-		`SELECT exif_raw FROM photo_metadata WHERE media_item_id = $1`, id,
-	).Scan(&raw)
+	raw, err := h.media.GetExifRaw(r.Context(), id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "EXIF data not found")
 		return
@@ -87,19 +67,15 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 
 // TODO: Are having both of these functions that query the DB for the same media item inefficient? Should we combine them into one query and pass the data down?
 func (h *photosHandler) getItemFsPath(id int64, r *http.Request) (string, error) {
-	var relativePath string
-	if err := h.db.QueryRow(r.Context(), `SELECT relative_path FROM media_items WHERE id = $1`, id).Scan(&relativePath); err != nil {
+	relativePath, err := h.media.GetRelativePath(r.Context(), id)
+	if err != nil {
 		return "", err
 	}
 	return filepath.Join(h.mediaPath, relativePath), nil
 }
 
 func (h *photosHandler) getItemHash(id int64, r *http.Request) (string, error) {
-	var hash string
-	if err := h.db.QueryRow(r.Context(), `SELECT file_hash FROM media_items WHERE id = $1`, id).Scan(&hash); err != nil {
-		return "", err
-	}
-	return hash, nil
+	return h.media.GetFileHash(r.Context(), id)
 }
 
 // GET /images/:id/:variant

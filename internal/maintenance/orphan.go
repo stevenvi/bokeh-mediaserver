@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
-	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
@@ -20,9 +20,12 @@ const orphanBatchSize = 256
 //
 // Directory structure: {base}/{hash[0:2]}/{hash[2:4]}/{hash[4:]}/
 // The full hash is reconstructed by concatenating the three directory name components.
-func HandleOrphanCleanup(dataPath string) jobs.JobHandler {
+func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		_ = jobs.UpdateProgress(ctx, db, job.ID, "starting orphan cleanup")
+		jobRepo := repository.NewJobRepository(db)
+		mediaRepo := repository.NewMediaItemRepository(db)
+
+		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting orphan cleanup")
 
 		var cleaned, checked int64
 
@@ -48,22 +51,10 @@ func HandleOrphanCleanup(dataPath string) jobs.JobHandler {
 				hashes[i] = e.hash
 			}
 
-			// Find which hashes exist in the DB
-			rows, err := db.Query(ctx,
-				`SELECT file_hash FROM media_items WHERE file_hash = ANY($1)`,
-				hashes,
-			)
+			existing, err := mediaRepo.FindHashesExisting(ctx, hashes)
 			if err != nil {
 				return fmt.Errorf("batch hash lookup: %w", err)
 			}
-			existing := make(map[string]struct{}, len(batch))
-			for rows.Next() {
-				var h string
-				if err := rows.Scan(&h); err == nil {
-					existing[h] = struct{}{}
-				}
-			}
-			rows.Close()
 
 			for _, e := range batch {
 				checked++
@@ -130,7 +121,7 @@ func HandleOrphanCleanup(dataPath string) jobs.JobHandler {
 		}
 
 		summary := fmt.Sprintf("orphan cleanup complete: %d checked, %d removed", checked, cleaned)
-		_ = jobs.UpdateProgress(ctx, db, job.ID, summary)
+		_ = jobRepo.UpdateProgress(ctx, job.ID, summary)
 		slog.Info(summary)
 		return nil
 	}

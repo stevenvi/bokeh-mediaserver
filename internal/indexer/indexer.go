@@ -13,7 +13,8 @@ import (
 
 	"golang.org/x/crypto/blake2b"
 
-	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
@@ -39,13 +40,17 @@ var supportedExtensions = map[string]string{
 func RunScan(ctx context.Context, db utils.DBTX,
 	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string) error {
 
+	jobRepo := repository.NewJobRepository(db)
+	colRepo := repository.NewCollectionRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
+
 	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
 	jobStart := time.Now()
 
 	logMsg := func(msg string) {
 		slog.Info(msg, "job_id", jobID, "collection_id", collectionID)
-		_ = jobs.UpdateProgress(ctx, db, jobID, msg)
+		_ = jobRepo.UpdateProgress(ctx, jobID, msg)
 	}
 
 	// Construct full path: mediaPath is base, rootPath is relative path within media
@@ -53,7 +58,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 	logMsg(fmt.Sprintf("scan started: %s", collectionPath))
 
 	// Phase 1 — walk directory tree and upsert sub-collections (folders)
-	pathToID, err := walkFolders(ctx, db, collectionID, collectionPath, mediaPath)
+	pathToID, err := walkFolders(ctx, colRepo, collectionID, collectionPath, mediaPath)
 	if err != nil {
 		return fmt.Errorf("walk folders: %w", err)
 	}
@@ -118,34 +123,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 
 		title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 
-		// Single-trip upsert: captures pre-existing state in CTE to detect changes
-		var itemID int64
-		var wasUnchanged bool
-		err = db.QueryRow(ctx, `
-			WITH prev AS (
-				SELECT id, file_size_bytes, file_hash
-				FROM media_items
-				WHERE relative_path = $3
-			),
-			upserted AS (
-				INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
-				VALUES ($1, $2, $3, $4, $5, $6)
-				ON CONFLICT (relative_path) DO UPDATE SET
-					indexed_at      = now(),
-					missing_since   = NULL,
-					collection_id   = EXCLUDED.collection_id,
-					file_size_bytes = EXCLUDED.file_size_bytes,
-					file_hash       = EXCLUDED.file_hash,
-					mime_type       = EXCLUDED.mime_type
-				RETURNING id
-			)
-			SELECT
-				u.id,
-				(p.id IS NOT NULL AND p.file_size_bytes = $4 AND p.file_hash = $5) AS was_unchanged
-			FROM upserted u
-			LEFT JOIN prev p ON true`,
-			folderCollectionID, title, relativePath, fileSize, fileHash, mimeType,
-		).Scan(&itemID, &wasUnchanged)
+		itemID, wasUnchanged, err := mediaRepo.Upsert(ctx, folderCollectionID, title, relativePath, fileSize, fileHash, mimeType)
 		if err != nil {
 			slog.Warn("upsert media_item failed", "path", path, "err", err)
 			errCount++
@@ -159,7 +137,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 
 		// Queue a process_media job for this item
 		relatedType := "media_item"
-		_, err = jobs.Create(ctx, db, "process_media", &itemID, &relatedType)
+		_, err = jobRepo.Create(ctx, "process_media", &itemID, &relatedType)
 		if err != nil {
 			slog.Warn("queue process_media job", "item_id", itemID, "err", err)
 			errCount++
@@ -175,33 +153,23 @@ func RunScan(ctx context.Context, db utils.DBTX,
 	}
 
 	// Phase 3 — mark files not seen this scan as missing
-	tag, err := db.Exec(ctx,
-		`UPDATE media_items
-		 SET missing_since = now()
-		 WHERE collection_id = $1
-		   AND missing_since IS NULL
-		   AND indexed_at < $2`,
-		collectionID, jobStart,
-	)
+	markedMissing, err := colRepo.MarkMissingSince(ctx, collectionID, jobStart)
 	if err != nil {
 		return fmt.Errorf("mark missing: %w", err)
 	}
 
 	summary := fmt.Sprintf("scan complete: %d enumerated, %d unchanged, %d queued for processing, %d errors, %d marked missing",
-		enumerated, unchanged, queued, errCount, tag.RowsAffected())
+		enumerated, unchanged, queued, errCount, markedMissing)
 	logMsg(summary)
 
-	_, _ = db.Exec(ctx,
-		`UPDATE collections SET last_scanned_at = now() WHERE id = $1`,
-		collectionID,
-	)
+	colRepo.TouchLastScanned(ctx, collectionID)
 
 	return nil
 }
 
 // walkFolders upserts a sub-collection row for each directory under rootPath.
 // Returns a map from absolute directory path to collection ID for use during file enumeration.
-func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
+func walkFolders(ctx context.Context, colRepo *repository.CollectionRepository, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
 	pathToID := map[string]int64{rootPath: rootCollectionID}
 
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
@@ -222,19 +190,7 @@ func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, roo
 		}
 
 		name := filepath.Base(path)
-		var id int64
-		err = db.QueryRow(ctx,
-			// TODO: ON CONFLICT clause seems redundant, is there a better way to do this?
-			`INSERT INTO collections (parent_collection_id, name, type, relative_path)
-			 VALUES ($1, $2,
-			     (SELECT type FROM collections WHERE id = $3),
-			     $4)
-			 ON CONFLICT (relative_path) WHERE relative_path IS NOT NULL
-			     DO UPDATE SET name                 = EXCLUDED.name,
-			                   parent_collection_id = EXCLUDED.parent_collection_id
-			 RETURNING id`,
-			parentID, name, rootCollectionID, relPath,
-		).Scan(&id)
+		id, err := colRepo.UpsertSubCollection(ctx, parentID, rootCollectionID, name, relPath)
 		if err != nil {
 			return fmt.Errorf("upsert folder %s: %w", path, err)
 		}
@@ -300,4 +256,23 @@ func computeFileHash(path string, size int64) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// HandleScanJob is a job handler for library_scan jobs.
+// It performs enumeration only — heavy processing is queued as separate process_media jobs.
+func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+		if job.RelatedID == nil {
+			return fmt.Errorf("library_scan job %d has no related_id", job.ID)
+		}
+		collectionID := *job.RelatedID
+
+		colRepo := repository.NewCollectionRepository(db)
+		relativePath, err := colRepo.GetRelativePath(ctx, collectionID)
+		if err != nil {
+			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
+		}
+
+		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath)
+	}
 }

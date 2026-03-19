@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +90,7 @@ func TestRunScan(t *testing.T) {
 		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath))
 
 		// Mark first scan's process jobs as done so they're not counted
-		testutil.MustExec(t, tx, `UPDATE jobs SET status = 'done' WHERE type = 'process_media'`)
+		testutil.MustExec(t, tx, "UPDATE jobs SET status = 'done' WHERE type = 'process_media'")
 
 		// Second scan — file hasn't changed
 		jobID2 := createTestJob(t, tx, "library_scan", &collID)
@@ -294,13 +295,9 @@ func copyFile(t *testing.T, src, dst string) {
 
 func createTestJob(t *testing.T, db utils.DBTX, jobType string, relatedID *int64) int64 {
 	t.Helper()
-	ctx := context.Background()
+	repo := repository.NewJobRepository(db)
 	relatedType := "collection"
-	var jobID int64
-	err := db.QueryRow(ctx,
-		`INSERT INTO jobs (type, related_id, related_type) VALUES ($1, $2, $3) RETURNING id`,
-		jobType, relatedID, relatedType,
-	).Scan(&jobID)
+	id, err := repo.Create(context.Background(), jobType, relatedID, &relatedType)
 	require.NoError(t, err)
-	return jobID
+	return id
 }

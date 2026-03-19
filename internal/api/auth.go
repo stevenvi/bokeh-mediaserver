@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,24 +10,21 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type authHandler struct {
-	db      *pgxpool.Pool
-	plugins map[string]auth.Plugin
-	secret  string
+	db       utils.DBTX
+	users    *repository.UserRepository
+	sessions *repository.SessionRepository
+	plugins  map[string]auth.Plugin
+	secret   string
 }
 
-func newAuthHandler(db *pgxpool.Pool, secret string, plugins map[string]auth.Plugin) *authHandler {
-	return &authHandler{db: db, secret: secret, plugins: plugins}
-}
-
-// deleteAllSessions removes every active session for the given user.
-func (h *authHandler) deleteAllSessions(ctx context.Context, userID int64) error {
-	_, err := h.db.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, userID)
-	return err
+func newAuthHandler(db utils.DBTX, users *repository.UserRepository, sessions *repository.SessionRepository, secret string, plugins map[string]auth.Plugin) *authHandler {
+	return &authHandler{db: db, users: users, sessions: sessions, secret: secret, plugins: plugins}
 }
 
 // clientIP returns the request's remote IP, stripping the port if present.
@@ -80,10 +76,8 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var isAdmin bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT is_admin FROM users WHERE id = $1`, userID,
-	).Scan(&isAdmin); err != nil {
+	isAdmin, err := h.users.GetAdminStatus(r.Context(), userID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user lookup failed")
 		return
 	}
@@ -94,20 +88,13 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sessionID int64
-	err = h.db.QueryRow(r.Context(),
-		`INSERT INTO user_sessions (user_id, token_hash, expires_at, device_name, ip_address)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id`,
-		userID, hashRefresh, time.Now().Add(auth.RefreshTokenTTL),
-		nullableString(body.DeviceName), clientIP(r),
-	).Scan(&sessionID)
+	sessionID, err := h.sessions.Create(r.Context(), userID, hashRefresh, time.Now().Add(auth.RefreshTokenTTL), nullableString(body.DeviceName), clientIP(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "session creation failed")
 		return
 	}
 
-	_, _ = h.db.Exec(r.Context(), `UPDATE users SET last_seen_at = now() WHERE id = $1`, userID)
+	h.users.TouchLastSeen(r.Context(), userID)
 
 	accessToken, err := auth.IssueToken(userID, isAdmin, h.secret)
 	if err != nil {
@@ -138,13 +125,9 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 
 	// Check if this is a replayed (already-rotated) token — indicates theft.
-	var stolenUserID int64
-	err := h.db.QueryRow(r.Context(),
-		`SELECT user_id FROM user_sessions WHERE previous_token_hash = $1`, hash,
-	).Scan(&stolenUserID)
-	if err == nil {
-		// A previously rotated token was presented again. Revoke all sessions for this user.
-		_ = h.deleteAllSessions(r.Context(), int64(stolenUserID))
+	stolenUserID, found, _ := h.sessions.FindByPreviousTokenHash(r.Context(), hash)
+	if found {
+		_ = h.sessions.DeleteAllForUser(r.Context(), stolenUserID)
 		slog.Warn("refresh token reuse detected — all sessions revoked",
 			"user_id", stolenUserID, "ip", ip)
 		writeError(w, http.StatusUnauthorized, "refresh token reuse detected; all sessions have been revoked")
@@ -152,23 +135,13 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Normal path: find the active session.
-	var sessionID int64
-	var userID int64
-	var isAdmin bool
-	var expiresAt time.Time
-	err = h.db.QueryRow(r.Context(),
-		`SELECT s.id, s.user_id, u.is_admin, s.expires_at
-		 FROM user_sessions s
-		 JOIN users u ON u.id = s.user_id
-		 WHERE s.token_hash = $1`,
-		hash,
-	).Scan(&sessionID, &userID, &isAdmin, &expiresAt)
+	sessionID, userID, isAdmin, expiresAt, err := h.sessions.FindByTokenHash(r.Context(), hash)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token")
 		return
 	}
 	if time.Now().After(expiresAt) {
-		_, _ = h.db.Exec(r.Context(), `DELETE FROM user_sessions WHERE id = $1`, sessionID)
+		_, _ = h.sessions.Delete(r.Context(), sessionID, userID)
 		writeError(w, http.StatusUnauthorized, "refresh token expired")
 		return
 	}
@@ -180,19 +153,12 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.db.Exec(r.Context(),
-		`UPDATE user_sessions
-		 SET token_hash = $2, previous_token_hash = $3,
-		     expires_at = $4, ip_address = $5, last_used_at = now()
-		 WHERE id = $1`,
-		sessionID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), ip,
-	)
-	if err != nil {
+	if err := h.sessions.RotateToken(r.Context(), sessionID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), ip); err != nil {
 		writeError(w, http.StatusInternalServerError, "token rotation failed")
 		return
 	}
 
-	_, _ = h.db.Exec(r.Context(), `UPDATE users SET last_seen_at = now() WHERE id = $1`, userID)
+	h.users.TouchLastSeen(r.Context(), userID)
 
 	accessToken, err := auth.IssueToken(userID, isAdmin, h.secret)
 	if err != nil {
@@ -228,16 +194,12 @@ func (h *authHandler) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// user_id scoping ensures users can only revoke their own sessions.
-	tag, err := h.db.Exec(r.Context(),
-		`DELETE FROM user_sessions WHERE id = $1 AND user_id = $2`,
-		sessionID, userID,
-	)
+	affected, err := h.sessions.Delete(r.Context(), sessionID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -250,10 +212,8 @@ func (h *authHandler) changeCredentials(w http.ResponseWriter, r *http.Request) 
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	var providerName string
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT auth_provider FROM users WHERE id = $1`, userID,
-	).Scan(&providerName); err != nil {
+	providerName, err := h.users.GetAuthProvider(r.Context(), userID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -285,55 +245,26 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	var name string
-	var isAdmin bool
-	if err := h.db.QueryRow(r.Context(),
-		`SELECT name, is_admin FROM users WHERE id = $1`, userID,
-	).Scan(&name, &isAdmin); err != nil {
+	user, err := h.users.FindByID(r.Context(), userID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":       userID,
-		"name":     name,
-		"is_admin": isAdmin,
+		"id":       user.ID,
+		"name":     user.Name,
+		"is_admin": user.IsAdmin,
 	})
 }
 
 // writeSessionList is shared between the user and admin session-listing handlers.
 func (h *authHandler) writeSessionList(w http.ResponseWriter, r *http.Request, userID int64) {
-	rows, err := h.db.Query(r.Context(),
-		`SELECT id, device_name, ip_address, last_used_at, created_at, expires_at
-		 FROM user_sessions
-		 WHERE user_id = $1
-		 ORDER BY last_used_at DESC`,
-		userID,
-	)
+	sessions, err := h.sessions.ListForUser(r.Context(), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer rows.Close()
-
-	type sessionView struct {
-		ID          int64      `json:"id"`
-		DeviceName  *string    `json:"device_name"`
-		IPAddress   *string    `json:"ip_address"`
-		LastUsedAt  time.Time  `json:"last_used_at"`
-		CreatedAt   time.Time  `json:"created_at"`
-		ExpiresAt   time.Time  `json:"expires_at"`
-	}
-
-	var sessions []sessionView
-	for rows.Next() {
-		var s sessionView
-		if err := rows.Scan(&s.ID, &s.DeviceName, &s.IPAddress, &s.LastUsedAt, &s.CreatedAt, &s.ExpiresAt); err != nil {
-			continue
-		}
-		sessions = append(sessions, s)
-	}
-
 	writeJSON(w, http.StatusOK, sessions)
 }
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 	t.Run("creates_scan_jobs_for_enabled_collections", func(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
+		jobRepo := repository.NewJobRepository(tx)
 
 		// Create two top-level enabled collections
 		c1 := testutil.InsertCollection(t, tx, "Photos", "image:photo", "photos")
@@ -28,11 +30,11 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		s.TriggerScans(ctx)
 
 		// Verify scan jobs were created for enabled collections
-		active1, err := jobs.IsActive(ctx, tx, "library_scan", c1)
+		active1, err := jobRepo.IsActive(ctx, "library_scan", c1)
 		require.NoError(t, err)
 		assert.True(t, active1, "should have created scan job for collection 1")
 
-		active2, err := jobs.IsActive(ctx, tx, "library_scan", c2)
+		active2, err := jobRepo.IsActive(ctx, "library_scan", c2)
 		require.NoError(t, err)
 		assert.True(t, active2, "should have created scan job for collection 2")
 	})
@@ -40,12 +42,13 @@ func TestScheduler_TriggerScans(t *testing.T) {
 	t.Run("skips_collections_with_active_scans", func(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
+		jobRepo := repository.NewJobRepository(tx)
 
 		c1 := testutil.InsertCollection(t, tx, "Photos", "image:photo", "photos")
 
 		// Create an already-active scan
 		relatedType := "collection"
-		_, err := jobs.Create(ctx, tx, "library_scan", &c1, &relatedType)
+		_, err := jobRepo.Create(ctx, "library_scan", &c1, &relatedType)
 		require.NoError(t, err)
 
 		// Count jobs before trigger
@@ -108,9 +111,10 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 	t.Run("skips_if_already_active", func(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
+		jobRepo := repository.NewJobRepository(tx)
 
 		// Create an active integrity check
-		_, err := jobs.Create(ctx, tx, "integrity_check", nil, nil)
+		_, err := jobRepo.Create(ctx, "integrity_check", nil, nil)
 		require.NoError(t, err)
 
 		s := jobs.NewScheduler(tx)
@@ -127,11 +131,11 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 
 func TestScheduler_LoadSchedules(t *testing.T) {
 	tests := []struct {
-		name             string
-		scanSchedule     *string
+		name              string
+		scanSchedule      *string
 		integritySchedule *string
-		wantScan         string
-		wantIntegrity    string
+		wantScan          string
+		wantIntegrity     string
 	}{
 		{
 			"defaults_when_null",

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	authpkg "github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 // NewRouter builds and returns the fully configured Chi router.
@@ -18,11 +19,22 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger)
 
+	userRepo := repository.NewUserRepository(db)
+	sessionRepo := repository.NewSessionRepository(db)
+	collRepo := repository.NewCollectionRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
+	jobRepo := repository.NewJobRepository(db)
+
 	authPlugins := authpkg.DefaultPlugins()
-	auth := newAuthHandler(db, jwtSecret, authPlugins)
-	collections := &collectionsHandler{db: db}
-	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
-	admin := &adminHandler{db: db, pool: pool, authPlugins: authPlugins, authHandler: auth, mediaPath: mediaPath, dataPath: dataPath}
+	auth := newAuthHandler(db, userRepo, sessionRepo, jwtSecret, authPlugins)
+	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
+	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
+	admin := &adminHandler{
+		db: db, users: userRepo, sessions: sessionRepo,
+		collections: collRepo, media: mediaRepo, jobs: jobRepo, pool: pool,
+		authPlugins: authPlugins, authHandler: auth,
+		mediaPath: mediaPath, dataPath: dataPath,
+	}
 
 	// ── Public ────────────────────────────────────────────────────────────────
 	r.Get("/api/v1/system/health", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +96,10 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 		r.Patch("/api/v1/admin/users/{userId}/collection_access", admin.grantCollectionAccess)
 		r.Post("/api/v1/admin/users/{userId}/collection_access", admin.setCollectionAccess)
 		r.Delete("/api/v1/admin/users/{userId}/collection_access/{collectionId}", admin.revokeCollectionAccess)
+
+		// Media item visibility
+		r.Post("/api/v1/admin/media/{id}/hide", admin.hideMediaItem)
+		r.Delete("/api/v1/admin/media/{id}/hide", admin.unhideMediaItem)
 
 		// Maintenance
 		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)

@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -26,13 +27,13 @@ type Plugin interface {
 	// Name returns the unique identifier for this provider (e.g. "local").
 	Name() string
 	// Authenticate validates credentials and returns the user ID on success.
-	Authenticate(ctx context.Context, db *pgxpool.Pool, credentials json.RawMessage) (int64, error)
+	Authenticate(ctx context.Context, db utils.DBTX, credentials json.RawMessage) (int64, error)
 	// CreateUser creates a new user with the given name and provider-specific credentials.
 	// The user row is inserted by the plugin. Returns the new user ID.
-	CreateUser(ctx context.Context, db *pgxpool.Pool, name string, credentials json.RawMessage) (int64, error)
+	CreateUser(ctx context.Context, db utils.DBTX, name string, credentials json.RawMessage) (int64, error)
 	// UpdateCredentials updates the credentials for an existing user.
 	// Invalidates any active refresh tokens.
-	UpdateCredentials(ctx context.Context, db *pgxpool.Pool, userID int64, credentials json.RawMessage) error
+	UpdateCredentials(ctx context.Context, db utils.DBTX, userID int64, credentials json.RawMessage) error
 }
 
 // DefaultPlugins returns the default set of registered auth plugins.
@@ -115,20 +116,14 @@ type localAuthData struct {
 	PasswordHash string `json:"password_hash"`
 }
 
-func (LocalPlugin) Authenticate(ctx context.Context, db *pgxpool.Pool, raw json.RawMessage) (int64, error) {
+func (LocalPlugin) Authenticate(ctx context.Context, db utils.DBTX, raw json.RawMessage) (int64, error) {
 	var creds localCredentials
 	if err := json.Unmarshal(raw, &creds); err != nil {
 		return 0, fmt.Errorf("invalid credentials format: %w", err)
 	}
 
-	var (
-		userID   int64
-		authData json.RawMessage
-	)
-	err := db.QueryRow(ctx,
-		`SELECT id, auth_data FROM users WHERE name = $1 AND auth_provider = 'local'`,
-		creds.Username,
-	).Scan(&userID, &authData)
+	users := repository.NewUserRepository(db)
+	userID, authData, err := users.FindByNameAndProvider(ctx, creds.Username, "local")
 	if err != nil {
 		return 0, errors.New("invalid username or password")
 	}
@@ -145,7 +140,7 @@ func (LocalPlugin) Authenticate(ctx context.Context, db *pgxpool.Pool, raw json.
 	return userID, nil
 }
 
-func (LocalPlugin) CreateUser(ctx context.Context, db *pgxpool.Pool, name string, raw json.RawMessage) (int64, error) {
+func (LocalPlugin) CreateUser(ctx context.Context, db utils.DBTX, name string, raw json.RawMessage) (int64, error) {
 	var creds struct {
 		Password string `json:"password"`
 	}
@@ -160,17 +155,11 @@ func (LocalPlugin) CreateUser(ctx context.Context, db *pgxpool.Pool, name string
 
 	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
 
-	var userID int64
-	if err := db.QueryRow(ctx,
-		`INSERT INTO users (name, auth_provider, auth_data) VALUES ($1, 'local', $2) RETURNING id`,
-		name, authData,
-	).Scan(&userID); err != nil {
-		return 0, fmt.Errorf("create user: %w", err)
-	}
-	return userID, nil
+	users := repository.NewUserRepository(db)
+	return users.Create(ctx, name, "local", authData)
 }
 
-func (LocalPlugin) UpdateCredentials(ctx context.Context, db *pgxpool.Pool, userID int64, raw json.RawMessage) error {
+func (LocalPlugin) UpdateCredentials(ctx context.Context, db utils.DBTX, userID int64, raw json.RawMessage) error {
 	var creds struct {
 		Password string `json:"password"`
 	}
@@ -185,18 +174,14 @@ func (LocalPlugin) UpdateCredentials(ctx context.Context, db *pgxpool.Pool, user
 
 	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
 
-	tag, err := db.Exec(ctx,
-		`UPDATE users SET auth_data = $2 WHERE id = $1 AND auth_provider = 'local'`,
-		userID, authData,
-	)
-	if err != nil {
+	users := repository.NewUserRepository(db)
+	if err := users.UpdateAuthData(ctx, userID, authData); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return errors.New("user not found or uses a different auth provider")
+		}
 		return fmt.Errorf("update credentials: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return errors.New("user not found or uses a different auth provider")
-	}
 
-	// Invalidate all sessions so the user must re-authenticate on all devices.
-	_, err = db.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, userID)
-	return err
+	sessions := repository.NewSessionRepository(db)
+	return sessions.DeleteAllForUser(ctx, userID)
 }
