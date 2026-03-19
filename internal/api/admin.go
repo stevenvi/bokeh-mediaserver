@@ -70,7 +70,7 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(),
 		`SELECT id, name, type, relative_path,
 		        is_enabled, last_scanned_at, created_at
-		 FROM collections ORDER BY name`,
+		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
