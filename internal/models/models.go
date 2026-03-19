@@ -35,7 +35,7 @@ type PhotoMetadata struct {
 	MediaItemID          int64      `json:"media_item_id"`
 	WidthPx              *int       `json:"width_px,omitempty"`
 	HeightPx             *int       `json:"height_px,omitempty"`
-	TakenAt              *time.Time `json:"taken_at,omitempty"`
+	CreatedAt            *time.Time `json:"created_at,omitempty"`
 	CameraMake           *string    `json:"camera_make,omitempty"`
 	CameraModel          *string    `json:"camera_model,omitempty"`
 	LensModel            *string    `json:"lens_model,omitempty"`
@@ -44,10 +44,6 @@ type PhotoMetadata struct {
 	ISO                  *int       `json:"iso,omitempty"`
 	FocalLengthMM        *float64   `json:"focal_length_mm,omitempty"`
 	FocalLength35mmEquiv *float64   `json:"focal_length_35mm_equiv,omitempty"`
-	SensorWidthMM        *float64   `json:"sensor_width_mm,omitempty"`
-	SensorHeightMM       *float64   `json:"sensor_height_mm,omitempty"`
-	GpsLat               *float64   `json:"gps_lat,omitempty"`
-	GpsLng               *float64   `json:"gps_lng,omitempty"`
 	ColorSpace           *string    `json:"color_space,omitempty"`
 	Description          *string    `json:"description,omitempty"`
 	Placeholder          *string    `json:"placeholder,omitempty"` // base64 32x32 AVIF

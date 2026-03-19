@@ -40,22 +40,20 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 
 	var photo models.PhotoMetadata
 	err = h.db.QueryRow(r.Context(),
-		`SELECT width_px, height_px, taken_at,
+		`SELECT width_px, height_px, created_at,
 		        camera_make, camera_model, lens_model,
 		        shutter_speed, aperture, iso,
 		        focal_length_mm, focal_length_35mm_equiv,
-		        sensor_width_mm, sensor_height_mm,
-		        gps_lat, gps_lng, color_space,
+		        color_space,
 		        placeholder
 		 FROM photo_metadata WHERE media_item_id = $1`,
 		id,
 	).Scan(
-		&photo.WidthPx, &photo.HeightPx, &photo.TakenAt,
+		&photo.WidthPx, &photo.HeightPx, &photo.CreatedAt,
 		&photo.CameraMake, &photo.CameraModel, &photo.LensModel,
 		&photo.ShutterSpeed, &photo.Aperture, &photo.ISO,
 		&photo.FocalLengthMM, &photo.FocalLength35mmEquiv,
-		&photo.SensorWidthMM, &photo.SensorHeightMM,
-		&photo.GpsLat, &photo.GpsLng, &photo.ColorSpace,
+		&photo.ColorSpace,
 		&photo.Placeholder,
 	)
 	if err == nil {

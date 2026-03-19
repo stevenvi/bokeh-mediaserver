@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
@@ -71,16 +73,16 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		rawJSON, _ := json.Marshal(exifData)
 		_, err = db.Exec(ctx,
 			`INSERT INTO photo_metadata
-			     (media_item_id, width_px, height_px, taken_at,
+			     (media_item_id, width_px, height_px, created_at,
 			      camera_make, camera_model, lens_model,
 			      shutter_speed, aperture, iso,
 			      focal_length_mm, focal_length_35mm_equiv,
-			      gps_lat, gps_lng, color_space, description, exif_raw)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			      color_space, description, exif_raw)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 			 ON CONFLICT (media_item_id) DO UPDATE SET
 			     width_px                = EXCLUDED.width_px,
 			     height_px               = EXCLUDED.height_px,
-			     taken_at                = EXCLUDED.taken_at,
+			     created_at              = EXCLUDED.created_at,
 			     camera_make             = EXCLUDED.camera_make,
 			     camera_model            = EXCLUDED.camera_model,
 			     lens_model              = EXCLUDED.lens_model,
@@ -89,22 +91,19 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			     iso                     = EXCLUDED.iso,
 			     focal_length_mm         = EXCLUDED.focal_length_mm,
 			     focal_length_35mm_equiv = EXCLUDED.focal_length_35mm_equiv,
-			     gps_lat                 = EXCLUDED.gps_lat,
-			     gps_lng                 = EXCLUDED.gps_lng,
 			     color_space             = EXCLUDED.color_space,
 			     description             = EXCLUDED.description,
 			     exif_raw                = EXCLUDED.exif_raw,
 			     variants_generated_at   = NULL`,
 			itemID,
 			utils.ExifInt(exifData, "ImageWidth"), utils.ExifInt(exifData, "ImageHeight"),
-			utils.ExifTime(exifData, "DateTimeOriginal"),
+			takenAt(fsPath, exifData),
 			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
 			utils.ExifStr(exifData, "ExposureTime"),
 			utils.ExifFloat(exifData, "FNumber"),
 			utils.ExifInt(exifData, "ISO"),
 			utils.ExifFloat(exifData, "FocalLength"),
 			utils.ExifFloat(exifData, "FocalLengthIn35mmFormat"),
-			utils.ExifFloat(exifData, "GPSLatitude"), utils.ExifFloat(exifData, "GPSLongitude"),
 			utils.ExifStr(exifData, "ColorSpace"),
 			utils.ExifStr(exifData, "Description"),
 			rawJSON,
@@ -143,6 +142,48 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		_ = jobs.Delete(ctx, db, job.ID)
 		return nil
 	}
+}
+
+// takenAt returns the best available timestamp for a media file.
+// It prefers DateTimeOriginal from EXIF; if absent, returns the earliest of
+// FileCreateDate, FileModifyDate (from exiftool), and the OS mod time.
+func takenAt(fsPath string, exifData map[string]any) *time.Time {
+	if t := utils.ExifTime(exifData, "DateTimeOriginal"); t != nil {
+		return t
+	}
+
+	var earliest *time.Time
+	consider := func(t *time.Time) {
+		if t != nil && (earliest == nil || t.Before(*earliest)) {
+			earliest = t
+		}
+	}
+
+	parseFileDate := func(key string) *time.Time {
+		v, ok := exifData[key]
+		if !ok || v == nil {
+			return nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil
+		}
+		t, err := time.Parse("2006:01:02 15:04:05-07:00", s)
+		if err != nil {
+			return nil
+		}
+		return &t
+	}
+
+	consider(parseFileDate("FileCreateDate"))
+	consider(parseFileDate("FileModifyDate"))
+
+	if info, err := os.Stat(fsPath); err == nil {
+		mt := info.ModTime()
+		consider(&mt)
+	}
+
+	return earliest
 }
 
 // HandleScanJob is a job handler for library_scan jobs.
