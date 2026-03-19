@@ -12,15 +12,18 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 )
 
 type adminHandler struct {
-	db        *pgxpool.Pool
-	pool      *jobs.Pool
-	mediaPath string
-	dataPath  string
+	db          *pgxpool.Pool
+	pool        *jobs.Pool
+	authPlugins map[string]auth.Plugin
+	authHandler *authHandler
+	mediaPath   string
+	dataPath    string
 }
 
 // POST /api/v1/admin/collections
@@ -180,6 +183,119 @@ func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }
 
+// POST /api/v1/admin/users
+func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name         string          `json:"name"`
+		IsAdmin      bool            `json:"is_admin"`
+		AuthProvider string          `json:"auth_provider"`
+		Credentials  json.RawMessage `json:"credentials"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if body.AuthProvider == "" {
+		body.AuthProvider = "local"
+	}
+
+	plugin, ok := h.authPlugins[body.AuthProvider]
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown auth provider: %s", body.AuthProvider))
+		return
+	}
+
+	userID, err := plugin.CreateUser(r.Context(), h.db, body.Name, body.Credentials)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if body.IsAdmin {
+		if _, err = h.db.Exec(r.Context(), `UPDATE users SET is_admin = true WHERE id = $1`, userID); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": userID})
+}
+
+// DELETE /api/v1/admin/users/:id
+func (h *adminHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	claims := ClaimsFromContext(r.Context())
+	selfID, _ := strconv.ParseInt(claims.Subject, 10, 64)
+	if targetID == selfID {
+		writeError(w, http.StatusForbidden, "cannot delete your own account")
+		return
+	}
+
+	tag, err := h.db.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, targetID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/v1/admin/users/:id/credentials
+func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	var providerName string
+	if err := h.db.QueryRow(r.Context(),
+		`SELECT auth_provider FROM users WHERE id = $1`, targetID,
+	).Scan(&providerName); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	plugin, ok := h.authPlugins[providerName]
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("auth provider %q does not support credential updates", providerName))
+		return
+	}
+
+	var body struct {
+		Credentials json.RawMessage `json:"credentials"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := plugin.UpdateCredentials(r.Context(), h.db, targetID, body.Credentials); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.authHandler.deleteAllSessions(r.Context(), targetID); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // validateTopLevelCollections checks that all provided IDs exist and are top-level collections.
 // Returns a user-facing error message and HTTP status, or ("", 0) if all IDs are valid.
 func validateTopLevelCollections(ctx context.Context, db *pgxpool.Pool, ids []int64) (string, int) {
@@ -213,6 +329,61 @@ func validateTopLevelCollections(ctx context.Context, db *pgxpool.Pool, ids []in
 		}
 	}
 	return "", 0
+}
+
+// GET /api/v1/admin/users/:id/sessions
+func (h *adminHandler) listUserSessions(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	h.authHandler.writeSessionList(w, r, targetID)
+}
+
+// DELETE /api/v1/admin/users/:id/sessions/:sessionId
+func (h *adminHandler) revokeUserSession(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	sessionID, err := strconv.ParseInt(chi.URLParam(r, "sessionId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid session id")
+		return
+	}
+
+	tag, err := h.db.Exec(r.Context(),
+		`DELETE FROM user_sessions WHERE id = $1 AND user_id = $2`,
+		sessionID, targetID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/v1/admin/users/:id/sessions
+func (h *adminHandler) revokeAllUserSessions(w http.ResponseWriter, r *http.Request) {
+	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	if err := h.authHandler.deleteAllSessions(r.Context(), targetID); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // PATCH /api/v1/admin/users/:userId/collection_access — grant access to collections (duplicates silently ignored)

@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	authpkg "github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 )
 
@@ -17,10 +18,11 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger)
 
-	auth := newAuthHandler(db, jwtSecret)
+	authPlugins := authpkg.DefaultPlugins()
+	auth := newAuthHandler(db, jwtSecret, authPlugins)
 	collections := &collectionsHandler{db: db}
 	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
-	admin := &adminHandler{db: db, pool: pool, mediaPath: mediaPath, dataPath: dataPath}
+	admin := &adminHandler{db: db, pool: pool, authPlugins: authPlugins, authHandler: auth, mediaPath: mediaPath, dataPath: dataPath}
 
 	// ── Public ────────────────────────────────────────────────────────────────
 	r.Get("/api/v1/system/health", func(w http.ResponseWriter, r *http.Request) {
@@ -33,12 +35,16 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 
 	r.Get("/api/v1/auth/providers", auth.listProviders)
 	r.Post("/api/v1/auth/login", auth.login)
+	r.Post("/api/v1/auth/refresh", auth.refresh)
 
 	// ── Authenticated ─────────────────────────────────────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(RequireAuth(jwtSecret))
 
 		r.Get("/api/v1/auth/me", auth.me)
+		r.Post("/api/v1/auth/credentials", auth.changeCredentials)
+		r.Get("/api/v1/auth/sessions", auth.listSessions)
+		r.Delete("/api/v1/auth/sessions/{id}", auth.revokeSession)
 
 		// Collections
 		r.Get("/api/v1/collections", collections.list)
@@ -60,6 +66,13 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 	// ── Admin ─────────────────────────────────────────────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(RequireAdmin(jwtSecret))
+
+		r.Post("/api/v1/admin/users", admin.createUser)
+		r.Delete("/api/v1/admin/users/{id}", admin.deleteUser)
+		r.Post("/api/v1/admin/users/{id}/credentials", admin.changeUserCredentials)
+		r.Get("/api/v1/admin/users/{id}/sessions", admin.listUserSessions)
+		r.Delete("/api/v1/admin/users/{id}/sessions", admin.revokeAllUserSessions)
+		r.Delete("/api/v1/admin/users/{id}/sessions/{sessionId}", admin.revokeUserSession)
 
 		r.Get("/api/v1/admin/collections", admin.listCollections)
 		r.Post("/api/v1/admin/collections", admin.createCollection)

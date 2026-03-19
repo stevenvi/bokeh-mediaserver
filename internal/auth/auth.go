@@ -2,6 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +16,30 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const (
+	AccessTokenTTL  = 15 * time.Minute
+	RefreshTokenTTL = 90 * 24 * time.Hour // 90 days
+)
+
 // Plugin is the interface all auth providers must implement.
-// Adding a new auth method means implementing this interface.
 type Plugin interface {
 	// Name returns the unique identifier for this provider (e.g. "local").
 	Name() string
 	// Authenticate validates credentials and returns the user ID on success.
-	Authenticate(ctx context.Context, db *pgxpool.Pool, credentials json.RawMessage) (int, error)
+	Authenticate(ctx context.Context, db *pgxpool.Pool, credentials json.RawMessage) (int64, error)
+	// CreateUser creates a new user with the given name and provider-specific credentials.
+	// The user row is inserted by the plugin. Returns the new user ID.
+	CreateUser(ctx context.Context, db *pgxpool.Pool, name string, credentials json.RawMessage) (int64, error)
+	// UpdateCredentials updates the credentials for an existing user.
+	// Invalidates any active refresh tokens.
+	UpdateCredentials(ctx context.Context, db *pgxpool.Pool, userID int64, credentials json.RawMessage) error
+}
+
+// DefaultPlugins returns the default set of registered auth plugins.
+func DefaultPlugins() map[string]Plugin {
+	return map[string]Plugin{
+		"local": LocalPlugin{},
+	}
 }
 
 // Claims are the JWT payload fields. Intentionally minimal.
@@ -28,12 +49,12 @@ type Claims struct {
 }
 
 // IssueToken generates a signed JWT for the given user.
-func IssueToken(userID int, isAdmin bool, secret string) (string, error) {
+func IssueToken(userID int64, isAdmin bool, secret string) (string, error) {
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprintf("%d", userID),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(AccessTokenTTL)),
 		},
 		IsAdmin: isAdmin,
 	}
@@ -59,6 +80,24 @@ func ParseToken(tokenStr, secret string) (*Claims, error) {
 	return claims, nil
 }
 
+// GenerateRefreshToken creates a cryptographically random refresh token.
+// Returns the raw token (to send to the client) and its SHA-256 hex hash (to store in DB).
+func GenerateRefreshToken() (raw, hash string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generate refresh token: %w", err)
+	}
+	raw = base64.RawURLEncoding.EncodeToString(b)
+	hash = HashRefreshToken(raw)
+	return raw, hash, nil
+}
+
+// HashRefreshToken returns the SHA-256 hex hash of a raw refresh token.
+func HashRefreshToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
 // ─── Local auth plugin ────────────────────────────────────────────────────────
 
 // LocalPlugin authenticates users with a username and bcrypt-hashed password
@@ -76,14 +115,14 @@ type localAuthData struct {
 	PasswordHash string `json:"password_hash"`
 }
 
-func (LocalPlugin) Authenticate(ctx context.Context, db *pgxpool.Pool, raw json.RawMessage) (int, error) {
+func (LocalPlugin) Authenticate(ctx context.Context, db *pgxpool.Pool, raw json.RawMessage) (int64, error) {
 	var creds localCredentials
 	if err := json.Unmarshal(raw, &creds); err != nil {
 		return 0, fmt.Errorf("invalid credentials format: %w", err)
 	}
 
 	var (
-		userID   int
+		userID   int64
 		authData json.RawMessage
 	)
 	err := db.QueryRow(ctx,
@@ -104,4 +143,60 @@ func (LocalPlugin) Authenticate(ctx context.Context, db *pgxpool.Pool, raw json.
 	}
 
 	return userID, nil
+}
+
+func (LocalPlugin) CreateUser(ctx context.Context, db *pgxpool.Pool, name string, raw json.RawMessage) (int64, error) {
+	var creds struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(raw, &creds); err != nil || creds.Password == "" {
+		return 0, errors.New("password is required")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(creds.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, fmt.Errorf("hash password: %w", err)
+	}
+
+	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
+
+	var userID int64
+	if err := db.QueryRow(ctx,
+		`INSERT INTO users (name, auth_provider, auth_data) VALUES ($1, 'local', $2) RETURNING id`,
+		name, authData,
+	).Scan(&userID); err != nil {
+		return 0, fmt.Errorf("create user: %w", err)
+	}
+	return userID, nil
+}
+
+func (LocalPlugin) UpdateCredentials(ctx context.Context, db *pgxpool.Pool, userID int64, raw json.RawMessage) error {
+	var creds struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(raw, &creds); err != nil || creds.Password == "" {
+		return errors.New("password is required")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(creds.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
+
+	tag, err := db.Exec(ctx,
+		`UPDATE users SET auth_data = $2 WHERE id = $1 AND auth_provider = 'local'`,
+		userID, authData,
+	)
+	if err != nil {
+		return fmt.Errorf("update credentials: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("user not found or uses a different auth provider")
+	}
+
+	// Invalidate all sessions so the user must re-authenticate on all devices.
+	_, err = db.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, userID)
+	return err
 }
