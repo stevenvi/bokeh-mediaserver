@@ -49,7 +49,7 @@ func (r *MediaItemRepository) GetForProcessing(ctx context.Context, id int64) (r
 // enforcing that the given user has collection_access for it.
 func (r *MediaItemRepository) GetRelativePath(ctx context.Context, id int64) (string, error) {
 	var path string
-	err := r.db.QueryRow(ctx, `SELECT relative_path FROM media_items WHERE id = $1`, id, ).Scan(&path)
+	err := r.db.QueryRow(ctx, `SELECT relative_path FROM media_items WHERE id = $1`, id).Scan(&path)
 	return path, err
 }
 
@@ -266,7 +266,7 @@ func (r *MediaItemRepository) GetPhotoMetadata(ctx context.Context, itemID int64
 // GetExifRaw returns the raw EXIF JSON for a media item.
 func (r *MediaItemRepository) GetExifRaw(ctx context.Context, itemID int64, userID int64) ([]byte, error) {
 	var raw []byte
-	err := r.db.QueryRow(ctx, 
+	err := r.db.QueryRow(ctx,
 		`SELECT pm.exif_raw 
 		 FROM photo_metadata as pm
 		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL

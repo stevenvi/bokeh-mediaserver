@@ -120,7 +120,7 @@ func GenerateVariant(srcPath string, dataPath string, hash string, variantName s
 			return fmt.Errorf("write thumb jpeg: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -152,7 +152,7 @@ func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
 // GenerateDZI creates a Deep Zoom Image tile pyramid via the vips CLI.
 // Tiles are encoded as AVIF at quality 85.
 // Output: {tilesDir}/image.dzi + {tilesDir}/image_files/
-// NOTE: govips does not support dzsave, so we shell out to the CLI. 
+// NOTE: govips does not support dzsave, so we shell out to the CLI.
 //       It's janky but is sufficient and is only called once per photo.
 // TODO: Implement this into govips and remove the CLI dependency.
 func GenerateDZI(srcPath string, dataPath string, hash string) error {

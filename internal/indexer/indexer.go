@@ -202,7 +202,6 @@ func walkFolders(ctx context.Context, colRepo *repository.CollectionRepository, 
 	return pathToID, err
 }
 
-
 const (
 	fullHashThreshold = 2 * 1024 * 1024 // 2 MB — files at or below this are fully hashed
 	partialHashBlock  = 1 * 1024 * 1024 // 1 MB — read from start and end for larger files

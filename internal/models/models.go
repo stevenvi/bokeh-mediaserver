@@ -3,29 +3,29 @@ package models
 import "time"
 
 type Collection struct {
-	ID                   int64      `json:"id"`
-	ParentCollectionID   *int64     `json:"parent_collection_id,omitempty"`
-	Name                 string     `json:"name"`
-	Type                 string     `json:"type"`
-	RelativePath         *string    `json:"relative_path,omitempty"`
-	IsEnabled            bool       `json:"is_enabled"`
-	LastScannedAt        *time.Time `json:"last_scanned_at,omitempty"`
-	MissingSince         *time.Time `json:"missing_since,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
+	ID                 int64      `json:"id"`
+	ParentCollectionID *int64     `json:"parent_collection_id,omitempty"`
+	Name               string     `json:"name"`
+	Type               string     `json:"type"`
+	RelativePath       *string    `json:"relative_path,omitempty"`
+	IsEnabled          bool       `json:"is_enabled"`
+	LastScannedAt      *time.Time `json:"last_scanned_at,omitempty"`
+	MissingSince       *time.Time `json:"missing_since,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type MediaItem struct {
-	ID              int64      `json:"id"`
-	CollectionID    int64      `json:"collection_id"`
-	Title           string     `json:"title"`
-	RelativePath    string     `json:"-"` // never expose filesystem paths to clients
-	FileSizeBytes   int64      `json:"file_size_bytes"`
-	FileHash        string     `json:"-"`
-	MimeType        string     `json:"mime_type"`
-	Ordinal         *int       `json:"ordinal,omitempty"`
-	MissingSince    *time.Time `json:"missing_since,omitempty"`
-	IndexedAt       time.Time  `json:"indexed_at"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID            int64      `json:"id"`
+	CollectionID  int64      `json:"collection_id"`
+	Title         string     `json:"title"`
+	RelativePath  string     `json:"-"` // never expose filesystem paths to clients
+	FileSizeBytes int64      `json:"file_size_bytes"`
+	FileHash      string     `json:"-"`
+	MimeType      string     `json:"mime_type"`
+	Ordinal       *int       `json:"ordinal,omitempty"`
+	MissingSince  *time.Time `json:"missing_since,omitempty"`
+	IndexedAt     time.Time  `json:"indexed_at"`
+	CreatedAt     time.Time  `json:"created_at"`
 
 	// Populated when fetching item detail
 	Photo *PhotoMetadata `json:"photo,omitempty"`
@@ -79,13 +79,13 @@ type CollectionSummary struct {
 
 // SlideshowItem is a projection used by the slideshow endpoint.
 type SlideshowItem struct {
-	ID          int64   `json:"id"`
-	Title       string  `json:"title"`
-	MimeType    string  `json:"mime_type"`
-	TakenAt     any     `json:"taken_at"`
-	Placeholder any     `json:"placeholder"`
-	WidthPx     any     `json:"width_px"`
-	HeightPx    any     `json:"height_px"`
+	ID          int64  `json:"id"`
+	Title       string `json:"title"`
+	MimeType    string `json:"mime_type"`
+	TakenAt     any    `json:"taken_at"`
+	Placeholder any    `json:"placeholder"`
+	WidthPx     any    `json:"width_px"`
+	HeightPx    any    `json:"height_px"`
 }
 
 type SessionView struct {

@@ -156,4 +156,3 @@ func takenAt(fsPath string, exifData map[string]any) *time.Time {
 
 	return earliest
 }
-
