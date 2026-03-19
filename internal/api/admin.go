@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -176,6 +178,158 @@ func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Requ
 	}
 	slog.Info("integrity check job queued", "job_id", jobID)
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
+// validateTopLevelCollections checks that all provided IDs exist and are top-level collections.
+// Returns a user-facing error message and HTTP status, or ("", 0) if all IDs are valid.
+func validateTopLevelCollections(ctx context.Context, db *pgxpool.Pool, ids []int64) (string, int) {
+	rows, err := db.Query(ctx,
+		`SELECT id, parent_collection_id IS NOT NULL AS is_sub
+		 FROM collections WHERE id = ANY($1::bigint[])`,
+		ids,
+	)
+	if err != nil {
+		return "db error", http.StatusInternalServerError
+	}
+	defer rows.Close()
+
+	found := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		var isSub bool
+		if err := rows.Scan(&id, &isSub); err != nil {
+			continue
+		}
+		if isSub {
+			return fmt.Sprintf("collection %d is a sub-collection; access can only be granted to top-level collections", id), http.StatusBadRequest
+		}
+		found[id] = true
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		if !found[id] {
+			return fmt.Sprintf("collection %d does not exist", id), http.StatusBadRequest
+		}
+	}
+	return "", 0
+}
+
+// PATCH /api/v1/admin/users/:userId/collection_access — grant access to collections (duplicates silently ignored)
+func (h *adminHandler) grantCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	var body struct {
+		CollectionIDs []int64 `json:"collection_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.CollectionIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "collection_ids must be a non-empty array")
+		return
+	}
+
+	if msg, status := validateTopLevelCollections(r.Context(), h.db, body.CollectionIDs); msg != "" {
+		writeError(w, status, msg)
+		return
+	}
+
+	_, err = h.db.Exec(r.Context(),
+		`INSERT INTO collection_access (user_id, collection_id)
+		 SELECT $1, unnest($2::bigint[])
+		 ON CONFLICT DO NOTHING`,
+		userID, body.CollectionIDs,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/v1/admin/users/:userId/collection_access — set access to exactly this set of collections
+func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	var body struct {
+		CollectionIDs []int64 `json:"collection_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(body.CollectionIDs) > 0 {
+		if msg, status := validateTopLevelCollections(r.Context(), h.db, body.CollectionIDs); msg != "" {
+			writeError(w, status, msg)
+			return
+		}
+	}
+
+	tx, err := h.db.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if _, err = tx.Exec(r.Context(),
+		`DELETE FROM collection_access WHERE user_id = $1`, userID,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if len(body.CollectionIDs) > 0 {
+		if _, err = tx.Exec(r.Context(),
+			`INSERT INTO collection_access (user_id, collection_id)
+			 SELECT $1, unnest($2::bigint[])
+			 ON CONFLICT DO NOTHING`,
+			userID, body.CollectionIDs,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+
+	if err = tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/v1/admin/users/:userId/collection_access/:collectionId — revoke access (silent if not present)
+func (h *adminHandler) revokeCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "collectionId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+
+	_, err = h.db.Exec(r.Context(),
+		`DELETE FROM collection_access WHERE user_id = $1 AND collection_id = $2`,
+		userID, collectionID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/v1/admin/jobs/:id/events — SSE progress stream

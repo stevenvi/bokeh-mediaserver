@@ -68,6 +68,10 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 		r.Get("/api/v1/admin/jobs/{id}", admin.getJob)
 		r.Get("/api/v1/admin/jobs/{id}/events", admin.jobEvents)
 
+		r.Patch("/api/v1/admin/users/{userId}/collection_access", admin.grantCollectionAccess)
+		r.Post("/api/v1/admin/users/{userId}/collection_access", admin.setCollectionAccess)
+		r.Delete("/api/v1/admin/users/{userId}/collection_access/{collectionId}", admin.revokeCollectionAccess)
+
 		// Maintenance
 		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)
 		r.Post("/api/v1/admin/maintenance/integrity-check", admin.triggerIntegrityCheck)

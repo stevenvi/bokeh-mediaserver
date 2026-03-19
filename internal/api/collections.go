@@ -15,15 +15,23 @@ type collectionsHandler struct {
 	db *pgxpool.Pool
 }
 
-// GET /api/v1/collections — top-level only
-// TODO: Add access control by reading which collections a user has permission to access as part of the query here
+// GET /api/v1/collections — top-level enabled collections the user has access to.
+// Users see only those in collection_access.
 func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Query(r.Context(),
-		`SELECT id, name, type, relative_path,
-		        is_enabled, last_scanned_at, created_at
-		 FROM collections
-		 WHERE parent_collection_id IS NULL AND is_enabled = true
-		 ORDER BY name`,
+	claims := ClaimsFromContext(r.Context())
+	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "invalid token subject")
+		return
+	}
+
+	rows, err := h.db.Query(r.Context(), 
+		`SELECT c.id, c.name, c.type
+		 FROM collections c
+		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $1
+		 WHERE c.parent_collection_id IS NULL AND c.is_enabled = true
+		 ORDER BY c.name`, 
+		 userID,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -31,13 +39,16 @@ func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var collections []models.Collection
+	type collectionSummary struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+
+	var collections []collectionSummary
 	for rows.Next() {
-		var c models.Collection
-		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Type, &c.RelativePath,
-			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt,
-		); err != nil {
+		var c collectionSummary
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type); err != nil {
 			slog.Warn("Row scan error", "error", err)
 			continue
 		}
