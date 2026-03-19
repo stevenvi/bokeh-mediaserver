@@ -32,10 +32,7 @@ func NewExiftoolProcess() (*ExiftoolProcess, error) {
 		"-common_args",
 		"-json",
 		"-struct",
-		"-n",             // numeric output for GPS, FNumber etc.
-		"-GPSLatitude#",  // force numeric GPS even with -n
-		"-GPSLongitude#", // force numeric GPS even with -n
-		"-largefilesupport",
+		"-n", // numeric output: GPS as decimal degrees, FNumber as float, etc.
 	)
 
 	stdin, err := cmd.StdinPipe()
