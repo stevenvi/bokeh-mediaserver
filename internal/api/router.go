@@ -12,27 +12,29 @@ import (
 )
 
 // NewRouter builds and returns the fully configured Chi router.
-func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath string) http.Handler {
+func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret, mediaPath, dataPath string) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger)
 
+	rateLimiter := newLoginRateLimiter()
+
 	userRepo := repository.NewUserRepository(db)
-	sessionRepo := repository.NewSessionRepository(db)
+	deviceRepo := repository.NewDeviceRepository(db)
 	collRepo := repository.NewCollectionRepository(db)
 	mediaRepo := repository.NewMediaItemRepository(db)
 	jobRepo := repository.NewJobRepository(db)
 
 	authPlugins := authpkg.DefaultPlugins()
-	auth := newAuthHandler(db, userRepo, sessionRepo, jwtSecret, authPlugins)
+	authHandler := newAuthHandler(db, userRepo, deviceRepo, guard, rateLimiter, jwtSecret, authPlugins)
 	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
 	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
 	admin := &adminHandler{
-		db: db, users: userRepo, sessions: sessionRepo,
+		db: db, users: userRepo, devices: deviceRepo, guard: guard,
 		collections: collRepo, media: mediaRepo, jobs: jobRepo, pool: pool,
-		authPlugins: authPlugins, authHandler: auth,
+		authPlugins: authPlugins, authHandler: authHandler,
 		mediaPath: mediaPath, dataPath: dataPath,
 	}
 
@@ -45,18 +47,20 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	r.Get("/api/v1/auth/providers", auth.listProviders)
-	r.Post("/api/v1/auth/login", auth.login)
-	r.Post("/api/v1/auth/refresh", auth.refresh)
+	r.Get("/api/v1/auth/providers", authHandler.listProviders)
+	r.Post("/api/v1/auth/login", authHandler.login)
+	r.Post("/api/v1/auth/refresh", authHandler.refresh)
 
 	// ── Authenticated ─────────────────────────────────────────────────────────
 	r.Group(func(r chi.Router) {
-		r.Use(RequireAuth(jwtSecret))
+		r.Use(RequireAuth(jwtSecret, guard))
 
-		r.Get("/api/v1/auth/me", auth.me)
-		r.Post("/api/v1/auth/credentials", auth.changeCredentials)
-		r.Get("/api/v1/auth/sessions", auth.listSessions)
-		r.Delete("/api/v1/auth/sessions/{id}", auth.revokeSession)
+		r.Get("/api/v1/auth/me", authHandler.me)
+		r.Post("/api/v1/auth/credentials", authHandler.changeCredentials)
+		r.Get("/api/v1/auth/devices", authHandler.listDevices)
+		r.Delete("/api/v1/auth/devices/{id}", authHandler.deleteDevice)
+		r.Post("/api/v1/auth/devices/{id}/ban", authHandler.banDevice)
+		r.Delete("/api/v1/auth/devices/{id}/ban", authHandler.unbanDevice)
 
 		// Collections
 		r.Get("/api/v1/collections", collections.list)
@@ -77,14 +81,14 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 
 	// ── Admin ─────────────────────────────────────────────────────────────────
 	r.Group(func(r chi.Router) {
-		r.Use(RequireAdmin(jwtSecret))
+		r.Use(RequireAdmin(jwtSecret, guard))
 
 		r.Post("/api/v1/admin/users", admin.createUser)
 		r.Delete("/api/v1/admin/users/{id}", admin.deleteUser)
 		r.Post("/api/v1/admin/users/{id}/credentials", admin.changeUserCredentials)
-		r.Get("/api/v1/admin/users/{id}/sessions", admin.listUserSessions)
-		r.Delete("/api/v1/admin/users/{id}/sessions", admin.revokeAllUserSessions)
-		r.Delete("/api/v1/admin/users/{id}/sessions/{sessionId}", admin.revokeUserSession)
+		r.Get("/api/v1/admin/users/{id}/devices", admin.listUserDevices)
+		r.Delete("/api/v1/admin/users/{id}/devices", admin.revokeAllUserDevices)
+		r.Delete("/api/v1/admin/users/{id}/devices/{deviceId}", admin.revokeUserDevice)
 
 		r.Get("/api/v1/admin/collections", admin.listCollections)
 		r.Post("/api/v1/admin/collections", admin.createCollection)
@@ -104,6 +108,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, jwtSecret, mediaPath, dataPath
 		// Maintenance
 		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)
 		r.Post("/api/v1/admin/maintenance/integrity-check", admin.triggerIntegrityCheck)
+		r.Post("/api/v1/admin/maintenance/device-cleanup", admin.triggerDeviceCleanup)
 	})
 
 	return r

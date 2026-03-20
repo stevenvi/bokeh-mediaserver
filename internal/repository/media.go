@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
@@ -292,15 +293,5 @@ func (r *MediaItemRepository) ListStaleItems(ctx context.Context) ([]StaleItem, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var items []StaleItem
-	for rows.Next() {
-		var item StaleItem
-		if err := rows.Scan(&item.ID, &item.Hash); err != nil {
-			continue
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[StaleItem])
 }

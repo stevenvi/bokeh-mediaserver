@@ -21,9 +21,9 @@ func ClaimsFromContext(ctx context.Context) *auth.Claims {
 	return v
 }
 
-// TODO: Consolidate these two functions!!
-// RequireAuth validates the Bearer token and injects claims into the request context.
-func RequireAuth(secret string) func(http.Handler) http.Handler {
+// requireJWT validates the Bearer token, checks the device guard, injects
+// claims into the request context, and optionally enforces the admin claim.
+func requireJWT(secret string, guard *DeviceGuard, adminOnly bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := r.Header.Get("Authorization")
@@ -34,6 +34,14 @@ func RequireAuth(secret string) func(http.Handler) http.Handler {
 			claims, err := auth.ParseToken(strings.TrimPrefix(header, "Bearer "), secret)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
+			if guard.IsBlocked(claims.DeviceID) {
+				writeError(w, http.StatusForbidden, "device has been revoked or banned")
+				return
+			}
+			if adminOnly && !claims.IsAdmin {
+				writeError(w, http.StatusForbidden, "admin access required")
 				return
 			}
 			ctx := context.WithValue(r.Context(), claimsKey, claims)
@@ -42,28 +50,15 @@ func RequireAuth(secret string) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireAuth validates the Bearer token, checks the device guard, and injects
+// claims into the request context.
+func RequireAuth(secret string, guard *DeviceGuard) func(http.Handler) http.Handler {
+	return requireJWT(secret, guard, false)
+}
+
 // RequireAdmin extends RequireAuth — additionally checks the adm claim.
-func RequireAdmin(secret string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			header := r.Header.Get("Authorization")
-			if !strings.HasPrefix(header, "Bearer ") {
-				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header")
-				return
-			}
-			claims, err := auth.ParseToken(strings.TrimPrefix(header, "Bearer "), secret)
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, "invalid or expired token")
-				return
-			}
-			if !claims.IsAdmin {
-				writeError(w, http.StatusForbidden, "admin access required")
-				return
-			}
-			ctx := context.WithValue(r.Context(), claimsKey, claims)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
+func RequireAdmin(secret string, guard *DeviceGuard) func(http.Handler) http.Handler {
+	return requireJWT(secret, guard, true)
 }
 
 // writeError writes a consistent JSON error response.

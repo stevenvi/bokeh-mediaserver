@@ -46,18 +46,20 @@ func DefaultPlugins() map[string]Plugin {
 // Claims are the JWT payload fields. Intentionally minimal.
 type Claims struct {
 	jwt.RegisteredClaims
-	IsAdmin bool `json:"adm"`
+	IsAdmin  bool  `json:"adm"`
+	DeviceID int64 `json:"did"`
 }
 
-// IssueToken generates a signed JWT for the given user.
-func IssueToken(userID int64, isAdmin bool, secret string) (string, error) {
+// IssueToken generates a signed JWT for the given user and device.
+func IssueToken(userID, deviceID int64, isAdmin bool, secret string) (string, error) {
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   fmt.Sprintf("%d", userID),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(AccessTokenTTL)),
 		},
-		IsAdmin: isAdmin,
+		IsAdmin:  isAdmin,
+		DeviceID: deviceID,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
@@ -182,6 +184,7 @@ func (LocalPlugin) UpdateCredentials(ctx context.Context, db utils.DBTX, userID 
 		return fmt.Errorf("update credentials: %w", err)
 	}
 
-	sessions := repository.NewSessionRepository(db)
-	return sessions.DeleteAllForUser(ctx, userID)
+	devices := repository.NewDeviceRepository(db)
+	_, err = devices.DeleteAllForUser(ctx, userID)
+	return err
 }

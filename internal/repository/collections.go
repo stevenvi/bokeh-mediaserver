@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
@@ -97,17 +98,7 @@ func (r *CollectionRepository) ListTopLevelEnabled(ctx context.Context) ([]int64
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
 }
 
 // ListAccessibleByUser returns enabled top-level collections the user has access to.
@@ -123,17 +114,7 @@ func (r *CollectionRepository) ListAccessibleByUser(ctx context.Context, userID 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var collections []models.CollectionSummary
-	for rows.Next() {
-		var c models.CollectionSummary
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type); err != nil {
-			continue
-		}
-		collections = append(collections, c)
-	}
-	return collections, nil
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionSummary])
 }
 
 // ListChildren returns direct enabled children of a collection.
@@ -276,20 +257,7 @@ func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, collection
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var items []models.SlideshowItem
-	for rows.Next() {
-		var item models.SlideshowItem
-		if err := rows.Scan(
-			&item.ID, &item.Title, &item.MimeType,
-			&item.TakenAt, &item.Placeholder, &item.WidthPx, &item.HeightPx,
-		); err != nil {
-			continue
-		}
-		items = append(items, item)
-	}
-	return items, nil
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowItem])
 }
 
 // MarkMissingSince marks items in a collection that haven't been indexed since `before`.

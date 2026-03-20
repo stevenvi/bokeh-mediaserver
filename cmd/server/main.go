@@ -79,6 +79,12 @@ func run() error {
 		return fmt.Errorf("data path: %w", err)
 	}
 
+	// ── Device guard (load banned devices) ────────────────────────────────────
+	guard := api.NewDeviceGuard()
+	if err := guard.LoadBanned(ctx, db_pool); err != nil {
+		return fmt.Errorf("load banned devices: %w", err)
+	}
+
 	// ── Worker pools ──────────────────────────────────────────────────────────
 	mainPool := jobs.NewPool(cfg.WorkerCount)
 	processingPool := jobs.NewPool(cfg.ProcessingWorkerCount)
@@ -93,6 +99,7 @@ func run() error {
 	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath), true)
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
 	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath), false)
+	dispatcher.Register("device_cleanup", maintenance.HandleDeviceCleanup(), false)
 	dispatcher.Start(ctx)
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────
@@ -100,7 +107,7 @@ func run() error {
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(db_pool, mainPool, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
+	router := api.NewRouter(db_pool, mainPool, guard, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

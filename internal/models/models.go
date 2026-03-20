@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Collection struct {
 	ID                 int64      `json:"id"`
@@ -88,11 +91,36 @@ type SlideshowItem struct {
 	HeightPx    any    `json:"height_px"`
 }
 
-type SessionView struct {
-	ID         int64     `json:"id"`
-	DeviceName *string   `json:"device_name"`
-	IPAddress  *string   `json:"ip_address"`
-	LastUsedAt time.Time `json:"last_used_at"`
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
+// Device is the full internal representation of a device row.
+// device_uuid is intentionally excluded from all API responses.
+type Device struct {
+	ID                         int64
+	DeviceUUID                 string
+	UserID                     int64
+	RefreshTokenHash           *string
+	PreviousRefreshTokenHash   *string
+	ExpiresAt                  *time.Time
+	DeviceName                 string
+	BannedAt                   *time.Time
+	AccessHistory              json.RawMessage
+	CreatedAt                  time.Time
+	LastSeenAt                 time.Time
+}
+
+// DeviceView is the API-facing projection of a device (no device_uuid, no token fields).
+// BannedAt non-nil means the device is banned.
+type DeviceView struct {
+	ID            int64           `json:"id"`
+	DeviceName    string          `json:"device_name"`
+	BannedAt      *time.Time      `json:"banned_at,omitempty"`
+	LastSeenAt    time.Time       `json:"last_seen_at"`
+	CreatedAt     time.Time       `json:"created_at"`
+	AccessHistory json.RawMessage `json:"access_history"`
+}
+
+// AccessHistoryEntry is one entry in a device's access_history JSONB array.
+type AccessHistoryEntry struct {
+	IP       string    `json:"ip"`
+	Agent    string    `json:"agent"`
+	LastSeen time.Time `json:"last_seen"`
 }

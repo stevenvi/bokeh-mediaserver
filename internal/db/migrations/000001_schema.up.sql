@@ -9,7 +9,8 @@ CREATE TABLE server_config (
     log_level                   text NOT NULL DEFAULT 'warn'
                                     CHECK (log_level IN ('error','warn','info','debug')),
     scan_schedule               text DEFAULT '0 3 * * *',
-    integrity_schedule          text,
+    integrity_schedule          text DEFAULT '0 4 * * 0',
+    device_cleanup_schedule     text DEFAULT '0 2 1 * *',
     updated_at                  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -35,19 +36,24 @@ VALUES (
     '{"password_hash": "$2a$10$4jXsM1XJS0KMA/YWo.EEIuBF8WwnbIusxElCkxe9hoZ7fzTLjGyTm"}'
 );
 
-CREATE TABLE user_sessions (
-    id                  bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    user_id             bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash          text NOT NULL UNIQUE,
-    previous_token_hash text UNIQUE,
-    expires_at          timestamptz NOT NULL,
-    device_name         text,
-    ip_address          text,
-    last_used_at        timestamptz NOT NULL DEFAULT now(),
-    created_at          timestamptz NOT NULL DEFAULT now()
+CREATE TABLE devices (
+    id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    device_uuid                 text NOT NULL,
+    user_id                     bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token_hash          text UNIQUE,
+    previous_refresh_token_hash text UNIQUE,
+    expires_at                  timestamptz,
+    device_name                 text NOT NULL DEFAULT '',
+    banned_at                   timestamptz,
+    access_history              jsonb NOT NULL DEFAULT '[]',
+    created_at                  timestamptz NOT NULL DEFAULT now(),
+    last_seen_at                timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE UNIQUE INDEX idx_devices_user_uuid ON devices(user_id, device_uuid);
+CREATE INDEX idx_devices_user_id ON devices(user_id);
+CREATE INDEX idx_devices_token_hash ON devices(refresh_token_hash) WHERE refresh_token_hash IS NOT NULL;
+CREATE INDEX idx_devices_banned ON devices(banned_at) WHERE banned_at IS NOT NULL;
 
 CREATE TABLE collections (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -139,7 +145,8 @@ CREATE TABLE jobs (
                                         'thumbnail_gen',
                                         'waveform_gen',
                                         'orphan_cleanup',
-                                        'integrity_check'
+                                        'integrity_check',
+                                        'device_cleanup'
                                     )),
     status                      text NOT NULL DEFAULT 'queued'
                                     CHECK (status IN ('queued','running','done','failed')),

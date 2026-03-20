@@ -19,7 +19,8 @@ import (
 type adminHandler struct {
 	db          *pgxpool.Pool // kept for Begin() in setCollectionAccess
 	users       *repository.UserRepository
-	sessions    *repository.SessionRepository
+	devices     *repository.DeviceRepository
+	guard       *DeviceGuard
 	collections *repository.CollectionRepository
 	media       *repository.MediaItemRepository
 	jobs        *repository.JobRepository
@@ -158,6 +159,17 @@ func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }
 
+// POST /api/v1/admin/maintenance/device-cleanup
+func (h *adminHandler) triggerDeviceCleanup(w http.ResponseWriter, r *http.Request) {
+	jobID, err := h.jobs.Create(r.Context(), "device_cleanup", nil, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+	slog.Info("device cleanup job queued", "job_id", jobID)
+	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
 // POST /api/v1/admin/users
 func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -261,63 +273,61 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.sessions.DeleteAllForUser(r.Context(), targetID); err != nil {
-		writeError(w, http.StatusInternalServerError, "db error")
-		return
-	}
-
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/v1/admin/users/:id/sessions
-func (h *adminHandler) listUserSessions(w http.ResponseWriter, r *http.Request) {
+// GET /api/v1/admin/users/:id/devices
+func (h *adminHandler) listUserDevices(w http.ResponseWriter, r *http.Request) {
 	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
-	h.authHandler.writeSessionList(w, r, targetID)
+	h.authHandler.writeDeviceList(w, r, targetID)
 }
 
-// DELETE /api/v1/admin/users/:id/sessions/:sessionId
-func (h *adminHandler) revokeUserSession(w http.ResponseWriter, r *http.Request) {
+// DELETE /api/v1/admin/users/:id/devices/:deviceId
+func (h *adminHandler) revokeUserDevice(w http.ResponseWriter, r *http.Request) {
 	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
-	sessionID, err := strconv.ParseInt(chi.URLParam(r, "sessionId"), 10, 64)
+	deviceID, err := strconv.ParseInt(chi.URLParam(r, "deviceId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid session id")
+		writeError(w, http.StatusBadRequest, "invalid device id")
 		return
 	}
 
-	affected, err := h.sessions.Delete(r.Context(), sessionID, targetID)
+	affected, err := h.devices.Delete(r.Context(), deviceID, targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "session not found")
+		writeError(w, http.StatusNotFound, "device not found")
 		return
 	}
 
+	h.guard.Revoke(deviceID, auth.AccessTokenTTL)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /api/v1/admin/users/:id/sessions
-func (h *adminHandler) revokeAllUserSessions(w http.ResponseWriter, r *http.Request) {
+// DELETE /api/v1/admin/users/:id/devices
+func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Request) {
 	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
 
-	if err := h.sessions.DeleteAllForUser(r.Context(), targetID); err != nil {
+	ids, err := h.devices.DeleteAllForUser(r.Context(), targetID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
+	h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 	w.WriteHeader(http.StatusNoContent)
 }
 
