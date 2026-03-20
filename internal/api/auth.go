@@ -149,7 +149,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		deviceID = existing.ID
-		if err := h.devices.UpdateSession(r.Context(), deviceID, hashRefresh, "", expiresAt, entry); err != nil {
+		if err := h.devices.UpdateSession(r.Context(), deviceID, hashRefresh, "", expiresAt, entry, body.DeviceName); err != nil {
 			writeError(w, http.StatusInternalServerError, "session update failed")
 			return
 		}
@@ -247,7 +247,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		Agent:    r.Header.Get("User-Agent"),
 		LastSeen: time.Now(),
 	}
-	if err := h.devices.UpdateSession(r.Context(), device.ID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), entry); err != nil {
+	if err := h.devices.UpdateSession(r.Context(), device.ID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), entry, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "token rotation failed")
 		return
 	}
@@ -285,6 +285,11 @@ func (h *authHandler) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	deviceID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid device id")
+		return
+	}
+
+	if deviceID == claims.DeviceID {
+		writeError(w, http.StatusForbidden, "cannot delete your own active device")
 		return
 	}
 

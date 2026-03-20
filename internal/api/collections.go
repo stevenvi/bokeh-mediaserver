@@ -41,7 +41,13 @@ func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := h.collections.GetByID(r.Context(), id)
+	userID, err := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "invalid token subject")
+		return
+	}
+
+	c, err := h.collections.GetByIDForUser(r.Context(), id, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -55,6 +61,18 @@ func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	exists, err := h.collections.ExistsEnabled(r.Context(), id)
+	if err != nil || !exists {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
+	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
+		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
@@ -72,6 +90,12 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	exists, err := h.collections.ExistsEnabled(r.Context(), id)
+	if err != nil || !exists {
+		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
@@ -105,6 +129,18 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	exists, err := h.collections.ExistsEnabled(r.Context(), id)
+	if err != nil || !exists {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
+	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
+		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 

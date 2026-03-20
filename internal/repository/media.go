@@ -22,15 +22,15 @@ func NewMediaItemRepository(db utils.DBTX) *MediaItemRepository {
 // GetByID returns a media item by ID, enforcing that the given user has access
 // to the collection it belongs to. Returns an error (→ 404) if the item does
 // not exist, is hidden, or the user lacks collection_access.
-func (r *MediaItemRepository) GetByID(ctx context.Context, id, userID int64) (*models.MediaItem, error) {
-	var item models.MediaItem
+func (r *MediaItemRepository) GetByID(ctx context.Context, id, userID int64) (*models.MediaItemView, error) {
+	var item models.MediaItemView
 	err := r.db.QueryRow(ctx,
-		`SELECT m.id, m.collection_id, m.title, m.mime_type, m.ordinal
+		`SELECT m.id, m.title, m.mime_type, m.ordinal
 		 FROM media_items m
 		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $2
 		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
 		id, userID,
-	).Scan(&item.ID, &item.CollectionID, &item.Title, &item.MimeType, &item.Ordinal)
+	).Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal)
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +56,14 @@ func (r *MediaItemRepository) GetRelativePath(ctx context.Context, id int64) (st
 
 // GetFileHash returns the content hash for a media item,
 // enforcing that the given user has collection_access for it.
-func (r *MediaItemRepository) GetFileHash(ctx context.Context, id int64) (string, error) {
+func (r *MediaItemRepository) GetFileHash(ctx context.Context, id, userID int64) (string, error) {
 	var hash string
-	err := r.db.QueryRow(ctx, `SELECT file_hash FROM media_items WHERE id = $1`, id).Scan(&hash)
+	err := r.db.QueryRow(ctx,
+		`SELECT m.file_hash FROM media_items m
+		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $2
+		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
+		id, userID,
+	).Scan(&hash)
 	return hash, err
 }
 
@@ -71,12 +76,24 @@ func (r *MediaItemRepository) UpdateTitle(ctx context.Context, id int64, title s
 }
 
 // ListByCollectionPaginated returns paginated media items for a collection.
-func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, collectionID int64, userID int64, limit, offset int) ([]models.MediaItem, error) {
+// Access is checked against the root ancestor collection, so sub-collections
+// are accessible if the user has access to the top-level parent.
+func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT m.id, m.collection_id, m.title, m.mime_type, m.ordinal
+		`WITH RECURSIVE ancestors AS (
+		     SELECT id, parent_collection_id FROM collections WHERE id = $1
+		     UNION ALL
+		     SELECT c.id, c.parent_collection_id FROM collections c
+		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
+		 )
+		 SELECT m.id, m.title, m.mime_type, m.ordinal
 		 FROM media_items m
-		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $4
 		 WHERE m.collection_id = $1 AND m.missing_since IS NULL AND m.hidden_at IS NULL
+		   AND EXISTS (
+		       SELECT 1 FROM collection_access ca
+		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		         AND ca.user_id = $4
+		   )
 		 ORDER BY m.ordinal ASC NULLS LAST, m.title ASC
 		 LIMIT $2 OFFSET $3`,
 		collectionID, limit, offset, userID,
@@ -86,10 +103,10 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 	}
 	defer rows.Close()
 
-	var items []models.MediaItem
+	items := []models.MediaItemView{}
 	for rows.Next() {
-		var item models.MediaItem
-		if err := rows.Scan(&item.ID, &item.CollectionID, &item.Title, &item.MimeType, &item.Ordinal); err != nil {
+		var item models.MediaItemView
+		if err := rows.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal); err != nil {
 			slog.Warn("scan media item", "collection_id", collectionID, "err", err)
 			continue
 		}
@@ -268,10 +285,10 @@ func (r *MediaItemRepository) GetPhotoMetadata(ctx context.Context, itemID int64
 func (r *MediaItemRepository) GetExifRaw(ctx context.Context, itemID int64, userID int64) ([]byte, error) {
 	var raw []byte
 	err := r.db.QueryRow(ctx,
-		`SELECT pm.exif_raw 
-		 FROM photo_metadata as pm
+		`SELECT pm.exif_raw
+		 FROM photo_metadata pm
 		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL
-		 JOIN collection c ON c.id = m.collection_id AND c.hidden_at IS NULL
+		 JOIN collections c ON c.id = m.collection_id
 		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $2
 		 WHERE pm.media_item_id = $1`, itemID, userID).Scan(&raw)
 	return raw, err

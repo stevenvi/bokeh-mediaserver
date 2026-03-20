@@ -24,11 +24,13 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /bin/mediaserver ./cmd/server
 # ── Runtime stage ──────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-# Runtime deps: libvips, exiftool
+# Runtime deps: libvips (shared library for Go bindings), vips CLI (for DZI tile generation), exiftool
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvips42 \
+    libvips-tools \
     exiftool \
     ca-certificates \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /bin/mediaserver /bin/mediaserver

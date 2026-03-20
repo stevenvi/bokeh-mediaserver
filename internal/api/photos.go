@@ -75,7 +75,7 @@ func (h *photosHandler) getItemFsPath(id int64, r *http.Request) (string, error)
 }
 
 func (h *photosHandler) getItemHash(id int64, r *http.Request) (string, error) {
-	return h.media.GetFileHash(r.Context(), id)
+	return h.media.GetFileHash(r.Context(), id, userIDFromRequest(r))
 }
 
 // GET /images/:id/:variant

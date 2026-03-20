@@ -1,0 +1,11 @@
+FROM python:3.14-slim
+
+RUN pip install uv
+
+WORKDIR /tests
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-dev
+
+COPY . .
+
+CMD ["uv", "run", "pytest", "-v"]

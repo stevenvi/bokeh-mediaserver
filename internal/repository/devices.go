@@ -97,7 +97,8 @@ func (r *DeviceRepository) Create(ctx context.Context, userID int64, uuid, name,
 }
 
 // UpdateSession rotates the token and updates last_seen_at and access_history for an existing device.
-func (r *DeviceRepository) UpdateSession(ctx context.Context, deviceID int64, newHash, oldHash string, expiresAt time.Time, entry models.AccessHistoryEntry) error {
+// If deviceName is non-empty, the device's display name is updated as well.
+func (r *DeviceRepository) UpdateSession(ctx context.Context, deviceID int64, newHash, oldHash string, expiresAt time.Time, entry models.AccessHistoryEntry, deviceName string) error {
 	entryJSON, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshal access history entry: %w", err)
@@ -109,6 +110,7 @@ func (r *DeviceRepository) UpdateSession(ctx context.Context, deviceID int64, ne
 		     previous_refresh_token_hash = $3,
 		     expires_at                  = $4,
 		     last_seen_at                = now(),
+		     device_name                 = CASE WHEN $6 != '' THEN $6 ELSE device_name END,
 		     access_history              = (
 		         SELECT jsonb_agg(e)
 		         FROM (
@@ -119,7 +121,7 @@ func (r *DeviceRepository) UpdateSession(ctx context.Context, deviceID int64, ne
 		         ) sub
 		     )
 		 WHERE id = $1`,
-		deviceID, newHash, oldHash, expiresAt, entryJSON,
+		deviceID, newHash, oldHash, expiresAt, entryJSON, deviceName,
 	)
 	return err
 }

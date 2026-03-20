@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +50,25 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 	body.RelativePath = strings.TrimSpace(body.RelativePath)
 	if body.Name == "" || body.Type == "" || body.RelativePath == "" {
 		writeError(w, http.StatusBadRequest, "name, type, and relative_path are required")
+		return
+	}
+
+	// Verify the path exists on the filesystem.
+	fullPath := filepath.Join(h.mediaPath, body.RelativePath)
+	if info, err := os.Stat(fullPath); err != nil {
+		writeError(w, http.StatusBadRequest, "path does not exist: "+body.RelativePath)
+		return
+	} else if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory: "+body.RelativePath)
+		return
+	}
+
+	// Verify no other collection already uses this path.
+	if exists, err := h.collections.ExistsByRelativePath(r.Context(), body.RelativePath); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	} else if exists {
+		writeError(w, http.StatusConflict, "a collection with that path already exists")
 		return
 	}
 
@@ -329,6 +350,23 @@ func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Reque
 
 	h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/admin/users/:userId/collection_access — list collection IDs the user has access to
+func (h *adminHandler) getCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	ids, err := h.collections.ListAccessForUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ids)
 }
 
 // PATCH /api/v1/admin/users/:userId/collection_access — grant access to collections (duplicates silently ignored)

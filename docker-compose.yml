@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mediaserver}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mediaserver}
-      POSTGRES_DB: ${POSTGRES_DB:-mediaserver}
+      POSTGRES_DB: ${POSTGRES_DB:-bokeh_mediaserver}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -28,7 +28,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-mediaserver}:${POSTGRES_PASSWORD:-mediaserver}@postgres:5432/${POSTGRES_DB:-mediaserver}
+      DATABASE_URL: postgres://${POSTGRES_USER:-mediaserver}:${POSTGRES_PASSWORD:-mediaserver}@postgres:5432/${POSTGRES_DB:-bokeh_mediaserver}
       DATA_PATH: /data
       PORT: 3000
       JWT_SECRET: ${JWT_SECRET}

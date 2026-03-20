@@ -74,6 +74,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 
 		// Image serving
 		r.Get("/images/{id}/{variant}", photos.serveVariant)
+		r.Head("/images/{id}/{variant}", photos.serveVariant)
 		r.Get("/images/{id}/exif", photos.getExif)
 		r.Get("/images/{id}/tiles/image.dzi", photos.serveDZIManifest)
 		r.Get("/images/{id}/tiles/*", photos.serveDZITile)
@@ -97,6 +98,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Get("/api/v1/admin/jobs/{id}", admin.getJob)
 		r.Get("/api/v1/admin/jobs/{id}/events", admin.jobEvents)
 
+		r.Get("/api/v1/admin/users/{userId}/collection_access", admin.getCollectionAccess)
 		r.Patch("/api/v1/admin/users/{userId}/collection_access", admin.grantCollectionAccess)
 		r.Post("/api/v1/admin/users/{userId}/collection_access", admin.setCollectionAccess)
 		r.Delete("/api/v1/admin/users/{userId}/collection_access/{collectionId}", admin.revokeCollectionAccess)

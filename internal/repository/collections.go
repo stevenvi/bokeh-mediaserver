@@ -19,6 +19,16 @@ func NewCollectionRepository(db utils.DBTX) *CollectionRepository {
 	return &CollectionRepository{db: db}
 }
 
+// ExistsByRelativePath returns true if any collection already uses the given relative_path.
+func (r *CollectionRepository) ExistsByRelativePath(ctx context.Context, relativePath string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM collections WHERE relative_path = $1)`,
+		relativePath,
+	).Scan(&exists)
+	return exists, err
+}
+
 // Create inserts a new top-level collection and returns its ID.
 func (r *CollectionRepository) Create(ctx context.Context, name, colType, relativePath string) (int64, error) {
 	var id int64
@@ -75,7 +85,7 @@ func (r *CollectionRepository) ListTopLevel(ctx context.Context) ([]models.Colle
 	}
 	defer rows.Close()
 
-	var collections []models.Collection
+	collections := []models.Collection{}
 	for rows.Next() {
 		var c models.Collection
 		if err := rows.Scan(
@@ -131,7 +141,7 @@ func (r *CollectionRepository) ListChildren(ctx context.Context, parentID int64)
 	}
 	defer rows.Close()
 
-	var collections []models.Collection
+	collections := []models.Collection{}
 	for rows.Next() {
 		var c models.Collection
 		if err := rows.Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type); err != nil {
@@ -140,6 +150,80 @@ func (r *CollectionRepository) ListChildren(ctx context.Context, parentID int64)
 		collections = append(collections, c)
 	}
 	return collections, nil
+}
+
+// ExistsEnabled returns true if a collection with the given ID exists and is enabled.
+func (r *CollectionRepository) ExistsEnabled(ctx context.Context, id int64) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM collections WHERE id = $1 AND is_enabled = true)`,
+		id,
+	).Scan(&exists)
+	return exists, err
+}
+
+// GetByIDForUser returns a collection by ID, enforcing that the user has collection_access
+// to the root ancestor of the collection. Returns an error (→ 404) if not found or no access.
+func (r *CollectionRepository) GetByIDForUser(ctx context.Context, id, userID int64) (*models.CollectionView, error) {
+	var c models.CollectionView
+	err := r.db.QueryRow(ctx,
+		`WITH RECURSIVE ancestors AS (
+		     SELECT id, parent_collection_id FROM collections WHERE id = $1 AND is_enabled = true
+		     UNION ALL
+		     SELECT c.id, c.parent_collection_id FROM collections c
+		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
+		 )
+		 SELECT c.id, c.parent_collection_id, c.name, c.type
+		 FROM collections c
+		 WHERE c.id = $1 AND c.is_enabled = true
+		   AND EXISTS (
+		       SELECT 1 FROM collection_access ca
+		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		         AND ca.user_id = $2
+		   )`,
+		id, userID,
+	).Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// HasAccessToCollection returns true if the user has collection_access for the root
+// ancestor of the given collection.
+func (r *CollectionRepository) HasAccessToCollection(ctx context.Context, collectionID, userID int64) (bool, error) {
+	var hasAccess bool
+	err := r.db.QueryRow(ctx,
+		`WITH RECURSIVE ancestors AS (
+		     SELECT id, parent_collection_id FROM collections WHERE id = $1 AND is_enabled = true
+		     UNION ALL
+		     SELECT c.id, c.parent_collection_id FROM collections c
+		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
+		 )
+		 SELECT EXISTS (
+		     SELECT 1 FROM collection_access ca
+		     WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		       AND ca.user_id = $2
+		 )`,
+		collectionID, userID,
+	).Scan(&hasAccess)
+	return hasAccess, err
+}
+
+// ListAccessForUser returns the collection IDs the user has been explicitly granted access to.
+func (r *CollectionRepository) ListAccessForUser(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT collection_id FROM collection_access WHERE user_id = $1 ORDER BY collection_id`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if ids == nil {
+		ids = []int64{}
+	}
+	return ids, err
 }
 
 // UpsertSubCollection upserts a sub-collection (directory) during scanning.

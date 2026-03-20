@@ -168,7 +168,7 @@ func ExifTime(m map[string]any, key string) *time.Time {
 	if !ok {
 		return nil
 	}
-	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, time.Local)
+	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, time.UTC)
 	if err != nil {
 		return nil
 	}

@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: bokeh_integration
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d bokeh_integration"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://test:test@postgres/bokeh_integration?sslmode=disable
+      JWT_SECRET: integration-test-secret-do-not-use-in-prod
+      DATA_PATH: /data-bokeh-integration-test
+      MEDIA_PATH: /media
+      LOG_LEVEL: warn
+    volumes:
+      - server_data:/data-bokeh-integration-test
+      - ./testdata/media:/media:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/v1/system/health || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      BASE_URL: http://server:3000
+      DB_DSN: "host=postgres port=5432 dbname=bokeh_integration user=test password=test"
+      DATA_PATH: /data-bokeh-integration-test
+    volumes:
+      - server_data:/data-bokeh-integration-test
+    depends_on:
+      server:
+        condition: service_healthy
+
+volumes:
+  server_data:

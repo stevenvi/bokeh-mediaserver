@@ -68,17 +68,36 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			}
 		}
 
+		// Strip keys that are large, redundant, or expose internal paths before storage.
+		for _, key := range []string{"Directory", "SourceFile", "PreviewImage", "ThumbnailImage", "TiffMeteringImage"} {
+			delete(exifData, key)
+		}
+
 		// Upsert photo_metadata
 		rawJSON, _ := json.Marshal(exifData)
+		// "ISO" is an exiftool composite shorthand; "PhotographicSensitivity" is the
+		// actual EXIF spec tag. Some container formats (e.g. AVIF) only emit the latter.
+		isoValue := utils.ExifInt(exifData, "ISO")
+		if isoValue == nil {
+			isoValue = utils.ExifInt(exifData, "PhotographicSensitivity")
+		}
+
+		// "FocalLengthIn35mmFormat" is an exiftool alias; "FocalLenIn35mmFilm" is the
+		// canonical EXIF tag name (0xA405). Some formats only emit the latter.
+		focalLength35mm := utils.ExifFloat(exifData, "FocalLengthIn35mmFormat")
+		if focalLength35mm == nil {
+			focalLength35mm = utils.ExifFloat(exifData, "FocalLenIn35mmFilm")
+		}
+
 		err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
 			utils.ExifInt(exifData, "ImageWidth"), utils.ExifInt(exifData, "ImageHeight"),
 			takenAt(fsPath, exifData),
 			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
 			utils.ExifStr(exifData, "ExposureTime"),
 			utils.ExifFloat(exifData, "FNumber"),
-			utils.ExifInt(exifData, "ISO"),
+			isoValue,
 			utils.ExifFloat(exifData, "FocalLength"),
-			utils.ExifFloat(exifData, "FocalLengthIn35mmFormat"),
+			focalLength35mm,
 			utils.ExifStr(exifData, "ColorSpace"),
 			utils.ExifStr(exifData, "Description"),
 			rawJSON,
@@ -116,10 +135,15 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 }
 
 // takenAt returns the best available timestamp for a media file.
-// It prefers DateTimeOriginal from EXIF; if absent, returns the earliest of
-// FileCreateDate, FileModifyDate (from exiftool), and the OS mod time.
+// Preference order:
+//  1. DateTimeOriginal — standard EXIF capture time
+//  2. CreateDate — EXIF digitized time; used by Lightroom/Photoshop AVIF exports
+//  3. Earliest of FileCreateDate, FileModifyDate (exiftool), and OS mod time
 func takenAt(fsPath string, exifData map[string]any) *time.Time {
 	if t := utils.ExifTime(exifData, "DateTimeOriginal"); t != nil {
+		return t
+	}
+	if t := utils.ExifTime(exifData, "CreateDate"); t != nil {
 		return t
 	}
 

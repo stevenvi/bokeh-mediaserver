@@ -35,7 +35,6 @@ type MediaItem struct {
 }
 
 type PhotoMetadata struct {
-	MediaItemID          int64      `json:"media_item_id"`
 	WidthPx              *int       `json:"width_px,omitempty"`
 	HeightPx             *int       `json:"height_px,omitempty"`
 	CreatedAt            *time.Time `json:"created_at,omitempty"`
@@ -78,6 +77,25 @@ type CollectionSummary struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// CollectionView is the user-facing detail view of a single collection.
+type CollectionView struct {
+	ID                 int64  `json:"id"`
+	ParentCollectionID *int64 `json:"parent_collection_id,omitempty"`
+	Name               string `json:"name"`
+	Type               string `json:"type"`
+}
+
+// MediaItemView is the user-facing projection of a media item in a collection listing.
+type MediaItemView struct {
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	MimeType string `json:"mime_type"`
+	Ordinal  *int   `json:"ordinal,omitempty"`
+
+	// Populated when fetching item detail
+	Photo *PhotoMetadata `json:"photo,omitempty"`
 }
 
 // SlideshowItem is a projection used by the slideshow endpoint.
