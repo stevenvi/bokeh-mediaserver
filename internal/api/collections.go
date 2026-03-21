@@ -1,11 +1,15 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
@@ -120,11 +124,36 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// slideshowCursor encodes the position of the last item returned in a slideshow page.
+type slideshowCursor struct {
+	CreatedAt *time.Time `json:"t,omitempty"`
+	ID        int64      `json:"i"`
+}
+
+func encodeSlideshowCursor(item models.SlideshowItem) string {
+	b, _ := json.Marshal(slideshowCursor{CreatedAt: item.CreatedAt, ID: item.ID})
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeSlideshowCursor(s string) (slideshowCursor, bool) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return slideshowCursor{}, false
+	}
+	var c slideshowCursor
+	if err := json.Unmarshal(b, &c); err != nil {
+		return slideshowCursor{}, false
+	}
+	return c, true
+}
+
 // GET /api/v1/collections/:id/slideshow
-// Returns all descendant photo items via recursive CTE, ordered by taken_at.
-// TODO: Allow random order as well
-// TODO: Allow pagination of slideshow if possible
-// TODO: What is this payload size going to look like if you have a huge collection?
+// Returns a paginated keyset view of all descendant photo items ordered by created_at.
+// Query params:
+//
+//	order     = asc (default) | desc
+//	page_size = 1–200, default 50
+//	cursor    = opaque token from previous response's next_cursor field
 func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -144,13 +173,43 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.collections.GetSlideshowItems(r.Context(), id)
+	orderParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
+	ascending := orderParam != "desc"
+
+	pageSize := queryInt(r, "page_size", 50)
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	var hasCursor bool
+	var cursor slideshowCursor
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		cursor, hasCursor = decodeSlideshowCursor(raw)
+		if !hasCursor {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+	}
+
+	// Repository fetches pageSize+1; the extra row signals that a next page exists.
+	rows, err := h.collections.GetSlideshowItems(r.Context(), id, pageSize, ascending, hasCursor, cursor.CreatedAt, cursor.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, items)
+	var nextCursor *string
+	if len(rows) > pageSize {
+		rows = rows[:pageSize]
+		s := encodeSlideshowCursor(rows[pageSize-1])
+		nextCursor = &s
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       rows,
+		"next_cursor": nextCursor,
+		"page_size":   pageSize,
+	})
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

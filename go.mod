@@ -9,6 +9,7 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/rs/cors v1.11.1
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.49.0
 )

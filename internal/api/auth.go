@@ -18,17 +18,18 @@ import (
 )
 
 type authHandler struct {
-	db      utils.DBTX
-	users   *repository.UserRepository
-	devices *repository.DeviceRepository
-	guard   *DeviceGuard
-	rl      *loginRateLimiter
-	plugins map[string]auth.Plugin
-	secret  string
+	db         utils.DBTX
+	users      *repository.UserRepository
+	devices    *repository.DeviceRepository
+	guard      *DeviceGuard
+	rl         *loginRateLimiter
+	plugins    map[string]auth.Plugin
+	secret     string
+	production bool
 }
 
-func newAuthHandler(db utils.DBTX, users *repository.UserRepository, devices *repository.DeviceRepository, guard *DeviceGuard, rl *loginRateLimiter, secret string, plugins map[string]auth.Plugin) *authHandler {
-	return &authHandler{db: db, users: users, devices: devices, guard: guard, rl: rl, secret: secret, plugins: plugins}
+func newAuthHandler(db utils.DBTX, users *repository.UserRepository, devices *repository.DeviceRepository, guard *DeviceGuard, rl *loginRateLimiter, secret string, plugins map[string]auth.Plugin, production bool) *authHandler {
+	return &authHandler{db: db, users: users, devices: devices, guard: guard, rl: rl, secret: secret, plugins: plugins, production: production}
 }
 
 // clientIP returns the request's remote IP, stripping the port if present.
@@ -39,6 +40,49 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return ip
+}
+
+// setAuthCookies sets httpOnly auth cookies for both the access and refresh tokens.
+// Cookies are marked Secure only in production to allow http:// in development.
+func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string, production bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "access_token",
+		Value:    accessToken,
+		Path:     "/",
+		MaxAge:   int(auth.AccessTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   production,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Path:     "/api/v1/auth/refresh",
+		MaxAge:   int(auth.RefreshTokenTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   production,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// clearAuthCookies overwrites both auth cookies with empty expired values.
+func clearAuthCookies(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "access_token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		Path:     "/api/v1/auth/refresh",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 // GET /api/v1/auth/providers
@@ -163,6 +207,10 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set httpOnly cookies before writing the response body.
+	setAuthCookies(w, accessToken, rawRefresh, h.production)
+
+	// Also include tokens in the JSON body for convenience
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":             accessToken,
 		"access_token_expires_in":  int(auth.AccessTokenTTL.Seconds()),
@@ -174,20 +222,38 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/auth/refresh
 func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
+	// Try cookie first, fall back to JSON body for each field.
+	var refreshToken, deviceUUID = "", ""
+
+	if cookie, err := r.Cookie("refresh_token"); err == nil {
+		refreshToken = cookie.Value
+	}
+
 	var body struct {
 		RefreshToken string `json:"refresh_token"`
 		DeviceUUID   string `json:"device_uuid"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RefreshToken == "" {
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid message body")
+		return
+	}
+
+	deviceUUID = body.DeviceUUID
+	if refreshToken == "" {
+		refreshToken = body.RefreshToken
+	}
+
+	if strings.TrimSpace(refreshToken) == "" {
 		writeError(w, http.StatusBadRequest, "refresh_token is required")
 		return
 	}
-	if strings.TrimSpace(body.DeviceUUID) == "" {
+	if strings.TrimSpace(deviceUUID) == "" {
 		writeError(w, http.StatusBadRequest, "device_uuid is required")
 		return
 	}
 
-	hash := auth.HashRefreshToken(body.RefreshToken)
+	hash := auth.HashRefreshToken(refreshToken)
 	ip := clientIP(r)
 
 	// Check for replayed (already-rotated) token — indicates theft.
@@ -202,6 +268,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 		slog.Warn("refresh token reuse detected — all devices revoked",
 			"user_id", stolenUserID, "ip", ip)
+		clearAuthCookies(w)
 		writeError(w, http.StatusUnauthorized, "refresh token reuse detected; all devices have been revoked")
 		return
 	}
@@ -216,11 +283,12 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	// Verify device_uuid matches — mismatch indicates stolen token.
 	// This is a little heavy-handed, maybe we should just revoke the offending device instead of all devices?
 	// TODO: Deleted data provides no audit log!
-	if device.DeviceUUID != body.DeviceUUID {
+	if device.DeviceUUID != deviceUUID {
 		ids, _ := h.devices.DeleteAllForUser(r.Context(), device.UserID)
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 		slog.Warn("refresh device_uuid mismatch — all devices revoked",
 			"user_id", device.UserID, "ip", ip)
+		clearAuthCookies(w)
 		writeError(w, http.StatusUnauthorized, "device mismatch; all devices have been revoked")
 		return
 	}
@@ -260,6 +328,8 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setAuthCookies(w, accessToken, rawRefresh, h.production)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":             accessToken,
 		"access_token_expires_in":  int(auth.AccessTokenTTL.Seconds()),
@@ -267,6 +337,20 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		"refresh_token_expires_in": int(auth.RefreshTokenTTL.Seconds()),
 		"device_id":                device.ID,
 	})
+}
+
+// POST /api/v1/auth/logout
+func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
+
+	// Delete the device row so its refresh token becomes invalid immediately.
+	_, _ = h.devices.Delete(r.Context(), claims.DeviceID, userID)
+	// Revoke the access token for its remaining TTL via the in-memory guard.
+	h.guard.Revoke(claims.DeviceID, auth.AccessTokenTTL)
+
+	clearAuthCookies(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/v1/auth/devices
@@ -397,9 +481,10 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":       user.ID,
-		"name":     user.Name,
-		"is_admin": user.IsAdmin,
+		"id":        user.ID,
+		"name":      user.Name,
+		"is_admin":  user.IsAdmin,
+		"device_id": claims.DeviceID,
 	})
 }
 

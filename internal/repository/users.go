@@ -92,6 +92,25 @@ func (r *UserRepository) TouchLastSeen(ctx context.Context, userID int64) {
 	_, _ = r.db.Exec(ctx, `UPDATE users SET last_seen_at = now() WHERE id = $1`, userID)
 }
 
+// ListAll returns id and name for every user, ordered by id.
+func (r *UserRepository) ListAll(ctx context.Context) ([]models.User, error) {
+	rows, err := r.db.Query(ctx, `SELECT id, name FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var u models.User
+		if err := rows.Scan(&u.ID, &u.Name); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // Delete removes a user and returns the number of rows affected.
 func (r *UserRepository) Delete(ctx context.Context, userID int64) (int64, error) {
 	tag, err := r.db.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)

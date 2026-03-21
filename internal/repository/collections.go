@@ -226,6 +226,22 @@ func (r *CollectionRepository) ListAccessForUser(ctx context.Context, userID int
 	return ids, err
 }
 
+// ListUsersWithAccess returns the user IDs that have been explicitly granted access to a collection.
+func (r *CollectionRepository) ListUsersWithAccess(ctx context.Context, collectionID int64) ([]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT user_id FROM collection_access WHERE collection_id = $1 ORDER BY user_id`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if ids == nil {
+		ids = []int64{}
+	}
+	return ids, err
+}
+
 // UpsertSubCollection upserts a sub-collection (directory) during scanning.
 // rootCollectionID is used to inherit the collection type.
 func (r *CollectionRepository) UpsertSubCollection(ctx context.Context, parentID, rootCollectionID int64, name, relativePath string) (int64, error) {
@@ -297,7 +313,28 @@ func (r *CollectionRepository) GrantAccess(ctx context.Context, userID int64, co
 	return err
 }
 
+// GrantAccessToUsers grants a set of users access to the given collection (idempotent).
+func (r *CollectionRepository) GrantAccessToUsers(ctx context.Context, collectionID int64, userIDs []int64) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO collection_access (user_id, collection_id)
+		 SELECT unnest($1::bigint[]), $2
+		 ON CONFLICT DO NOTHING`,
+		userIDs, collectionID,
+	)
+	return err
+}
+
 // DeleteAllAccess removes all collection access for a user.
+// Delete removes a collection by ID and returns the number of rows affected.
+// Dependent rows (child collections, media_items, collection_access) cascade automatically.
+func (r *CollectionRepository) Delete(ctx context.Context, collectionID int64) (int64, error) {
+	tag, err := r.db.Exec(ctx, `DELETE FROM collections WHERE id = $1`, collectionID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (r *CollectionRepository) DeleteAllAccess(ctx context.Context, userID int64) error {
 	_, err := r.db.Exec(ctx,
 		`DELETE FROM collection_access WHERE user_id = $1`, userID,
@@ -314,30 +351,83 @@ func (r *CollectionRepository) RevokeAccess(ctx context.Context, userID, collect
 	return err
 }
 
-// GetSlideshowItems returns all descendant photo items via recursive CTE.
-func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, collectionID int64) ([]models.SlideshowItem, error) {
-	rows, err := r.db.Query(ctx,
-		`WITH RECURSIVE collection_tree AS (
-		     SELECT id FROM collections WHERE id = $1
-		     UNION ALL
-		     SELECT c.id FROM collections c
-		     INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
-		 )
-		 SELECT
-		     mi.id,
-		     mi.title,
-		     mi.mime_type,
-		     pm.taken_at,
-		     pm.placeholder,
-		     pm.width_px,
-		     pm.height_px
-		 FROM media_items mi
-		 JOIN photo_metadata pm ON pm.media_item_id = mi.id
-		 WHERE mi.collection_id = ANY(SELECT id FROM collection_tree)
-		   AND mi.missing_since IS NULL
-		 ORDER BY pm.taken_at ASC NULLS LAST, mi.id ASC`,
-		collectionID,
+// GetSlideshowItems returns a page of descendant photo items via keyset pagination.
+// ascending controls sort direction on created_at; NULLS are always last.
+// Pass hasCursor=false for the first page. For subsequent pages, pass the CreatedAt and ID
+// of the last item from the previous page as the cursor. pageSize+1 rows are requested
+// internally; the caller must trim and detect the next page.
+func (r *CollectionRepository) GetSlideshowItems(
+	ctx context.Context,
+	collectionID int64,
+	pageSize int,
+	ascending bool,
+	hasCursor bool,
+	cursorTakenAt *time.Time,
+	cursorID int64,
+) ([]models.SlideshowItem, error) {
+	args := []any{collectionID, pageSize + 1} // +1 lets caller detect whether a next page exists
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	var cursorClause string
+	if hasCursor {
+		if ascending {
+			if cursorTakenAt != nil {
+				ts, id := addArg(*cursorTakenAt), addArg(cursorID)
+				cursorClause = fmt.Sprintf(
+					`AND (pm.created_at > %s OR (pm.created_at = %s AND mi.id > %s) OR pm.created_at IS NULL)`,
+					ts, ts, id)
+			} else {
+				id := addArg(cursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id > %s)`, id)
+			}
+		} else {
+			if cursorTakenAt != nil {
+				ts, id := addArg(*cursorTakenAt), addArg(cursorID)
+				cursorClause = fmt.Sprintf(
+					`AND (pm.created_at < %s OR (pm.created_at = %s AND mi.id < %s) OR pm.created_at IS NULL)`,
+					ts, ts, id)
+			} else {
+				id := addArg(cursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id < %s)`, id)
+			}
+		}
+	}
+
+	dir := "ASC"
+	if !ascending {
+		dir = "DESC"
+	}
+
+	query := fmt.Sprintf(`
+		WITH RECURSIVE collection_tree AS (
+		    SELECT id FROM collections WHERE id = $1
+		    UNION ALL
+		    SELECT c.id FROM collections c
+		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
+		)
+		SELECT
+		    mi.id,
+		    mi.title,
+		    mi.mime_type,
+		    pm.created_at,
+		    pm.placeholder,
+		    pm.width_px,
+		    pm.height_px
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE mi.collection_id = ANY(SELECT id FROM collection_tree)
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL
+		  %s
+		ORDER BY pm.created_at %s NULLS LAST, mi.id %s
+		LIMIT $2`,
+		cursorClause, dir, dir,
 	)
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

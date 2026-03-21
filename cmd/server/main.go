@@ -107,7 +107,7 @@ func run() error {
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(db_pool, mainPool, guard, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath)
+	router := api.NewRouter(db_pool, mainPool, guard, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

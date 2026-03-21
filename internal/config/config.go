@@ -19,17 +19,21 @@ type Config struct {
 	ProcessingWorkerCount int    // Number of worker goroutines for media processing (EXIF, variants)
 	LogLevel              string // Log level (debug, info, warn, error)
 	LogPath               string // Path to output log files to (empty for stdout)
+	ClientOrigin          string // Allowed CORS origin for the web client (e.g. http://localhost:5173); empty disables CORS
+	Production            bool   // Enables Secure flag on auth cookies; set DEPLOY_ENV=production
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		DatabaseURL: env("DATABASE_URL", ""),
-		DataPath:    env("DATA_PATH", "./data"),
-		MediaPath:   env("MEDIA_PATH", "/media"),
-		Port:        env("PORT", "3000"),
-		JWTSecret:   env("JWT_SECRET", ""),
-		LogLevel:    env("LOG_LEVEL", "warn"),
-		LogPath:     env("LOG_PATH", ""),
+		DatabaseURL:  env("DATABASE_URL", ""),
+		DataPath:     env("DATA_PATH", "./data"),
+		MediaPath:    env("MEDIA_PATH", "/media"),
+		Port:         env("PORT", "3000"),
+		JWTSecret:    env("JWT_SECRET", ""),
+		LogLevel:     env("LOG_LEVEL", "warn"),
+		LogPath:      env("LOG_PATH", ""),
+		ClientOrigin: env("CLIENT_ORIGIN", ""),
+		Production:   env("DEPLOY_ENV", "") == "production",
 	}
 
 	workerCount, err := strconv.Atoi(env("WORKER_COUNT", "2"))

@@ -139,6 +139,11 @@ func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
 	}
 	defer src.Close()
 
+	// Apply EXIF orientation before any resizing so all variants are correctly rotated.
+	if err := src.AutoRotate(); err != nil {
+		return fmt.Errorf("auto-rotate: %w", err)
+	}
+
 	// Determine the longest edge for resizing decisions
 	srcLongestEdge := max(src.Width(), src.Height())
 

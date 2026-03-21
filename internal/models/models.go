@@ -100,13 +100,13 @@ type MediaItemView struct {
 
 // SlideshowItem is a projection used by the slideshow endpoint.
 type SlideshowItem struct {
-	ID          int64  `json:"id"`
-	Title       string `json:"title"`
-	MimeType    string `json:"mime_type"`
-	TakenAt     any    `json:"taken_at"`
-	Placeholder any    `json:"placeholder"`
-	WidthPx     any    `json:"width_px"`
-	HeightPx    any    `json:"height_px"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	MimeType    string     `json:"mime_type"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	Placeholder *string    `json:"placeholder,omitempty"`
+	WidthPx     *int       `json:"width_px,omitempty"`
+	HeightPx    *int       `json:"height_px,omitempty"`
 }
 
 // Device is the full internal representation of a device row.

@@ -23,15 +23,31 @@ func ClaimsFromContext(ctx context.Context) *auth.Claims {
 
 // requireJWT validates the Bearer token, checks the device guard, injects
 // claims into the request context, and optionally enforces the admin claim.
+// It tries the httpOnly access_token cookie first, then falls back to the
+// Authorization: Bearer header for backwards-compatibility.
 func requireJWT(secret string, guard *DeviceGuard, adminOnly bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			header := r.Header.Get("Authorization")
-			if !strings.HasPrefix(header, "Bearer ") {
-				writeError(w, http.StatusUnauthorized, "missing or invalid authorization header")
+			var tokenStr = ""
+
+			// Prefer the httpOnly cookie set by the login/refresh endpoints.
+			if cookie, err := r.Cookie("access_token"); err == nil {
+				tokenStr = cookie.Value
+			}
+
+			// Fall back to the Authorization: Bearer header.
+			if strings.TrimSpace(tokenStr) == "" {
+				if header := r.Header.Get("Authorization"); strings.HasPrefix(header, "Bearer ") {
+					tokenStr = strings.TrimPrefix(header, "Bearer ")
+				}
+			}
+
+			if tokenStr == "" {
+				writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
 				return
 			}
-			claims, err := auth.ParseToken(strings.TrimPrefix(header, "Bearer "), secret)
+
+			claims, err := auth.ParseToken(tokenStr, secret)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, "invalid or expired token")
 				return

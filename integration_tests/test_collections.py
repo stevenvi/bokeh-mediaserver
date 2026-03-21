@@ -156,6 +156,15 @@ def revoke_collection_access(admin_token: str, user_id: int, collection_id: int)
     )
     r.raise_for_status()
 
+# ── Variant existence helper ─────────────────────────────────────────────────
+# Mirrors imaging.GenerateVariant: a variant is only written when the source's
+# longest edge strictly exceeds the variant's target size.
+_VARIANT_SIZES = {"thumb": 400, "small": 1280, "preview": 1920}
+
+def should_variant_exist(width: int, height: int, variant: str) -> bool:
+    return max(width, height) > _VARIANT_SIZES[variant]
+
+
 # ── Known BLAKE2b-256 hashes for photo-album-1 test images ──────────────────
 # Computed offline from the files in testdata/media/photo-album-1/.
 PHOTO_ALBUM_1_FILES = {
@@ -275,16 +284,19 @@ class TestSingleTierCollection:
             TestSingleTierCollection.item_map[item.title] = item
 
     def test_04_filesystem_variants_exist(self, data_path):
-        """All three images should have thumb/small/preview AVIF variants and DZI tiles."""
+        """Images should have AVIF variants and DZI tiles for sizes that fit within source dimensions."""
         for name, info in PHOTO_ALBUM_1_FILES.items():
             h = info["hash"]
+            w, ht = info["width_px"], info["height_px"]
             for variant in ("thumb", "small", "preview"):
-                path = variant_path(data_path, h, variant, "avif")
-                assert os.path.isfile(path), f"missing {variant}.avif for {name}"
-            
-            # thumb also gets a JPEG pre-generated
-            jpeg = variant_path(data_path, h, "thumb", "jpg")
-            assert os.path.isfile(jpeg), f"missing thumb.jpg for {name}"
+                if should_variant_exist(w, ht, variant):
+                    path = variant_path(data_path, h, variant, "avif")
+                    assert os.path.isfile(path), f"missing {variant}.avif for {name}"
+
+            # thumb JPEG is only pre-generated when thumb itself is generated
+            if should_variant_exist(w, ht, "thumb"):
+                jpeg = variant_path(data_path, h, "thumb", "jpg")
+                assert os.path.isfile(jpeg), f"missing thumb.jpg for {name}"
             
             # DZI manifest
             assert os.path.isfile(dzi_manifest_path(data_path, h)), f"missing DZI for {name}"
@@ -323,11 +335,14 @@ class TestSingleTierCollection:
 
         for name, expected in PHOTO_ALBUM_1_FILES.items():
             item_id = item_map[expected["title"]].id
+            w, h = expected["width_px"], expected["height_px"]
             for variant in ("thumb", "small", "preview"):
-                assert image_variant_exists(admin_token, item_id, variant, "image/avif"), f"{variant} AVIF for {name} not served"
+                if should_variant_exist(w, h, variant):
+                    assert image_variant_exists(admin_token, item_id, variant, "image/avif"), f"{variant} AVIF for {name} not served"
 
-            # And preview jpeg should exist too
-            assert image_variant_exists(admin_token, item_id, "thumb", "image/jpeg"), f"thumb JPEG for {name} not served"
+            # thumb JPEG is only pre-generated when thumb itself is generated
+            if should_variant_exist(w, h, "thumb"):
+                assert image_variant_exists(admin_token, item_id, "thumb", "image/jpeg"), f"thumb JPEG for {name} not served"
 
     def test_07_exif_endpoint(self, admin_token):
         """GET /images/:id/exif should return JSON EXIF data."""

@@ -91,7 +91,7 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 
 		err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
 			utils.ExifInt(exifData, "ImageWidth"), utils.ExifInt(exifData, "ImageHeight"),
-			takenAt(fsPath, exifData),
+			createdAt(fsPath, exifData),
 			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
 			utils.ExifStr(exifData, "ExposureTime"),
 			utils.ExifFloat(exifData, "FNumber"),
@@ -134,12 +134,12 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 	}
 }
 
-// takenAt returns the best available timestamp for a media file.
+// createdAt returns the best available timestamp for a media file.
 // Preference order:
 //  1. DateTimeOriginal — standard EXIF capture time
 //  2. CreateDate — EXIF digitized time; used by Lightroom/Photoshop AVIF exports
 //  3. Earliest of FileCreateDate, FileModifyDate (exiftool), and OS mod time
-func takenAt(fsPath string, exifData map[string]any) *time.Time {
+func createdAt(fsPath string, exifData map[string]any) *time.Time {
 	if t := utils.ExifTime(exifData, "DateTimeOriginal"); t != nil {
 		return t
 	}

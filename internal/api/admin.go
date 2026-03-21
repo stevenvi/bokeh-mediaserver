@@ -90,6 +90,27 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "scan_job_id": jobID})
 }
 
+// DELETE /api/v1/admin/collections/:id
+func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) {
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	affected, err := h.collections.Delete(r.Context(), collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GET /api/v1/admin/collections
 func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	collections, err := h.collections.ListTopLevel(r.Context())
@@ -189,6 +210,24 @@ func (h *adminHandler) triggerDeviceCleanup(w http.ResponseWriter, r *http.Reque
 	}
 	slog.Info("device cleanup job queued", "job_id", jobID)
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
+// GET /api/v1/admin/users
+func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.users.ListAll(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	type userSummary struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	out := make([]userSummary, len(users))
+	for i, u := range users {
+		out[i] = userSummary{ID: u.ID, Name: u.Name}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // POST /api/v1/admin/users
@@ -349,6 +388,47 @@ func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.guard.RevokeMany(ids, auth.AccessTokenTTL)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/admin/collections/:id/users — list user IDs that have access to a collection
+func (h *adminHandler) listCollectionUsers(w http.ResponseWriter, r *http.Request) {
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+
+	ids, err := h.collections.ListUsersWithAccess(r.Context(), collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ids)
+}
+
+// POST /api/v1/admin/collections/:id/users — grant access to a collection for a list of users
+func (h *adminHandler) grantUsersCollectionAccess(w http.ResponseWriter, r *http.Request) {
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+
+	var body struct {
+		UserIDs []int64 `json:"user_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.UserIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "user_ids must be a non-empty array")
+		return
+	}
+
+	if err := h.collections.GrantAccessToUsers(r.Context(), collectionID, body.UserIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
