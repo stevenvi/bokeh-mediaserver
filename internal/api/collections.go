@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
@@ -22,14 +21,7 @@ type collectionsHandler struct {
 // GET /api/v1/collections — top-level enabled collections the user has access to.
 // Users see only those in collection_access.
 func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
-	claims := ClaimsFromContext(r.Context())
-	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "invalid token subject")
-		return
-	}
-
-	collections, err := h.collections.ListAccessibleByUser(r.Context(), userID)
+	collections, err := h.collections.ListAccessibleByUser(r.Context(), userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -40,19 +32,12 @@ func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/collections/:id
 func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	userID, err := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "invalid token subject")
-		return
-	}
-
-	c, err := h.collections.GetByIDForUser(r.Context(), id, userID)
+	c, err := h.collections.GetByIDForUser(r.Context(), id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -61,23 +46,25 @@ func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c)
 }
 
+// requireAccess checks that the collection exists, is enabled, and the requesting user
+// has access. Returns false (and writes the error response) if any check fails.
+func (h *collectionsHandler) requireAccess(w http.ResponseWriter, r *http.Request, collectionID int64) bool {
+	ok, err := h.collections.ExistsEnabledWithAccess(r.Context(), collectionID, userIDFromRequest(r))
+	if err != nil || !ok {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return false
+	}
+	return true
+}
+
 // GET /api/v1/collections/:id/collections — direct children
 func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	exists, err := h.collections.ExistsEnabled(r.Context(), id)
-	if err != nil || !exists {
-		writeError(w, http.StatusNotFound, "collection not found")
-		return
-	}
-
-	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
-	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
-		writeError(w, http.StatusNotFound, "collection not found")
+	if !h.requireAccess(w, r, id) {
 		return
 	}
 
@@ -92,15 +79,12 @@ func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request
 
 // GET /api/v1/collections/:id/items — paginated media items
 func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	exists, err := h.collections.ExistsEnabled(r.Context(), id)
-	if err != nil || !exists {
-		writeError(w, http.StatusNotFound, "collection not found")
+	if !h.requireAccess(w, r, id) {
 		return
 	}
 
@@ -111,7 +95,7 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
+	userID := userIDFromRequest(r)
 	// Fetch one extra row to determine whether there's a next page.
 	items, err := h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize+1, offset)
 	if err != nil {
@@ -136,7 +120,7 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 
 // slideshowCursor encodes the position for keyset pagination in a slideshow.
 type slideshowCursor struct {
-	Direction string     `json:"d"`           // "f" (forward) or "b" (backward)
+	Direction string     `json:"d"` // "f" (forward) or "b" (backward)
 	CreatedAt *time.Time `json:"t,omitempty"`
 	ID        int64      `json:"i"`
 }
@@ -171,21 +155,12 @@ func decodeSlideshowCursor(s string) (slideshowCursor, bool) {
 //	page_size = 1–200, default 50
 //	cursor    = opaque token from previous response's next_cursor or prev_cursor field
 func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	exists, err := h.collections.ExistsEnabled(r.Context(), id)
-	if err != nil || !exists {
-		writeError(w, http.StatusNotFound, "collection not found")
-		return
-	}
-
-	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
-	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
-		writeError(w, http.StatusNotFound, "collection not found")
+	if !h.requireAccess(w, r, id) {
 		return
 	}
 
@@ -352,21 +327,12 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 //
 //	recursive = true (default) | false
 func (h *collectionsHandler) slideshowMetadata(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	exists, err := h.collections.ExistsEnabled(r.Context(), id)
-	if err != nil || !exists {
-		writeError(w, http.StatusNotFound, "collection not found")
-		return
-	}
-
-	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
-	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
-		writeError(w, http.StatusNotFound, "collection not found")
+	if !h.requireAccess(w, r, id) {
 		return
 	}
 

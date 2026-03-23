@@ -83,20 +83,12 @@ func (r *CollectionRepository) ListTopLevel(ctx context.Context) ([]models.Colle
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	collections := []models.Collection{}
-	for rows.Next() {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Collection, error) {
 		var c models.Collection
-		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Type, &c.RelativePath,
-			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt,
-		); err != nil {
-			continue
-		}
-		collections = append(collections, c)
-	}
-	return collections, nil
+		err := row.Scan(&c.ID, &c.Name, &c.Type, &c.RelativePath,
+			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt)
+		return c, err
+	})
 }
 
 // ListTopLevelEnabled returns IDs of all enabled top-level collections.
@@ -139,27 +131,11 @@ func (r *CollectionRepository) ListChildren(ctx context.Context, parentID int64)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	collections := []models.Collection{}
-	for rows.Next() {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Collection, error) {
 		var c models.Collection
-		if err := rows.Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type); err != nil {
-			continue
-		}
-		collections = append(collections, c)
-	}
-	return collections, nil
-}
-
-// ExistsEnabled returns true if a collection with the given ID exists and is enabled.
-func (r *CollectionRepository) ExistsEnabled(ctx context.Context, id int64) (bool, error) {
-	var exists bool
-	err := r.db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM collections WHERE id = $1 AND is_enabled = true)`,
-		id,
-	).Scan(&exists)
-	return exists, err
+		err := row.Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type)
+		return c, err
+	})
 }
 
 // GetByIDForUser returns a collection by ID, enforcing that the user has collection_access
@@ -189,10 +165,10 @@ func (r *CollectionRepository) GetByIDForUser(ctx context.Context, id, userID in
 	return &c, nil
 }
 
-// HasAccessToCollection returns true if the user has collection_access for the root
-// ancestor of the given collection.
-func (r *CollectionRepository) HasAccessToCollection(ctx context.Context, collectionID, userID int64) (bool, error) {
-	var hasAccess bool
+// ExistsEnabledWithAccess checks both that a collection exists+enabled and that the user
+// has access to its root ancestor, in a single query. Returns false if either check fails.
+func (r *CollectionRepository) ExistsEnabledWithAccess(ctx context.Context, collectionID, userID int64) (bool, error) {
+	var ok bool
 	err := r.db.QueryRow(ctx,
 		`WITH RECURSIVE ancestors AS (
 		     SELECT id, parent_collection_id FROM collections WHERE id = $1 AND is_enabled = true
@@ -206,8 +182,8 @@ func (r *CollectionRepository) HasAccessToCollection(ctx context.Context, collec
 		       AND ca.user_id = $2
 		 )`,
 		collectionID, userID,
-	).Scan(&hasAccess)
-	return hasAccess, err
+	).Scan(&ok)
+	return ok, err
 }
 
 // ListAccessForUser returns the collection IDs the user has been explicitly granted access to.
@@ -285,7 +261,7 @@ func (r *CollectionRepository) ValidateTopLevel(ctx context.Context, ids []int64
 		var id int64
 		var isSub bool
 		if err := rows.Scan(&id, &isSub); err != nil {
-			continue
+			return "db error", http.StatusInternalServerError
 		}
 		if isSub {
 			return fmt.Sprintf("collection %d is a sub-collection; access can only be granted to top-level collections", id), http.StatusBadRequest

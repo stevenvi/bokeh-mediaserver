@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
@@ -40,8 +39,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		Type         string `json:"type"`
 		RelativePath string `json:"relative_path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 
@@ -92,9 +90,8 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 // DELETE /api/v1/admin/collections/:id
 func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) {
-	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -123,9 +120,8 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/admin/collections/:id/scan
 func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
-	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -164,9 +160,8 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/admin/jobs/:id
 func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
-	jobID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	jobID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -179,37 +174,30 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
-// POST /api/v1/admin/maintenance/orphan-cleanup
-func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Request) {
-	jobID, err := h.jobs.Create(r.Context(), "orphan_cleanup", nil, nil)
+// triggerSimpleJob creates a job with no related entity and returns 202 with the job ID.
+func (h *adminHandler) triggerSimpleJob(w http.ResponseWriter, r *http.Request, jobType string) {
+	jobID, err := h.jobs.Create(r.Context(), jobType, nil, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
-	slog.Info("orphan cleanup job queued", "job_id", jobID)
+	slog.Info("job queued", "type", jobType, "job_id", jobID)
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
+// POST /api/v1/admin/maintenance/orphan-cleanup
+func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Request) {
+	h.triggerSimpleJob(w, r, "orphan_cleanup")
 }
 
 // POST /api/v1/admin/maintenance/integrity-check
 func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Request) {
-	jobID, err := h.jobs.Create(r.Context(), "integrity_check", nil, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create job")
-		return
-	}
-	slog.Info("integrity check job queued", "job_id", jobID)
-	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+	h.triggerSimpleJob(w, r, "integrity_check")
 }
 
 // POST /api/v1/admin/maintenance/device-cleanup
 func (h *adminHandler) triggerDeviceCleanup(w http.ResponseWriter, r *http.Request) {
-	jobID, err := h.jobs.Create(r.Context(), "device_cleanup", nil, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create job")
-		return
-	}
-	slog.Info("device cleanup job queued", "job_id", jobID)
-	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+	h.triggerSimpleJob(w, r, "device_cleanup")
 }
 
 // GET /api/v1/admin/users
@@ -238,8 +226,7 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		AuthProvider string          `json:"auth_provider"`
 		Credentials  json.RawMessage `json:"credentials"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if body.Name == "" {
@@ -274,9 +261,8 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/admin/users/:id
 func (h *adminHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
-	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	targetID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -302,9 +288,8 @@ func (h *adminHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/admin/users/:id/credentials
 func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Request) {
-	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	targetID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -323,8 +308,7 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 	var body struct {
 		Credentials json.RawMessage `json:"credentials"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 
@@ -338,9 +322,8 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 
 // GET /api/v1/admin/users/:id/devices
 func (h *adminHandler) listUserDevices(w http.ResponseWriter, r *http.Request) {
-	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	targetID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 	h.authHandler.writeDeviceList(w, r, targetID)
@@ -348,14 +331,12 @@ func (h *adminHandler) listUserDevices(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/admin/users/:id/devices/:deviceId
 func (h *adminHandler) revokeUserDevice(w http.ResponseWriter, r *http.Request) {
-	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	targetID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
-	deviceID, err := strconv.ParseInt(chi.URLParam(r, "deviceId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid device id")
+	deviceID, ok := urlIntParam(w, r, "deviceId")
+	if !ok {
 		return
 	}
 
@@ -375,9 +356,8 @@ func (h *adminHandler) revokeUserDevice(w http.ResponseWriter, r *http.Request) 
 
 // DELETE /api/v1/admin/users/:id/devices
 func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Request) {
-	targetID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	targetID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -393,9 +373,8 @@ func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Reque
 
 // GET /api/v1/admin/collections/:id/users — list user IDs that have access to a collection
 func (h *adminHandler) listCollectionUsers(w http.ResponseWriter, r *http.Request) {
-	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid collection id")
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -410,9 +389,8 @@ func (h *adminHandler) listCollectionUsers(w http.ResponseWriter, r *http.Reques
 
 // POST /api/v1/admin/collections/:id/users — grant access to a collection for a list of users
 func (h *adminHandler) grantUsersCollectionAccess(w http.ResponseWriter, r *http.Request) {
-	collectionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid collection id")
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -434,9 +412,8 @@ func (h *adminHandler) grantUsersCollectionAccess(w http.ResponseWriter, r *http
 
 // GET /api/v1/admin/users/:userId/collection_access — list collection IDs the user has access to
 func (h *adminHandler) getCollectionAccess(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	userID, ok := urlIntParam(w, r, "userId")
+	if !ok {
 		return
 	}
 
@@ -451,9 +428,8 @@ func (h *adminHandler) getCollectionAccess(w http.ResponseWriter, r *http.Reques
 
 // PATCH /api/v1/admin/users/:userId/collection_access — grant access to collections (duplicates silently ignored)
 func (h *adminHandler) grantCollectionAccess(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	userID, ok := urlIntParam(w, r, "userId")
+	if !ok {
 		return
 	}
 
@@ -480,17 +456,15 @@ func (h *adminHandler) grantCollectionAccess(w http.ResponseWriter, r *http.Requ
 
 // POST /api/v1/admin/users/:userId/collection_access — set access to exactly this set of collections
 func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	userID, ok := urlIntParam(w, r, "userId")
+	if !ok {
 		return
 	}
 
 	var body struct {
 		CollectionIDs []int64 `json:"collection_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 
@@ -533,14 +507,12 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 
 // DELETE /api/v1/admin/users/:userId/collection_access/:collectionId — revoke access (silent if not present)
 func (h *adminHandler) revokeCollectionAccess(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(chi.URLParam(r, "userId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user id")
+	userID, ok := urlIntParam(w, r, "userId")
+	if !ok {
 		return
 	}
-	collectionID, err := strconv.ParseInt(chi.URLParam(r, "collectionId"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid collection id")
+	collectionID, ok := urlIntParam(w, r, "collectionId")
+	if !ok {
 		return
 	}
 
@@ -554,9 +526,8 @@ func (h *adminHandler) revokeCollectionAccess(w http.ResponseWriter, r *http.Req
 
 // POST /api/v1/admin/media/:id/hide
 func (h *adminHandler) hideMediaItem(w http.ResponseWriter, r *http.Request) {
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	itemID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 	if err := h.media.SetHidden(r.Context(), itemID, true); err != nil {
@@ -568,9 +539,8 @@ func (h *adminHandler) hideMediaItem(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/admin/media/:id/hide
 func (h *adminHandler) unhideMediaItem(w http.ResponseWriter, r *http.Request) {
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	itemID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 	if err := h.media.SetHidden(r.Context(), itemID, false); err != nil {
@@ -583,9 +553,8 @@ func (h *adminHandler) unhideMediaItem(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/admin/jobs/:id/events — SSE progress stream
 // TODO: We need to actually properly send down progress updates while jobs are in progress
 func (h *adminHandler) jobEvents(w http.ResponseWriter, r *http.Request) {
-	jobID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	jobID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 

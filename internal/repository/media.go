@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,20 +18,41 @@ func NewMediaItemRepository(db utils.DBTX) *MediaItemRepository {
 	return &MediaItemRepository{db: db}
 }
 
-// GetByID returns a media item by ID, enforcing that the given user has access
-// to the collection it belongs to. Returns an error (→ 404) if the item does
+// GetByID returns a media item by ID with photo metadata, enforcing that the given user
+// has access to the collection it belongs to. Returns an error (→ 404) if the item does
 // not exist, is hidden, or the user lacks collection_access.
 func (r *MediaItemRepository) GetByID(ctx context.Context, id, userID int64) (*models.MediaItemView, error) {
 	var item models.MediaItemView
+	var photo models.PhotoMetadata
+	var hasPhoto bool
 	err := r.db.QueryRow(ctx,
-		`SELECT m.id, m.title, m.mime_type, m.ordinal
+		`SELECT m.id, m.title, m.mime_type, m.ordinal,
+		        pm.media_item_id IS NOT NULL,
+		        pm.width_px, pm.height_px, pm.created_at,
+		        pm.camera_make, pm.camera_model, pm.lens_model,
+		        pm.shutter_speed, pm.aperture, pm.iso,
+		        pm.focal_length_mm, pm.focal_length_35mm_equiv,
+		        pm.color_space,
+		        pm.placeholder
 		 FROM media_items m
 		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $2
+		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
 		id, userID,
-	).Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal)
+	).Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
+		&hasPhoto,
+		&photo.WidthPx, &photo.HeightPx, &photo.CreatedAt,
+		&photo.CameraMake, &photo.CameraModel, &photo.LensModel,
+		&photo.ShutterSpeed, &photo.Aperture, &photo.ISO,
+		&photo.FocalLengthMM, &photo.FocalLength35mmEquiv,
+		&photo.ColorSpace,
+		&photo.Placeholder,
+	)
 	if err != nil {
 		return nil, err
+	}
+	if hasPhoto {
+		item.Photo = &photo
 	}
 	return &item, nil
 }
@@ -46,19 +66,10 @@ func (r *MediaItemRepository) GetForProcessing(ctx context.Context, id int64) (r
 	return
 }
 
-// GetRelativePath returns the filesystem relative path for a media item,
-// enforcing that the given user has collection_access for it.
-func (r *MediaItemRepository) GetRelativePath(ctx context.Context, id int64) (string, error) {
-	var path string
-	err := r.db.QueryRow(ctx, `SELECT relative_path FROM media_items WHERE id = $1`, id).Scan(&path)
-	return path, err
-}
-
-// GetFileHash returns the content hash for a media item,
+// GetFileHashAndPath returns the content hash and relative filesystem path for a media item,
 // enforcing that the given user has collection_access to the root ancestor collection.
-func (r *MediaItemRepository) GetFileHash(ctx context.Context, id, userID int64) (string, error) {
-	var hash string
-	err := r.db.QueryRow(ctx,
+func (r *MediaItemRepository) GetFileHashAndPath(ctx context.Context, id, userID int64) (hash, relativePath string, err error) {
+	err = r.db.QueryRow(ctx,
 		`WITH RECURSIVE ancestors AS (
 		     SELECT id, parent_collection_id FROM collections WHERE id = (
 		         SELECT collection_id FROM media_items WHERE id = $1 AND hidden_at IS NULL
@@ -67,7 +78,7 @@ func (r *MediaItemRepository) GetFileHash(ctx context.Context, id, userID int64)
 		     SELECT c.id, c.parent_collection_id FROM collections c
 		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
 		 )
-		 SELECT m.file_hash FROM media_items m
+		 SELECT m.file_hash, m.relative_path FROM media_items m
 		 WHERE m.id = $1 AND m.hidden_at IS NULL
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
@@ -75,8 +86,8 @@ func (r *MediaItemRepository) GetFileHash(ctx context.Context, id, userID int64)
 		         AND ca.user_id = $2
 		   )`,
 		id, userID,
-	).Scan(&hash)
-	return hash, err
+	).Scan(&hash, &relativePath)
+	return
 }
 
 // UpdateTitle sets the title for a media item.
@@ -115,17 +126,14 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	items := []models.MediaItemView{}
-	for rows.Next() {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.MediaItemView, error) {
 		var item models.MediaItemView
 		var placeholder *string
 		var variantsGeneratedAt *time.Time
-		if err := rows.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
-			&placeholder, &variantsGeneratedAt); err != nil {
-			slog.Warn("scan media item", "collection_id", collectionID, "err", err)
-			continue
+		err := row.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
+			&placeholder, &variantsGeneratedAt)
+		if err != nil {
+			return item, err
 		}
 		if placeholder != nil || variantsGeneratedAt != nil {
 			item.Photo = &models.PhotoMetadata{
@@ -133,9 +141,8 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 				VariantsGeneratedAt: variantsGeneratedAt,
 			}
 		}
-		items = append(items, item)
-	}
-	return items, nil
+		return item, nil
+	})
 }
 
 // Upsert inserts or updates a media item, returning the ID and whether the file was unchanged.
@@ -197,14 +204,13 @@ func (r *MediaItemRepository) FindHashesExisting(ctx context.Context, hashes []s
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	existing := make(map[string]struct{}, len(hashes))
-	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err == nil {
-			existing[h] = struct{}{}
-		}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	existing := make(map[string]struct{}, len(found))
+	for _, h := range found {
+		existing[h] = struct{}{}
 	}
 	return existing, nil
 }
@@ -276,32 +282,6 @@ func (r *MediaItemRepository) UpdatePhotoVariants(ctx context.Context, itemID in
 		itemID, placeholder,
 	)
 	return err
-}
-
-// GetPhotoMetadata returns photo metadata for a media item.
-func (r *MediaItemRepository) GetPhotoMetadata(ctx context.Context, itemID int64) (*models.PhotoMetadata, error) {
-	var p models.PhotoMetadata
-	err := r.db.QueryRow(ctx,
-		`SELECT width_px, height_px, created_at,
-		        camera_make, camera_model, lens_model,
-		        shutter_speed, aperture, iso,
-		        focal_length_mm, focal_length_35mm_equiv,
-		        color_space,
-		        placeholder
-		 FROM photo_metadata WHERE media_item_id = $1`,
-		itemID,
-	).Scan(
-		&p.WidthPx, &p.HeightPx, &p.CreatedAt,
-		&p.CameraMake, &p.CameraModel, &p.LensModel,
-		&p.ShutterSpeed, &p.Aperture, &p.ISO,
-		&p.FocalLengthMM, &p.FocalLength35mmEquiv,
-		&p.ColorSpace,
-		&p.Placeholder,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
 }
 
 // GetExifRaw returns the raw EXIF JSON for a media item.

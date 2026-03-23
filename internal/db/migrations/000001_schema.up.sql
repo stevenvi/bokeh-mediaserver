@@ -27,6 +27,8 @@ CREATE TABLE users (
     last_seen_at                timestamptz
 );
 
+CREATE INDEX idx_users_name_provider ON users(name, auth_provider);
+
 -- Development admin user: admin / admin (bcrypt hash)
 INSERT INTO users (name, is_admin, auth_provider, auth_data)
 VALUES (
@@ -54,6 +56,7 @@ CREATE UNIQUE INDEX idx_devices_user_uuid ON devices(user_id, device_uuid);
 CREATE INDEX idx_devices_user_id ON devices(user_id);
 CREATE INDEX idx_devices_token_hash ON devices(refresh_token_hash) WHERE refresh_token_hash IS NOT NULL;
 CREATE INDEX idx_devices_banned ON devices(banned_at) WHERE banned_at IS NOT NULL;
+CREATE INDEX idx_devices_lru ON devices(user_id, last_seen_at) WHERE banned_at IS NULL;
 
 CREATE TABLE collections (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -75,6 +78,7 @@ CREATE TABLE collections (
 );
 
 CREATE INDEX idx_collections_parent ON collections(parent_collection_id);
+CREATE INDEX idx_collections_enabled ON collections(id) WHERE is_enabled = true;
 CREATE UNIQUE INDEX idx_collections_relative_path ON collections(relative_path)
     WHERE relative_path IS NOT NULL;
 
@@ -83,6 +87,9 @@ CREATE TABLE collection_access (
     collection_id               bigint NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
     PRIMARY KEY (user_id, collection_id)
 );
+
+-- PK is (user_id, collection_id); queries that filter by collection_id alone need this.
+CREATE INDEX idx_collection_access_collection_id ON collection_access(collection_id);
 
 CREATE TABLE media_items (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -104,6 +111,8 @@ CREATE TABLE media_items (
 );
 
 CREATE INDEX idx_media_items_collection ON media_items(collection_id);
+CREATE INDEX idx_media_items_collection_active ON media_items(collection_id)
+    WHERE missing_since IS NULL AND hidden_at IS NULL;
 CREATE UNIQUE INDEX idx_media_items_relative_path ON media_items(relative_path);
 CREATE INDEX idx_media_items_indexed_at ON media_items(indexed_at);
 CREATE INDEX idx_media_items_search     ON media_items USING GIN(search_vector);
@@ -130,6 +139,8 @@ CREATE TABLE photo_metadata (
 );
 
 CREATE INDEX idx_photo_metadata_created_at ON photo_metadata(created_at);
+CREATE INDEX idx_photo_metadata_variants_pending ON photo_metadata(variants_generated_at)
+    WHERE variants_generated_at IS NULL;
 CREATE INDEX idx_photo_metadata_shutter_speed ON photo_metadata(shutter_speed);
 CREATE INDEX idx_photo_metadata_aperture ON photo_metadata(aperture);
 CREATE INDEX idx_photo_metadata_iso ON photo_metadata(iso);

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -105,8 +104,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		DeviceUUID  string          `json:"device_uuid"`
 		DeviceName  string          `json:"device_name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if strings.TrimSpace(body.DeviceUUID) == "" {
@@ -234,8 +232,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		DeviceUUID   string `json:"device_uuid"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid message body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 
@@ -366,9 +363,8 @@ func (h *authHandler) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	deviceID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid device id")
+	deviceID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -396,9 +392,8 @@ func (h *authHandler) banDevice(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	deviceID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid device id")
+	deviceID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -421,9 +416,8 @@ func (h *authHandler) unbanDevice(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	deviceID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid device id")
+	deviceID, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -456,8 +450,7 @@ func (h *authHandler) changeCredentials(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Credentials json.RawMessage `json:"credentials"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 

@@ -26,9 +26,8 @@ type photosHandler struct {
 
 // GET /api/v1/media/:id
 func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -38,19 +37,13 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	photo, err := h.media.GetPhotoMetadata(r.Context(), id)
-	if err == nil {
-		item.Photo = photo
-	}
-
 	writeJSON(w, http.StatusOK, item)
 }
 
 // GET /images/:id/exif
 func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
@@ -65,25 +58,21 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
-// TODO: Are having both of these functions that query the DB for the same media item inefficient? Should we combine them into one query and pass the data down?
-func (h *photosHandler) getItemFsPath(id int64, r *http.Request) (string, error) {
-	relativePath, err := h.media.GetRelativePath(r.Context(), id)
+// getItemHashAndPath fetches the content hash and full filesystem path for a media item
+// in a single DB roundtrip.
+func (h *photosHandler) getItemHashAndPath(id int64, r *http.Request) (hash, fsPath string, err error) {
+	hash, relativePath, err := h.media.GetFileHashAndPath(r.Context(), id, userIDFromRequest(r))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return filepath.Join(h.mediaPath, relativePath), nil
-}
-
-func (h *photosHandler) getItemHash(id int64, r *http.Request) (string, error) {
-	return h.media.GetFileHash(r.Context(), id, userIDFromRequest(r))
+	return hash, filepath.Join(h.mediaPath, relativePath), nil
 }
 
 // GET /images/:id/:variant
 // Serves AVIF to clients that send Accept: image/avif, JPEG otherwise.
 func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 	variant := chi.URLParam(r, "variant")
@@ -95,7 +84,7 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := h.getItemHash(id, r)
+	hash, fsPath, err := h.getItemHashAndPath(id, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
@@ -118,11 +107,6 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Last resort: serve source file directly
-		fsPath, err := h.getItemFsPath(id, r)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "media item not found")
-			return
-		}
 		http.ServeFile(w, r, fsPath)
 		return
 	}
@@ -154,13 +138,12 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 // GET /images/:id/tiles/image.dzi
 func (h *photosHandler) serveDZIManifest(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	hash, err := h.getItemHash(id, r)
+	hash, _, err := h.getItemHashAndPath(id, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
@@ -173,13 +156,12 @@ func (h *photosHandler) serveDZIManifest(w http.ResponseWriter, r *http.Request)
 // GET /images/:id/tiles/*
 // Serves DZI tile files. The wildcard captures the level/col_row.avif path.
 func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
 		return
 	}
 
-	hash, err := h.getItemHash(id, r)
+	hash, _, err := h.getItemHashAndPath(id, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
