@@ -90,6 +90,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Get("/api/v1/collections/{id}/collections", collections.listChildren)
 		r.Get("/api/v1/collections/{id}/items", collections.listItems)
 		r.Get("/api/v1/collections/{id}/slideshow", collections.slideshow)
+		r.Get("/api/v1/collections/{id}/slideshow/metadata", collections.slideshowMetadata)
 
 		// Media items and photos
 		r.Get("/api/v1/media/{id}", photos.getItem)

@@ -55,13 +55,25 @@ func (r *MediaItemRepository) GetRelativePath(ctx context.Context, id int64) (st
 }
 
 // GetFileHash returns the content hash for a media item,
-// enforcing that the given user has collection_access for it.
+// enforcing that the given user has collection_access to the root ancestor collection.
 func (r *MediaItemRepository) GetFileHash(ctx context.Context, id, userID int64) (string, error) {
 	var hash string
 	err := r.db.QueryRow(ctx,
-		`SELECT m.file_hash FROM media_items m
-		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $2
-		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
+		`WITH RECURSIVE ancestors AS (
+		     SELECT id, parent_collection_id FROM collections WHERE id = (
+		         SELECT collection_id FROM media_items WHERE id = $1 AND hidden_at IS NULL
+		     )
+		     UNION ALL
+		     SELECT c.id, c.parent_collection_id FROM collections c
+		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
+		 )
+		 SELECT m.file_hash FROM media_items m
+		 WHERE m.id = $1 AND m.hidden_at IS NULL
+		   AND EXISTS (
+		       SELECT 1 FROM collection_access ca
+		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		         AND ca.user_id = $2
+		   )`,
 		id, userID,
 	).Scan(&hash)
 	return hash, err
@@ -86,8 +98,10 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 		     SELECT c.id, c.parent_collection_id FROM collections c
 		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
 		 )
-		 SELECT m.id, m.title, m.mime_type, m.ordinal
+		 SELECT m.id, m.title, m.mime_type, m.ordinal,
+		        pm.placeholder, pm.variants_generated_at
 		 FROM media_items m
+		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
 		 WHERE m.collection_id = $1 AND m.missing_since IS NULL AND m.hidden_at IS NULL
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
@@ -106,9 +120,18 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 	items := []models.MediaItemView{}
 	for rows.Next() {
 		var item models.MediaItemView
-		if err := rows.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal); err != nil {
+		var placeholder *string
+		var variantsGeneratedAt *time.Time
+		if err := rows.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
+			&placeholder, &variantsGeneratedAt); err != nil {
 			slog.Warn("scan media item", "collection_id", collectionID, "err", err)
 			continue
+		}
+		if placeholder != nil || variantsGeneratedAt != nil {
+			item.Photo = &models.PhotoMetadata{
+				Placeholder:         placeholder,
+				VariantsGeneratedAt: variantsGeneratedAt,
+			}
 		}
 		items = append(items, item)
 	}

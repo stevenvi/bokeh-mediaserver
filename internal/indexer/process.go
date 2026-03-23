@@ -140,10 +140,10 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 //  2. CreateDate — EXIF digitized time; used by Lightroom/Photoshop AVIF exports
 //  3. Earliest of FileCreateDate, FileModifyDate (exiftool), and OS mod time
 func createdAt(fsPath string, exifData map[string]any) *time.Time {
-	if t := utils.ExifTime(exifData, "DateTimeOriginal"); t != nil {
+	if t := utils.ExifTimeWithOffset(exifData, "DateTimeOriginal", "OffsetTimeOriginal"); t != nil {
 		return t
 	}
-	if t := utils.ExifTime(exifData, "CreateDate"); t != nil {
+	if t := utils.ExifTimeWithOffset(exifData, "CreateDate", "OffsetTimeDigitized"); t != nil {
 		return t
 	}
 

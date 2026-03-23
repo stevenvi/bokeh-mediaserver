@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -104,34 +105,44 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := queryInt(r, "page", 1)
-	pageSize := queryInt(r, "page_size", 50)
-	if pageSize > 200 {
-		pageSize = 200
+	pageSize := queryInt(r, "page_size", 200)
+	if pageSize > 1000 {
+		pageSize = 1000
 	}
 	offset := (page - 1) * pageSize
 
 	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
-	items, err := h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize, offset)
+	// Fetch one extra row to determine whether there's a next page.
+	items, err := h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize+1, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
+	var nextPage *int
+	if len(items) > pageSize {
+		items = items[:pageSize]
+		np := page + 1
+		nextPage = &np
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":     items,
 		"page":      page,
+		"next_page": nextPage,
 		"page_size": pageSize,
 	})
 }
 
-// slideshowCursor encodes the position of the last item returned in a slideshow page.
+// slideshowCursor encodes the position for keyset pagination in a slideshow.
 type slideshowCursor struct {
+	Direction string     `json:"d"`           // "f" (forward) or "b" (backward)
 	CreatedAt *time.Time `json:"t,omitempty"`
 	ID        int64      `json:"i"`
 }
 
-func encodeSlideshowCursor(item models.SlideshowItem) string {
-	b, _ := json.Marshal(slideshowCursor{CreatedAt: item.CreatedAt, ID: item.ID})
+func encodeSlideshowCursor(item models.SlideshowItem, direction string) string {
+	b, _ := json.Marshal(slideshowCursor{Direction: direction, CreatedAt: item.CreatedAt, ID: item.ID})
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
@@ -144,16 +155,21 @@ func decodeSlideshowCursor(s string) (slideshowCursor, bool) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return slideshowCursor{}, false
 	}
+	if c.Direction != "f" && c.Direction != "b" {
+		return slideshowCursor{}, false
+	}
 	return c, true
 }
 
 // GET /api/v1/collections/:id/slideshow
-// Returns a paginated keyset view of all descendant photo items ordered by created_at.
+// Returns a paginated keyset view of photo items ordered by created_at.
 // Query params:
 //
 //	order     = asc (default) | desc
+//	recursive = true (default) | false
+//	start     = media item ID to begin at (mutually exclusive with cursor)
 //	page_size = 1–200, default 50
-//	cursor    = opaque token from previous response's next_cursor field
+//	cursor    = opaque token from previous response's next_cursor or prev_cursor field
 func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -176,39 +192,195 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	orderParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
 	ascending := orderParam != "desc"
 
-	pageSize := queryInt(r, "page_size", 50)
-	if pageSize > 200 {
-		pageSize = 200
+	recursiveParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("recursive")))
+	recursive := recursiveParam != "false"
+
+	pageSize := queryInt(r, "page_size", 200)
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+
+	rawCursor := r.URL.Query().Get("cursor")
+	rawStart := r.URL.Query().Get("start")
+	rawStartDate := r.URL.Query().Get("start_date")
+	// These three are mutually exclusive. This logic is goofy but works well enough.
+	exclusiveCount := 0
+	if rawCursor != "" { exclusiveCount++ }
+	if rawStart != "" { exclusiveCount++ }
+	if rawStartDate != "" { exclusiveCount++ }
+	if exclusiveCount > 1 {
+		writeError(w, http.StatusBadRequest, "cursor, start, and start_date are mutually exclusive")
+		return
 	}
 
 	var hasCursor bool
 	var cursor slideshowCursor
-	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		cursor, hasCursor = decodeSlideshowCursor(raw)
+	var includeCursor bool // value cursor points at should be included in results (inclusive vs exclusive)
+	backward := false
+
+	if rawCursor != "" {
+		cursor, hasCursor = decodeSlideshowCursor(rawCursor)
 		if !hasCursor {
 			writeError(w, http.StatusBadRequest, "invalid cursor")
 			return
 		}
+		backward = cursor.Direction == "b"
+	} else if rawStart != "" {
+		startID, err := strconv.ParseInt(rawStart, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start")
+			return
+		}
+		pos, err := h.collections.GetSlideshowItemPosition(r.Context(), startID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if pos == nil {
+			writeError(w, http.StatusNotFound, "start item not found")
+			return
+		}
+		// Validate the start item belongs to this collection (or a descendant if recursive)
+		if recursive {
+			isDesc, err := h.collections.IsDescendantCollection(r.Context(), id, pos.CollectionID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error")
+				return
+			}
+			if !isDesc {
+				writeError(w, http.StatusBadRequest, "start item not in this collection")
+				return
+			}
+		} else if pos.CollectionID != id {
+			writeError(w, http.StatusBadRequest, "start item not in this collection")
+			return
+		}
+		cursor = slideshowCursor{Direction: "f", CreatedAt: pos.CreatedAt, ID: pos.ID}
+		hasCursor = true
+		includeCursor = true
+	} else if rawStartDate != "" {
+		t, err := time.Parse("2006-01", rawStartDate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start_date (expected YYYY-MM)")
+			return
+		}
+		if ascending {
+			cursor = slideshowCursor{Direction: "f", CreatedAt: &t, ID: 0}
+			includeCursor = true
+		} else {
+			// First instant of the next month with max ID — strict < gives all items in the target month and earlier.
+			nextMonth := t.AddDate(0, 1, 0)
+			cursor = slideshowCursor{Direction: "f", CreatedAt: &nextMonth, ID: math.MaxInt64}
+		}
+		hasCursor = true
 	}
 
-	// Repository fetches pageSize+1; the extra row signals that a next page exists.
-	rows, err := h.collections.GetSlideshowItems(r.Context(), id, pageSize, ascending, hasCursor, cursor.CreatedAt, cursor.ID)
+	// For backward cursors, flip the sort direction for the query.
+	queryAscending := ascending
+	if backward {
+		queryAscending = !ascending
+	}
+
+	rows, err := h.collections.GetSlideshowItems(r.Context(), repository.SlideshowQuery{
+		CollectionID:  id,
+		PageSize:      pageSize,
+		Ascending:     queryAscending,
+		Recursive:     recursive,
+		HasCursor:     hasCursor,
+		CursorTime:    cursor.CreatedAt,
+		CursorID:      cursor.ID,
+		IncludeCursor: includeCursor,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
-	var nextCursor *string
-	if len(rows) > pageSize {
+	hasMore := len(rows) > pageSize
+	if hasMore {
 		rows = rows[:pageSize]
-		s := encodeSlideshowCursor(rows[pageSize-1])
-		nextCursor = &s
+	}
+
+	// For backward cursors, reverse the results so they're in the original sort order.
+	if backward {
+		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+			rows[i], rows[j] = rows[j], rows[i]
+		}
+	}
+
+	var nextCursor, prevCursor *string
+	if len(rows) > 0 {
+		if backward {
+			// We fetched backward: hasMore means there are earlier items (more prev pages).
+			// The reversed first item is the earliest — next_cursor always points forward from the last item.
+			nc := encodeSlideshowCursor(rows[len(rows)-1], "f")
+			nextCursor = &nc
+			if hasMore {
+				pc := encodeSlideshowCursor(rows[0], "b")
+				prevCursor = &pc
+			}
+		} else {
+			// We fetched forward: hasMore means there are later items (more next pages).
+			if hasMore {
+				nc := encodeSlideshowCursor(rows[len(rows)-1], "f")
+				nextCursor = &nc
+			}
+			// prev_cursor: if we used a cursor (not the very first page), there are previous items.
+			if hasCursor && !includeCursor {
+				pc := encodeSlideshowCursor(rows[0], "b")
+				prevCursor = &pc
+			}
+			// When start is used, also emit prev_cursor so client can seek backward from start.
+			if includeCursor && len(rows) > 0 {
+				pc := encodeSlideshowCursor(rows[0], "b")
+				prevCursor = &pc
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":       rows,
 		"next_cursor": nextCursor,
+		"prev_cursor": prevCursor,
 		"page_size":   pageSize,
+	})
+}
+
+// GET /api/v1/collections/:id/slideshow/metadata
+// Returns per-month item counts for the slideshow year scrollbar.
+// Query params:
+//
+//	recursive = true (default) | false
+func (h *collectionsHandler) slideshowMetadata(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	exists, err := h.collections.ExistsEnabled(r.Context(), id)
+	if err != nil || !exists {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	userID, _ := strconv.ParseInt(ClaimsFromContext(r.Context()).Subject, 10, 64)
+	if ok, _ := h.collections.HasAccessToCollection(r.Context(), id, userID); !ok {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	recursiveParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("recursive")))
+	recursive := recursiveParam != "false"
+
+	counts, err := h.collections.GetSlideshowMetadata(r.Context(), id, recursive)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"months": counts,
 	})
 }
 

@@ -158,7 +158,7 @@ func ExifFloat(m map[string]any, key string) *float64 {
 }
 
 // ExifTime parses an exiftool date/time field (e.g. DateTimeOriginal) into a *time.Time.
-// Exiftool format: "2023:06:15 14:30:00"
+// Exiftool format: "2023:06:15 14:30:00" (no timezone). The time is assumed to be UTC.
 func ExifTime(m map[string]any, key string) *time.Time {
 	v, ok := m[key]
 	if !ok || v == nil {
@@ -169,6 +169,49 @@ func ExifTime(m map[string]any, key string) *time.Time {
 		return nil
 	}
 	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, time.UTC)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+// ExifTimeWithOffset parses an exiftool date/time field along with its companion
+// offset field (e.g. DateTimeOriginal + OffsetTimeOriginal = "-04:00").
+//
+// Priority:
+//  1. If the date string itself contains an offset (some cameras embed it), use that.
+//  2. If offsetKey is present in the map, apply that offset to the wall-clock time.
+//  3. Otherwise treat the wall-clock time as UTC.
+func ExifTimeWithOffset(m map[string]any, dateKey, offsetKey string) *time.Time {
+	v, ok := m[dateKey]
+	if !ok || v == nil {
+		return nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil
+	}
+
+	// 1. Try the combined format some cameras write into the date field itself.
+	if t, err := time.Parse("2006:01:02 15:04:05-07:00", s); err == nil {
+		return &t
+	}
+
+	// 2. Look for the companion offset field (e.g. "-04:00" or "+05:30").
+	loc := time.UTC
+	if offsetKey != "" {
+		if ov, ok2 := m[offsetKey]; ok2 && ov != nil {
+			if os, ok3 := ov.(string); ok3 {
+				// time.Parse with a pure offset reference time gives us the seconds offset.
+				if ref, err := time.Parse("-07:00", os); err == nil {
+					_, secs := ref.Zone()
+					loc = time.FixedZone(os, secs)
+				}
+			}
+		}
+	}
+
+	t, err := time.ParseInLocation("2006:01:02 15:04:05", s, loc)
 	if err != nil {
 		return nil
 	}

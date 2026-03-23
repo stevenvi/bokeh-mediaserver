@@ -351,63 +351,82 @@ func (r *CollectionRepository) RevokeAccess(ctx context.Context, userID, collect
 	return err
 }
 
-// GetSlideshowItems returns a page of descendant photo items via keyset pagination.
-// ascending controls sort direction on created_at; NULLS are always last.
-// Pass hasCursor=false for the first page. For subsequent pages, pass the CreatedAt and ID
-// of the last item from the previous page as the cursor. pageSize+1 rows are requested
-// internally; the caller must trim and detect the next page.
-func (r *CollectionRepository) GetSlideshowItems(
-	ctx context.Context,
-	collectionID int64,
-	pageSize int,
-	ascending bool,
-	hasCursor bool,
-	cursorTakenAt *time.Time,
-	cursorID int64,
-) ([]models.SlideshowItem, error) {
-	args := []any{collectionID, pageSize + 1} // +1 lets caller detect whether a next page exists
+// SlideshowQuery holds parameters for a slideshow page fetch.
+type SlideshowQuery struct {
+	CollectionID int64
+	PageSize     int // the repository adds +1 internally
+	Ascending    bool
+	Recursive    bool
+
+	// Cursor fields
+	HasCursor     bool
+	CursorTime    *time.Time
+	CursorID      int64
+	IncludeCursor bool // include the item the cursor points to in results (inclusive/exclusive)
+}
+
+// GetSlideshowItems returns a page of photo items via keyset pagination.
+// When Recursive is true, items from all descendant collections are included.
+// The caller receives pageSize+1 rows and must trim to detect whether a next page exists.
+func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, q SlideshowQuery) ([]models.SlideshowItem, error) {
+	args := []any{q.CollectionID, q.PageSize + 1}
 	addArg := func(v any) string {
 		args = append(args, v)
 		return fmt.Sprintf("$%d", len(args))
 	}
 
+	// Build cursor clause
 	var cursorClause string
-	if hasCursor {
-		if ascending {
-			if cursorTakenAt != nil {
-				ts, id := addArg(*cursorTakenAt), addArg(cursorID)
+	if q.HasCursor {
+		gt, lt := ">", "<"
+		if q.IncludeCursor {
+			gt, lt = ">=", "<="
+		}
+		if q.Ascending {
+			if q.CursorTime != nil {
+				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
 				cursorClause = fmt.Sprintf(
-					`AND (pm.created_at > %s OR (pm.created_at = %s AND mi.id > %s) OR pm.created_at IS NULL)`,
-					ts, ts, id)
+					`AND (pm.created_at > %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
+					ts, ts, gt, id)
 			} else {
-				id := addArg(cursorID)
-				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id > %s)`, id)
+				id := addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, gt, id)
 			}
 		} else {
-			if cursorTakenAt != nil {
-				ts, id := addArg(*cursorTakenAt), addArg(cursorID)
+			if q.CursorTime != nil {
+				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
 				cursorClause = fmt.Sprintf(
-					`AND (pm.created_at < %s OR (pm.created_at = %s AND mi.id < %s) OR pm.created_at IS NULL)`,
-					ts, ts, id)
+					`AND (pm.created_at < %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
+					ts, ts, lt, id)
 			} else {
-				id := addArg(cursorID)
-				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id < %s)`, id)
+				id := addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, lt, id)
 			}
 		}
 	}
 
 	dir := "ASC"
-	if !ascending {
+	if !q.Ascending {
 		dir = "DESC"
 	}
 
-	query := fmt.Sprintf(`
-		WITH RECURSIVE collection_tree AS (
+	// Build collection filter: recursive CTE or direct match
+	var cte, collectionFilter string
+	if q.Recursive {
+		cte = `WITH RECURSIVE collection_tree AS (
 		    SELECT id FROM collections WHERE id = $1
 		    UNION ALL
 		    SELECT c.id FROM collections c
 		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
-		)
+		)`
+		collectionFilter = "mi.collection_id = ANY(SELECT id FROM collection_tree)"
+	} else {
+		cte = ""
+		collectionFilter = "mi.collection_id = $1"
+	}
+
+	query := fmt.Sprintf(`
+		%s
 		SELECT
 		    mi.id,
 		    mi.title,
@@ -418,13 +437,13 @@ func (r *CollectionRepository) GetSlideshowItems(
 		    pm.height_px
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
-		WHERE mi.collection_id = ANY(SELECT id FROM collection_tree)
+		WHERE %s
 		  AND mi.missing_since IS NULL
 		  AND mi.hidden_at IS NULL
 		  %s
 		ORDER BY pm.created_at %s NULLS LAST, mi.id %s
 		LIMIT $2`,
-		cursorClause, dir, dir,
+		cte, collectionFilter, cursorClause, dir, dir,
 	)
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -432,6 +451,93 @@ func (r *CollectionRepository) GetSlideshowItems(
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowItem])
+}
+
+// SlideshowItemPosition holds the sort-key fields needed to construct a cursor for a given item.
+type SlideshowItemPosition struct {
+	ID           int64
+	CollectionID int64
+	CreatedAt    *time.Time
+}
+
+// GetSlideshowItemPosition returns the sort-key fields for a media item, used to construct
+// a cursor when the client specifies a start item. Returns nil if the item does not exist
+// or is hidden/missing.
+func (r *CollectionRepository) GetSlideshowItemPosition(ctx context.Context, itemID int64) (*SlideshowItemPosition, error) {
+	var pos SlideshowItemPosition
+	err := r.db.QueryRow(ctx, `
+		SELECT mi.id, mi.collection_id, pm.created_at
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE mi.id = $1
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL`,
+		itemID,
+	).Scan(&pos.ID, &pos.CollectionID, &pos.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &pos, nil
+}
+
+// IsDescendantCollection returns true if childID is a descendant of (or equal to) ancestorID.
+func (r *CollectionRepository) IsDescendantCollection(ctx context.Context, ancestorID int64, childID int64) (bool, error) {
+	var ok bool
+	err := r.db.QueryRow(ctx, `
+		WITH RECURSIVE collection_tree AS (
+		    SELECT id FROM collections WHERE id = $1
+		    UNION ALL
+		    SELECT c.id FROM collections c
+		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
+		)
+		SELECT EXISTS(SELECT 1 FROM collection_tree WHERE id = $2)`,
+		ancestorID, childID,
+	).Scan(&ok)
+	return ok, err
+}
+
+// GetSlideshowMetadata returns per-month item counts for the slideshow scrollbar.
+// Items with NULL created_at are excluded.
+func (r *CollectionRepository) GetSlideshowMetadata(ctx context.Context, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
+	var cte, collectionFilter string
+	if recursive {
+		cte = `WITH RECURSIVE collection_tree AS (
+		    SELECT id FROM collections WHERE id = $1
+		    UNION ALL
+		    SELECT c.id FROM collections c
+		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
+		)`
+		collectionFilter = "mi.collection_id = ANY(SELECT id FROM collection_tree)"
+	} else {
+		cte = ""
+		collectionFilter = "mi.collection_id = $1"
+	}
+
+	query := fmt.Sprintf(`
+		%s
+		SELECT
+		    EXTRACT(YEAR FROM pm.created_at)::int  AS year,
+		    EXTRACT(MONTH FROM pm.created_at)::int AS month,
+		    COUNT(*)::int                           AS count
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE %s
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL
+		  AND pm.created_at IS NOT NULL
+		GROUP BY 1, 2
+		ORDER BY 1, 2`,
+		cte, collectionFilter,
+	)
+
+	rows, err := r.db.Query(ctx, query, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowMonthCount])
 }
 
 // MarkMissingSince marks items in a collection that haven't been indexed since `before`.

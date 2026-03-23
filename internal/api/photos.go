@@ -192,7 +192,6 @@ func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
 
 	fullPath := filepath.Join(
 		imaging.TilesPath(h.dataPath, hash),
-		"image_files",
 		tilePath,
 	)
 

@@ -166,13 +166,27 @@ func GenerateDZI(srcPath string, dataPath string, hash string) error {
 		return fmt.Errorf("mkdir tiles: %w", err)
 	}
 
+	// Auto-rotate source before tiling so EXIF orientation is baked in.
+	// vips dzsave doesn't honor EXIF rotation, so we create a temp
+	// pre-rotated file and tile from that.
+	tmpDir, err := os.MkdirTemp("", "bokeh-dzi-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	rotatedPath, err := autoRotateToTemp(srcPath, tmpDir)
+	if err != nil {
+		return fmt.Errorf("pre-rotate for dzi: %w", err)
+	}
+
 	// vips dzsave writes two outputs:
 	//   {output}.dzi          — the manifest
 	//   {output}_files/       — the tile pyramid
 	output := filepath.Join(tilesDir, "image")
 
 	cmd := exec.Command("vips", "dzsave",
-		srcPath,
+		rotatedPath,
 		output,
 		"--tile-size", "252",
 		"--overlap", "2",
@@ -185,6 +199,43 @@ func GenerateDZI(srcPath string, dataPath string, hash string) error {
 	return nil
 }
 
+// autoRotateToTemp loads srcPath, applies EXIF auto-rotation, and writes
+// the result to a temp TIFF file. Returns srcPath unchanged if no rotation
+// was needed (orientation is already normal or absent).
+func autoRotateToTemp(srcPath string, tmpDir string) (string, error) {
+	img, err := vips.NewImageFromFile(srcPath)
+	if err != nil {
+		return "", fmt.Errorf("load for rotation check: %w", err)
+	}
+	defer img.Close()
+
+	// Check if rotation is needed by examining EXIF orientation.
+	// Orientation 1 (or absent) means no rotation required.
+	orient := img.Orientation()
+	if orient <= 1 {
+		return srcPath, nil
+	}
+
+	if err := img.AutoRotate(); err != nil {
+		return "", fmt.Errorf("auto-rotate: %w", err)
+	}
+
+	tmpPath := filepath.Join(tmpDir, "rotated.tif")
+
+	params := vips.NewTiffExportParams()
+	params.Compression = vips.TiffCompressionNone
+	tiffBytes, _, err := img.ExportTiff(params)
+	if err != nil {
+		return "", fmt.Errorf("export rotated tiff: %w", err)
+	}
+
+	if err := os.WriteFile(tmpPath, tiffBytes, 0o644); err != nil {
+		return "", fmt.Errorf("write rotated tiff: %w", err)
+	}
+
+	return tmpPath, nil
+}
+
 // GeneratePlaceholder creates a tiny 32x32 JPEG and returns it as a
 // base64-encoded string for embedding directly in API responses.
 // The client renders it as: <img src="data:image/jpeg;base64,{value}" />
@@ -195,6 +246,11 @@ func GeneratePlaceholder(srcPath string) (string, error) {
 		return "", fmt.Errorf("load source for placeholder: %w", err)
 	}
 	defer img.Close()
+
+	// Apply EXIF orientation before resizing so the placeholder matches variant orientation.
+	if err := img.AutoRotate(); err != nil {
+		return "", fmt.Errorf("auto-rotate placeholder: %w", err)
+	}
 
 	// Scale to fit within 32x32, preserving aspect ratio.
 	srcLongest := max(img.Height(), img.Width())

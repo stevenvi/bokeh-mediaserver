@@ -109,6 +109,13 @@ type SlideshowItem struct {
 	HeightPx    *int       `json:"height_px,omitempty"`
 }
 
+// SlideshowMonthCount is one row of the slideshow metadata aggregation.
+type SlideshowMonthCount struct {
+	Year  int `json:"year"`
+	Month int `json:"month"`
+	Count int `json:"count"`
+}
+
 // Device is the full internal representation of a device row.
 // device_uuid is intentionally excluded from all API responses.
 type Device struct {
