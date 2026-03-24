@@ -11,6 +11,7 @@ CREATE TABLE server_config (
     scan_schedule               text DEFAULT '0 3 * * *',
     integrity_schedule          text DEFAULT '0 4 * * 0',
     device_cleanup_schedule     text DEFAULT '0 2 1 * *',
+    cover_cycle_schedule        text DEFAULT '0 5 * * 1',
     updated_at                  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -72,6 +73,7 @@ CREATE TABLE collections (
                                     )),
     relative_path               text,
     is_enabled                  boolean NOT NULL DEFAULT true,
+    manual_cover                boolean NOT NULL DEFAULT false,
     last_scanned_at             timestamptz,
     missing_since               timestamptz,
     created_at                  timestamptz NOT NULL DEFAULT now()
@@ -157,7 +159,8 @@ CREATE TABLE jobs (
                                         'waveform_gen',
                                         'orphan_cleanup',
                                         'integrity_check',
-                                        'device_cleanup'
+                                        'device_cleanup',
+                                        'cover_cycle'
                                     )),
     status                      text NOT NULL DEFAULT 'queued'
                                     CHECK (status IN ('queued','running','done','failed')),

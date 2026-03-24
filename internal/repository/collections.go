@@ -77,7 +77,7 @@ func (r *CollectionRepository) GetRelativePath(ctx context.Context, id int64) (s
 func (r *CollectionRepository) ListTopLevel(ctx context.Context) ([]models.Collection, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, name, type, relative_path,
-		        is_enabled, last_scanned_at, created_at
+		        is_enabled, manual_cover, last_scanned_at, created_at
 		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
 	)
 	if err != nil {
@@ -86,7 +86,7 @@ func (r *CollectionRepository) ListTopLevel(ctx context.Context) ([]models.Colle
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Collection, error) {
 		var c models.Collection
 		err := row.Scan(&c.ID, &c.Name, &c.Type, &c.RelativePath,
-			&c.IsEnabled, &c.LastScannedAt, &c.CreatedAt)
+			&c.IsEnabled, &c.ManualCover, &c.LastScannedAt, &c.CreatedAt)
 		return c, err
 	})
 }
@@ -318,6 +318,22 @@ func (r *CollectionRepository) DeleteAllAccess(ctx context.Context, userID int64
 	return err
 }
 
+// ListDescendantIDs returns the IDs of all descendant collections (children, grandchildren, etc.)
+// for the given collection, not including the collection itself.
+func (r *CollectionRepository) ListDescendantIDs(ctx context.Context, collectionID int64) ([]int64, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE parent_collection_id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+		)
+		SELECT id FROM tree`, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
 // RevokeAccess removes a user's access to a specific collection.
 func (r *CollectionRepository) RevokeAccess(ctx context.Context, userID, collectionID int64) error {
 	_, err := r.db.Exec(ctx,
@@ -531,4 +547,25 @@ func (r *CollectionRepository) MarkMissingSince(ctx context.Context, collectionI
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// ListCollectionswithNonManualCoverIDs returns IDs of all enabled collections that don't have manual_cover set.
+func (r *CollectionRepository) ListCollectionswithNonManualCoverIDs(ctx context.Context) ([]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id FROM collections
+		 WHERE manual_cover = false AND is_enabled = true`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// SetManualCover sets or clears the manual_cover flag on a collection.
+func (r *CollectionRepository) SetManualCover(ctx context.Context, collectionID int64, manual bool) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE collections SET manual_cover = $2 WHERE id = $1`,
+		collectionID, manual,
+	)
+	return err
 }

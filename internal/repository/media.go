@@ -354,3 +354,32 @@ func (r *MediaItemRepository) ClearVariantsGenerated(ctx context.Context, collec
 	)
 	return err
 }
+
+// GetRandomItemHashWithVariants picks a random item from a collection (direct only,
+// not recursive) that has generated variants. Returns the item's file_hash.
+func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context, collectionID int64) (string, error) {
+	var hash string
+	err := r.db.QueryRow(ctx,
+		`SELECT mi.file_hash
+		 FROM media_items mi
+		 JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		 WHERE mi.collection_id = $1
+		   AND mi.missing_since IS NULL
+		   AND mi.hidden_at IS NULL
+		   AND pm.variants_generated_at IS NOT NULL
+		 ORDER BY RANDOM()
+		 LIMIT 1`,
+		collectionID,
+	).Scan(&hash)
+	return hash, err
+}
+
+// GetCollectionID returns the collection_id for a media item.
+func (r *MediaItemRepository) GetCollectionID(ctx context.Context, itemID int64) (int64, error) {
+	var collID int64
+	err := r.db.QueryRow(ctx,
+		`SELECT collection_id FROM media_items WHERE id = $1`,
+		itemID,
+	).Scan(&collID)
+	return collID, err
+}

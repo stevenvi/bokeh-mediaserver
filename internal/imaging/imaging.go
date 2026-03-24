@@ -66,6 +66,143 @@ func TilesPath(basePath string, hash string) string {
 	return filepath.Join(ItemDataPath(basePath, hash), "tiles")
 }
 
+// CollectionCoverDir returns the directory for a collection's cover images.
+func CollectionCoverDir(dataPath string, collectionID int64) string {
+	return filepath.Join(dataPath, "collection_images", fmt.Sprintf("%d", collectionID))
+}
+
+// CollectionCoverPath returns the path for a collection's cover image.
+func CollectionCoverPath(dataPath string, collectionID int64, ext string) string {
+	return filepath.Join(CollectionCoverDir(dataPath, collectionID), "cover."+ext)
+}
+
+// CollectionCoverExists returns true if a collection cover image exists on disk.
+func CollectionCoverExists(dataPath string, collectionID int64) bool {
+	_, err := os.Stat(CollectionCoverPath(dataPath, collectionID, "avif"))
+	return err == nil
+}
+
+// GenerateCollectionCover loads a thumb AVIF, center-crops it to a square,
+// and writes both AVIF and WebP versions to the collection_images directory.
+func GenerateCollectionCover(srcAvifThumbPath string, dataPath string, collectionID int64) error {
+	outDir := CollectionCoverDir(dataPath, collectionID)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir collection cover dir: %w", err)
+	}
+
+	img, err := vips.NewImageFromFile(srcAvifThumbPath)
+	if err != nil {
+		return fmt.Errorf("load thumb for cover: %w", err)
+	}
+	defer img.Close()
+
+	// Center-crop to square using the shorter dimension.
+	w, h := img.Width(), img.Height()
+	if w != h {
+		side := min(w, h)
+		left := (w - side) / 2
+		top := (h - side) / 2
+		if err := img.ExtractArea(left, top, side, side); err != nil {
+			return fmt.Errorf("crop cover to square: %w", err)
+		}
+	}
+
+	// Export AVIF
+	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{
+		Quality:       60,
+		Lossless:      false,
+		StripMetadata: true,
+	})
+	if err != nil {
+		return fmt.Errorf("export cover avif: %w", err)
+	}
+	if err := os.WriteFile(CollectionCoverPath(dataPath, collectionID, "avif"), avifBytes, 0o644); err != nil {
+		return fmt.Errorf("write cover avif: %w", err)
+	}
+
+	// Export WebP
+	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
+		Quality:       60,
+		Lossless:      false,
+		StripMetadata: true,
+	})
+	if err != nil {
+		return fmt.Errorf("export cover webp: %w", err)
+	}
+	if err := os.WriteFile(CollectionCoverPath(dataPath, collectionID, "webp"), webpBytes, 0o644); err != nil {
+		return fmt.Errorf("write cover webp: %w", err)
+	}
+
+	return nil
+}
+
+// GenerateCollectionCoverFromUpload loads an arbitrary image file, auto-rotates,
+// center-crops to square, resizes to 400x400, and writes AVIF + WebP covers.
+// Used by the admin upload endpoint.
+func GenerateCollectionCoverFromUpload(srcPath string, dataPath string, collectionID int64) error {
+	outDir := CollectionCoverDir(dataPath, collectionID)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir collection cover dir: %w", err)
+	}
+
+	img, err := vips.NewImageFromFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("load upload for cover: %w", err)
+	}
+	defer img.Close()
+
+	if err := img.AutoRotate(); err != nil {
+		return fmt.Errorf("auto-rotate cover upload: %w", err)
+	}
+
+	// Center-crop to square
+	w, h := img.Width(), img.Height()
+	if w != h {
+		side := min(w, h)
+		left := (w - side) / 2
+		top := (h - side) / 2
+		if err := img.ExtractArea(left, top, side, side); err != nil {
+			return fmt.Errorf("crop cover to square: %w", err)
+		}
+	}
+
+	// Resize to 400x400
+	if img.Width() != 400 {
+		scale := 400.0 / float64(img.Width())
+		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+			return fmt.Errorf("resize cover: %w", err)
+		}
+	}
+
+	// Export AVIF
+	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{
+		Quality:       60,
+		Lossless:      false,
+		StripMetadata: true,
+	})
+	if err != nil {
+		return fmt.Errorf("export cover avif: %w", err)
+	}
+	if err := os.WriteFile(CollectionCoverPath(dataPath, collectionID, "avif"), avifBytes, 0o644); err != nil {
+		return fmt.Errorf("write cover avif: %w", err)
+	}
+
+	// Export WebP
+	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
+		Quality:       60,
+		Lossless:      false,
+		StripMetadata: true,
+	})
+	if err != nil {
+		return fmt.Errorf("export cover webp: %w", err)
+	}
+	if err := os.WriteFile(CollectionCoverPath(dataPath, collectionID, "webp"), webpBytes, 0o644); err != nil {
+		return fmt.Errorf("write cover webp: %w", err)
+	}
+
+	return nil
+}
+
 // VariantsExist returns true if the thumb JPEG file exists on disk.
 // Thumb JPEG is the very last file written during variant generation
 // (thumb has the highest order, and JPEG is written after AVIF within it),
@@ -290,9 +427,30 @@ func GeneratePlaceholder(srcPath string) (string, error) {
 	return base64.StdEncoding.EncodeToString(webpBytes), nil
 }
 
-// GenerateJPEGOnTheFly transcodes an AVIF variant to JPEG for legacy platforms.
-// Not cached — called per-request. Fast enough for Roku slideshow use.
-func GenerateJPEGOnTheFly(avifPath string) ([]byte, error) {
+// GenerateWebP transcodes an AVIF variant to WebP on the fly.
+// Not cached — called per-request.
+func GenerateWebP(avifPath string) ([]byte, error) {
+	img, err := vips.NewImageFromFile(avifPath)
+	if err != nil {
+		return nil, fmt.Errorf("load avif: %w", err)
+	}
+	defer img.Close()
+
+	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
+		Quality:       80,
+		Lossless:      false,
+		StripMetadata: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("transcode to webp: %w", err)
+	}
+
+	return webpBytes, nil
+}
+
+// GenerateJPEG transcodes an AVIF variant to JPEG on the fly.
+// Not cached — called per-request.
+func GenerateJPEG(avifPath string) ([]byte, error) {
 	img, err := vips.NewImageFromFile(avifPath)
 	if err != nil {
 		return nil, fmt.Errorf("load avif: %w", err)

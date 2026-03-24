@@ -100,6 +100,7 @@ func run() error {
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
 	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath), false)
 	dispatcher.Register("device_cleanup", maintenance.HandleDeviceCleanup(), false)
+	dispatcher.Register("cover_cycle", maintenance.HandleCoverCycle(cfg.DataPath), false)
 	dispatcher.Start(ctx)
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────

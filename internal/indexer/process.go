@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -145,6 +146,18 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			}
 			if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
 				return fmt.Errorf("update variants_generated_at: %w", err)
+			}
+		}
+
+		// Generate a collection cover from this item if the collection doesn't
+		// have one yet. This ensures new collections get a cover as soon as
+		// their first item is processed rather than waiting for the weekly cycle.
+		// TODO: Making this extra call to the db is inefficient, we can know the collection id at this stage
+		if collID, err := mediaRepo.GetCollectionID(ctx, itemID); err == nil {
+			if !imaging.CollectionCoverExists(dataPath, collID) {
+				if err := maintenance.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
+					slog.Warn("auto-generate collection cover", "collection_id", collID, "err", err)
+				}
 			}
 		}
 

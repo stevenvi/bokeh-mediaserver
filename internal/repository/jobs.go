@@ -167,11 +167,20 @@ func (r *JobRepository) RecoverStuck(ctx context.Context) error {
 	return nil
 }
 
-// LoadSchedules reads cron schedules from server_config. Returns nullable strings.
-func (r *JobRepository) LoadSchedules(ctx context.Context) (*string, *string, *string, error) {
-	var scanSched, integritySched, deviceCleanupSched *string
+// LoadSchedules reads cron schedules from server_config. Returns a map of
+// config column name → nullable schedule string.
+func (r *JobRepository) LoadSchedules(ctx context.Context) (map[string]*string, error) {
+	var scanSched, integritySched, deviceCleanupSched, coverCycleSched *string
 	err := r.db.QueryRow(ctx,
-		`SELECT scan_schedule, integrity_schedule, device_cleanup_schedule FROM server_config WHERE id = 1`,
-	).Scan(&scanSched, &integritySched, &deviceCleanupSched)
-	return scanSched, integritySched, deviceCleanupSched, err
+		`SELECT scan_schedule, integrity_schedule, device_cleanup_schedule, cover_cycle_schedule FROM server_config WHERE id = 1`,
+	).Scan(&scanSched, &integritySched, &deviceCleanupSched, &coverCycleSched)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]*string{
+		"scan_schedule":           scanSched,
+		"integrity_schedule":      integritySched,
+		"device_cleanup_schedule": deviceCleanupSched,
+		"cover_cycle_schedule":    coverCycleSched,
+	}, nil
 }

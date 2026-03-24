@@ -101,6 +101,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Get("/images/{id}/exif", photos.getExif)
 		r.Get("/images/{id}/tiles/image.dzi", photos.serveDZIManifest)
 		r.Get("/images/{id}/tiles/*", photos.serveDZITile)
+		r.Get("/images/collections/{id}/cover", photos.serveCollectionCover)
 	})
 
 	// ── Admin ─────────────────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Post("/api/v1/admin/collections", admin.createCollection)
 		r.Delete("/api/v1/admin/collections/{id}", admin.deleteCollection)
 		r.Post("/api/v1/admin/collections/{id}/scan", admin.triggerScan)
+		r.Post("/api/v1/admin/collections/{id}/cover", admin.uploadCollectionCover)
 		r.Delete("/api/v1/admin/collections/{id}/derivatives", admin.deleteDerivatives)
 		r.Get("/api/v1/admin/collections/{id}/users", admin.listCollectionUsers)
 		r.Post("/api/v1/admin/collections/{id}/users", admin.grantUsersCollectionAccess)
@@ -139,6 +141,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)
 		r.Post("/api/v1/admin/maintenance/integrity-check", admin.triggerIntegrityCheck)
 		r.Post("/api/v1/admin/maintenance/device-cleanup", admin.triggerDeviceCleanup)
+		r.Post("/api/v1/admin/maintenance/cover-cycle", admin.triggerCoverCycle)
 	})
 
 	return r

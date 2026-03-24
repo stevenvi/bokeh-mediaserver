@@ -12,6 +12,7 @@ type Collection struct {
 	Type               string     `json:"type"`
 	RelativePath       *string    `json:"relative_path,omitempty"`
 	IsEnabled          bool       `json:"is_enabled"`
+	ManualCover        bool       `json:"manual_cover"`
 	LastScannedAt      *time.Time `json:"last_scanned_at,omitempty"`
 	MissingSince       *time.Time `json:"missing_since,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`

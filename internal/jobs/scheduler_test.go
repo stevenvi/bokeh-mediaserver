@@ -167,8 +167,8 @@ func TestScheduler_LoadSchedules(t *testing.T) {
 			s := jobs.NewScheduler(tx)
 			cfg := s.LoadSchedules(ctx)
 
-			assert.Equal(t, tt.wantScan, cfg.ScanSchedule)
-			assert.Equal(t, tt.wantIntegrity, cfg.IntegritySchedule)
+			assert.Equal(t, tt.wantScan, cfg["scan_schedule"])
+			assert.Equal(t, tt.wantIntegrity, cfg["integrity_schedule"])
 		})
 	}
 }

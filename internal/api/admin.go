@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -96,6 +97,24 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Only top-level collections can be deleted via this endpoint.
+	col, err := h.collections.GetByID(r.Context(), collectionID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+	if col.ParentCollectionID != nil {
+		writeError(w, http.StatusBadRequest, "only top-level collections can be deleted")
+		return
+	}
+
+	// Gather descendant IDs before deletion so we can clean up their covers.
+	descendantIDs, err := h.collections.ListDescendantIDs(r.Context(), collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
 	affected, err := h.collections.Delete(r.Context(), collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
@@ -104,6 +123,11 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
+	}
+
+	// Clean up cover images on disk for the top-level collection and all descendants (best-effort).
+	for _, id := range append([]int64{collectionID}, descendantIDs...) {
+		_ = os.RemoveAll(imaging.CollectionCoverDir(h.dataPath, id))
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -238,6 +262,59 @@ func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Requ
 // POST /api/v1/admin/maintenance/device-cleanup
 func (h *adminHandler) triggerDeviceCleanup(w http.ResponseWriter, r *http.Request) {
 	h.triggerSimpleJob(w, r, "device_cleanup")
+}
+
+// POST /api/v1/admin/maintenance/cover-cycle
+func (h *adminHandler) triggerCoverCycle(w http.ResponseWriter, r *http.Request) {
+	h.triggerSimpleJob(w, r, "cover_cycle")
+}
+
+// POST /api/v1/admin/collections/{id}/cover
+func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Request) {
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	file, _, err := r.FormFile("cover")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing cover file")
+		return
+	}
+	defer file.Close()
+
+	// Write to temp file for govips to load
+	tmp, err := os.CreateTemp("", "bokeh-cover-upload-*.tmp")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create temp file")
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := io.Copy(tmp, file); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read upload")
+		return
+	}
+	tmp.Close()
+
+	// Load, crop to square, resize to 400x400, export AVIF + WebP
+	if err := imaging.GenerateCollectionCoverFromUpload(tmp.Name(), h.dataPath, collectionID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to process cover image")
+		return
+	}
+
+	if err := h.collections.SetManualCover(r.Context(), collectionID, true); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update collection")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/v1/admin/users

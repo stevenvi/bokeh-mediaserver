@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,12 +12,23 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-const (
-	defaultScanSchedule          = "0 3 * * *"   // 3 AM daily
-	defaultIntegritySchedule     = "0 4 * * 0"   // 4 AM Sundays
-	defaultDeviceCleanupSchedule = "0 2 1 * *"   // 2 AM on the 1st of each month
-	scheduleReloadInterval       = 1 * time.Hour // re-read from DB hourly
-)
+const scheduleReloadInterval = 1 * time.Hour // re-read from DB hourly
+
+// scheduledJob defines a recurring job type and its schedule configuration.
+// If trigger is nil, the default behavior is triggerByType using jobType.
+type scheduledJob struct {
+	configKey       string                                  // column name in server_config
+	defaultSchedule string                                  // fallback cron expression
+	jobType         string                                  // jobs.type value
+	trigger         func(s *Scheduler, ctx context.Context) // nil = use triggerByType
+}
+
+var scheduledJobs = []scheduledJob{
+	{"scan_schedule", "0 3 * * *", "library_scan", (*Scheduler).TriggerScans},
+	{"integrity_schedule", "0 4 * * 0", "integrity_check", nil},
+	{"device_cleanup_schedule", "0 2 1 * *", "device_cleanup", nil},
+	{"cover_cycle_schedule", "0 5 * * 1", "cover_cycle", nil},
+}
 
 // Scheduler reads cron schedules from server_config and creates jobs at the
 // appropriate times. Schedules are re-read from the DB periodically to pick
@@ -54,37 +66,25 @@ func (s *Scheduler) Stop() {
 	slog.Info("scheduler stopped")
 }
 
-type ScheduleConfig struct {
-	ScanSchedule          string
-	IntegritySchedule     string
-	DeviceCleanupSchedule string
-}
+// ScheduleConfig maps config keys to their resolved cron expressions.
+type ScheduleConfig map[string]string
 
 func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
-	scanSched, integritySched, deviceCleanupSched, err := s.jobs.LoadSchedules(ctx)
-	if err != nil {
-		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
-		return ScheduleConfig{
-			ScanSchedule:          defaultScanSchedule,
-			IntegritySchedule:     defaultIntegritySchedule,
-			DeviceCleanupSchedule: defaultDeviceCleanupSchedule,
-		}
+	cfg := make(ScheduleConfig, len(scheduledJobs))
+	for _, sj := range scheduledJobs {
+		cfg[sj.configKey] = sj.defaultSchedule
 	}
 
-	cfg := ScheduleConfig{
-		ScanSchedule:          defaultScanSchedule,
-		IntegritySchedule:     defaultIntegritySchedule,
-		DeviceCleanupSchedule: defaultDeviceCleanupSchedule,
+	overrides, err := s.jobs.LoadSchedules(ctx)
+	if err != nil {
+		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
+		return cfg
 	}
-	// Note: validation is performed in run function
-	if scanSched != nil && *scanSched != "" {
-		cfg.ScanSchedule = *scanSched
-	}
-	if integritySched != nil && *integritySched != "" {
-		cfg.IntegritySchedule = *integritySched
-	}
-	if deviceCleanupSched != nil && *deviceCleanupSched != "" {
-		cfg.DeviceCleanupSchedule = *deviceCleanupSched
+
+	for key, val := range overrides {
+		if val != nil && strings.TrimSpace(*val) != "" {
+			cfg[key] = *val
+		}
 	}
 	return cfg
 }
@@ -92,34 +92,31 @@ func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
 func (s *Scheduler) run(ctx context.Context) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
+	type activeSchedule struct {
+		job      scheduledJob
+		schedule cron.Schedule
+	}
+
+	var schedules []activeSchedule
 	var lastScheduleLoad time.Time
-	var scanSched, integritySched, deviceCleanupSched cron.Schedule
 
 	reloadSchedules := func() {
 		cfg := s.LoadSchedules(ctx)
 		lastScheduleLoad = time.Now()
 
-		var err error
-		scanSched, err = parser.Parse(cfg.ScanSchedule)
-		if err != nil {
-			slog.Error("invalid scan_schedule, using default", "schedule", cfg.ScanSchedule, "err", err)
-			scanSched, _ = parser.Parse(defaultScanSchedule)
+		schedules = schedules[:0]
+		logAttrs := make([]any, 0, len(scheduledJobs)*2)
+		for _, sj := range scheduledJobs {
+			expr := cfg[sj.configKey]
+			parsed, err := parser.Parse(expr)
+			if err != nil {
+				slog.Error("invalid schedule, using default", "key", sj.configKey, "schedule", expr, "err", err)
+				parsed, _ = parser.Parse(sj.defaultSchedule)
+			}
+			schedules = append(schedules, activeSchedule{job: sj, schedule: parsed})
+			logAttrs = append(logAttrs, sj.configKey, expr)
 		}
-		integritySched, err = parser.Parse(cfg.IntegritySchedule)
-		if err != nil {
-			slog.Error("invalid integrity_schedule, using default", "schedule", cfg.IntegritySchedule, "err", err)
-			integritySched, _ = parser.Parse(defaultIntegritySchedule)
-		}
-		deviceCleanupSched, err = parser.Parse(cfg.DeviceCleanupSchedule)
-		if err != nil {
-			slog.Error("invalid device_cleanup_schedule, using default", "schedule", cfg.DeviceCleanupSchedule, "err", err)
-			deviceCleanupSched, _ = parser.Parse(defaultDeviceCleanupSchedule)
-		}
-
-		slog.Info("schedules loaded",
-			"scan", cfg.ScanSchedule,
-			"integrity", cfg.IntegritySchedule,
-			"device_cleanup", cfg.DeviceCleanupSchedule)
+		slog.Info("schedules loaded", logAttrs...)
 	}
 
 	reloadSchedules()
@@ -127,46 +124,46 @@ func (s *Scheduler) run(ctx context.Context) {
 	for {
 		now := time.Now()
 
-		// Periodically reload schedules from DB
 		if time.Since(lastScheduleLoad) > scheduleReloadInterval {
 			reloadSchedules()
 			now = time.Now()
 		}
 
-		// Find next trigger time
-		nextScan := scanSched.Next(now)
-		nextIntegrity := integritySched.Next(now)
-		nextDeviceCleanup := deviceCleanupSched.Next(now)
-
-		next := nextScan
-		if nextIntegrity.Before(next) {
-			next = nextIntegrity
+		// Find earliest next trigger across all jobs.
+		type pending struct {
+			activeSchedule
+			nextTime time.Time
 		}
-		if nextDeviceCleanup.Before(next) {
-			next = nextDeviceCleanup
+		items := make([]pending, len(schedules))
+		earliest := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+		for i, as := range schedules {
+			items[i] = pending{as, as.schedule.Next(now)}
+			if items[i].nextTime.Before(earliest) {
+				earliest = items[i].nextTime
+			}
 		}
 
-		slog.Debug("scheduler waiting",
-			"next_scan", nextScan,
-			"next_integrity", nextIntegrity,
-			"next_device_cleanup", nextDeviceCleanup)
+		logAttrs := make([]any, 0, len(items)*2)
+		for _, p := range items {
+			logAttrs = append(logAttrs, "next_"+p.job.configKey, p.nextTime)
+		}
+		slog.Debug("scheduler waiting", logAttrs...)
 
-		timer := time.NewTimer(time.Until(next))
+		timer := time.NewTimer(time.Until(earliest))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case t := <-timer.C:
-			// Check which schedule(s) triggered
-			// Use a small tolerance window (30s) for matching
-			if t.After(nextScan.Add(-30*time.Second)) && t.Before(nextScan.Add(30*time.Second)) {
-				s.TriggerScans(ctx)
-			}
-			if t.After(nextIntegrity.Add(-30*time.Second)) && t.Before(nextIntegrity.Add(30*time.Second)) {
-				s.TriggerIntegrityCheck(ctx)
-			}
-			if t.After(nextDeviceCleanup.Add(-30*time.Second)) && t.Before(nextDeviceCleanup.Add(30*time.Second)) {
-				s.TriggerDeviceCleanup(ctx)
+			const tolerance = 30 * time.Second
+			for _, p := range items {
+				if t.After(p.nextTime.Add(-tolerance)) && t.Before(p.nextTime.Add(tolerance)) {
+					if p.job.trigger != nil {
+						p.job.trigger(s, ctx)
+					} else {
+						s.triggerByType(ctx, p.job.jobType)
+					}
+				}
 			}
 		}
 	}
@@ -202,45 +199,38 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 	}
 }
 
+// TriggerIntegrityCheck triggers a scheduled integrity check.
 func (s *Scheduler) TriggerIntegrityCheck(ctx context.Context) {
-	slog.Info("scheduled integrity check triggered")
-
-	// Only create if not already active
-	active, err := s.jobs.IsActiveByType(ctx, "integrity_check")
-	if err != nil {
-		slog.Error("check active integrity job", "err", err)
-		return
-	}
-	if active {
-		slog.Info("skipping scheduled integrity check — already active")
-		return
-	}
-
-	jobID, err := s.jobs.Create(ctx, "integrity_check", nil, nil)
-	if err != nil {
-		slog.Error("create scheduled integrity job", "err", err)
-		return
-	}
-	slog.Info("queued scheduled integrity check", "job_id", jobID)
+	s.triggerByType(ctx, "integrity_check")
 }
 
+// TriggerDeviceCleanup triggers a scheduled device cleanup.
 func (s *Scheduler) TriggerDeviceCleanup(ctx context.Context) {
-	slog.Info("scheduled device cleanup triggered")
+	s.triggerByType(ctx, "device_cleanup")
+}
 
-	active, err := s.jobs.IsActiveByType(ctx, "device_cleanup")
+// TriggerCoverCycle triggers a scheduled cover cycle.
+func (s *Scheduler) TriggerCoverCycle(ctx context.Context) {
+	s.triggerByType(ctx, "cover_cycle")
+}
+
+func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
+	slog.Info("scheduled job triggered", "type", jobType)
+
+	active, err := s.jobs.IsActiveByType(ctx, jobType)
 	if err != nil {
-		slog.Error("check active device cleanup job", "err", err)
+		slog.Error("check active job", "type", jobType, "err", err)
 		return
 	}
 	if active {
-		slog.Info("skipping scheduled device cleanup — already active")
+		slog.Info("skipping scheduled job — already active", "type", jobType)
 		return
 	}
 
-	jobID, err := s.jobs.Create(ctx, "device_cleanup", nil, nil)
+	jobID, err := s.jobs.Create(ctx, jobType, nil, nil)
 	if err != nil {
-		slog.Error("create scheduled device cleanup job", "err", err)
+		slog.Error("create scheduled job", "type", jobType, "err", err)
 		return
 	}
-	slog.Info("queued scheduled device cleanup", "job_id", jobID)
+	slog.Info("queued scheduled job", "type", jobType, "job_id", jobID)
 }
