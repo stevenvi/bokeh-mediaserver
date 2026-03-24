@@ -315,3 +315,42 @@ func (r *MediaItemRepository) ListStaleItems(ctx context.Context) ([]StaleItem, 
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[StaleItem])
 }
+
+// ListHashesByCollection returns all file hashes for non-missing items in a collection
+// and its sub-collections (recursive).
+func (r *MediaItemRepository) ListHashesByCollection(ctx context.Context, collectionID int64) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_id = t.id
+		)
+		SELECT DISTINCT mi.file_hash
+		FROM media_items mi
+		JOIN tree t ON mi.collection_id = t.id
+		WHERE mi.missing_since IS NULL`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// ClearVariantsGenerated sets variants_generated_at to NULL for all items in a
+// collection and its sub-collections, so they are re-queued for processing.
+func (r *MediaItemRepository) ClearVariantsGenerated(ctx context.Context, collectionID int64) error {
+	_, err := r.db.Exec(ctx,
+		`WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_id = t.id
+		)
+		UPDATE photo_metadata SET variants_generated_at = NULL, placeholder = NULL
+		WHERE media_item_id IN (
+			SELECT mi.id FROM media_items mi JOIN tree t ON mi.collection_id = t.id
+		)`,
+		collectionID,
+	)
+	return err
+}

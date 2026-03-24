@@ -89,8 +89,18 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			focalLength35mm = utils.ExifFloat(exifData, "FocalLenIn35mmFilm")
 		}
 
+		// EXIF ImageWidth/ImageHeight reflect the raw sensor dimensions, which
+		// don't account for EXIF orientation rotation. Orientations 5-8 indicate
+		// a 90° or 270° rotation, so we swap width and height to match the
+		// displayed (auto-rotated) image dimensions.
+		widthPx := utils.ExifInt(exifData, "ImageWidth")
+		heightPx := utils.ExifInt(exifData, "ImageHeight")
+		if orient := utils.ExifInt(exifData, "Orientation"); orient != nil && *orient >= 5 && *orient <= 8 {
+			widthPx, heightPx = heightPx, widthPx
+		}
+
 		err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
-			utils.ExifInt(exifData, "ImageWidth"), utils.ExifInt(exifData, "ImageHeight"),
+			widthPx, heightPx,
 			createdAt(fsPath, exifData),
 			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
 			utils.ExifStr(exifData, "ExposureTime"),
@@ -106,26 +116,36 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 			return fmt.Errorf("upsert photo_metadata: %w", err)
 		}
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
+		// Generate image variants, DZI tiles, and placeholder — but skip if they
+		// already exist on disk (e.g. during a force rescan that only needs to
+		// refresh EXIF metadata).
+		variantsExist := imaging.VariantsExist(dataPath, fileHash)
+		dziExists := imaging.DZIExists(dataPath, fileHash)
 
-		// Generate image variants and DZI tile pyramid
-		if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
-			return fmt.Errorf("generate variants: %w", err)
+		if !variantsExist {
+			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
+			if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
+				return fmt.Errorf("generate variants: %w", err)
+			}
 		}
-		if err := imaging.GenerateDZI(fsPath, dataPath, fileHash); err != nil {
-			return fmt.Errorf("generate DZI: %w", err)
-		}
-
-		// Generate tiny placeholder
-		var placeholder *string
-		if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
-			slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
-		} else {
-			placeholder = &p
+		if !dziExists {
+			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating DZI tiles")
+			if err := imaging.GenerateDZI(fsPath, dataPath, fileHash); err != nil {
+				return fmt.Errorf("generate DZI: %w", err)
+			}
 		}
 
-		if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
-			return fmt.Errorf("update variants_generated_at: %w", err)
+		if !variantsExist || !dziExists {
+			// Generate a tiny placeholder and mark as done
+			var placeholder *string
+			if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
+				slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
+			} else {
+				placeholder = &p
+			}
+			if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
+				return fmt.Errorf("update variants_generated_at: %w", err)
+			}
 		}
 
 		slog.Debug("finished processing media item", "item_id", itemID)

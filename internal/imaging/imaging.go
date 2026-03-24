@@ -19,17 +19,18 @@ const (
 )
 
 type variantSpec struct {
+	name    string
 	size    int
 	quality int
 }
 
-// TODO: defer to DZI as much as possible. Maybe load 1080p preview then start up dzi?
-// On clients lacking AVIF, only preview and full image are available maybe?
-// (And always show the preview unless the full image is explicitly requested?)
-var variants = map[string]variantSpec{
-	VariantThumb:   {size: 400,  quality: 60},
-	VariantSmall:   {size: 1280, quality: 70},
-	VariantPreview: {size: 1920, quality: 75},
+// variants defines the image variants to generate, in order.
+// Thumb is last because its JPEG (the final file written) is the sentinel
+// checked by VariantsExist — if it exists, all variants completed.
+var variants = []variantSpec{
+	{name: VariantPreview, size: 1920, quality: 75},
+	{name: VariantSmall,   size: 1280, quality: 70},
+	{name: VariantThumb,   size: 400,  quality: 60},
 }
 
 // Startup initialises the govips library. Must be called once at server start
@@ -65,11 +66,26 @@ func TilesPath(basePath string, hash string) string {
 	return filepath.Join(ItemDataPath(basePath, hash), "tiles")
 }
 
-func GenerateVariant(srcPath string, dataPath string, hash string, variantName string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
+// VariantsExist returns true if the thumb JPEG file exists on disk.
+// Thumb JPEG is the very last file written during variant generation
+// (thumb has the highest order, and JPEG is written after AVIF within it),
+// so its presence implies all variants completed successfully.
+func VariantsExist(dataPath string, hash string) bool {
+	_, err := os.Stat(VariantPath(dataPath, hash, VariantThumb, "jpg"))
+	return err == nil
+}
+
+// DZIExists returns true if the DZI manifest file exists on disk.
+func DZIExists(dataPath string, hash string) bool {
+	_, err := os.Stat(filepath.Join(TilesPath(dataPath, hash), "image.dzi"))
+	return err == nil
+}
+
+func GenerateVariant(srcPath string, dataPath string, hash string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
 	// Skip variants at or above source resolution — no point upscaling.
 	if spec.size >= srcLongestEdge {
 		slog.Debug("skipping variant — source too small",
-			"variant", variantName,
+			"variant", spec.name,
 			"variant_size", spec.size,
 			"src_longest_edge", srcLongestEdge,
 		)
@@ -79,14 +95,14 @@ func GenerateVariant(srcPath string, dataPath string, hash string, variantName s
 	// Copy source so we can resize independently for each variant.
 	img, err := src.Copy()
 	if err != nil {
-		return fmt.Errorf("copy source for %s: %w", variantName, err)
+		return fmt.Errorf("copy source for %s: %w", spec.name, err)
 	}
 	defer img.Close()
 
 	// Scale by longest edge, preserving aspect ratio.
 	scale := float64(spec.size) / float64(srcLongestEdge)
 	if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
-		return fmt.Errorf("resize %s: %w", variantName, err)
+		return fmt.Errorf("resize %s: %w", spec.name, err)
 	}
 
 	// Export AVIF
@@ -97,16 +113,16 @@ func GenerateVariant(srcPath string, dataPath string, hash string, variantName s
 	}
 	avifBytes, _, err := img.ExportAvif(&avifParams)
 	if err != nil {
-		return fmt.Errorf("export %s avif: %w", variantName, err)
+		return fmt.Errorf("export %s avif: %w", spec.name, err)
 	}
-	avifPath := VariantPath(dataPath, hash, variantName, "avif")
+	avifPath := VariantPath(dataPath, hash, spec.name, "avif")
 	if err := os.WriteFile(avifPath, avifBytes, 0o644); err != nil {
-		return fmt.Errorf("write %s avif: %w", variantName, err)
+		return fmt.Errorf("write %s avif: %w", spec.name, err)
 	}
 
 	// Pre-generate JPEG thumb for Roku and legacy clients.
 	// Re-uses the already-resized img — no second resize needed.
-	if variantName == VariantThumb {
+	if spec.name == VariantThumb {
 		jpegParams := vips.JpegExportParams{
 			Quality:       spec.quality,
 			StripMetadata: true,
@@ -115,7 +131,7 @@ func GenerateVariant(srcPath string, dataPath string, hash string, variantName s
 		if err != nil {
 			return fmt.Errorf("export thumb jpeg: %w", err)
 		}
-		jpegPath := VariantPath(dataPath, hash, variantName, "jpg")
+		jpegPath := VariantPath(dataPath, hash, spec.name, "jpg")
 		if err := os.WriteFile(jpegPath, jpegBytes, 0o644); err != nil {
 			return fmt.Errorf("write thumb jpeg: %w", err)
 		}
@@ -147,8 +163,10 @@ func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
 	// Determine the longest edge for resizing decisions
 	srcLongestEdge := max(src.Width(), src.Height())
 
-	for variantName, spec := range variants {
-		GenerateVariant(srcPath, dataPath, hash, variantName, spec, src, srcLongestEdge)
+	for _, v := range variants {
+		if err := GenerateVariant(srcPath, dataPath, hash, v, src, srcLongestEdge); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -236,10 +254,11 @@ func autoRotateToTemp(srcPath string, tmpDir string) (string, error) {
 	return tmpPath, nil
 }
 
-// GeneratePlaceholder creates a tiny 32x32 JPEG and returns it as a
+// GeneratePlaceholder creates a tiny 32x32 WebP and returns it as a
 // base64-encoded string for embedding directly in API responses.
-// The client renders it as: <img src="data:image/jpeg;base64,{value}" />
-// No extra HTTP request needed and no external dependency required.
+// The client renders it as: <img src="data:image/webp;base64,{value}" />
+// WebP is used instead of JPEG because at this size the JPEG header alone
+// is ~600 bytes, while the entire WebP is ~200 bytes.
 func GeneratePlaceholder(srcPath string) (string, error) {
 	img, err := vips.NewImageFromFile(srcPath)
 	if err != nil {
@@ -259,15 +278,16 @@ func GeneratePlaceholder(srcPath string) (string, error) {
 		return "", fmt.Errorf("resize placeholder: %w", err)
 	}
 
-	jpegBytes, _, err := img.ExportJpeg(&vips.JpegExportParams{
+	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
 		Quality:       10,
+		Lossless:      false,
 		StripMetadata: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("export placeholder: %w", err)
 	}
 
-	return base64.StdEncoding.EncodeToString(jpegBytes), nil
+	return base64.StdEncoding.EncodeToString(webpBytes), nil
 }
 
 // GenerateJPEGOnTheFly transcodes an AVIF variant to JPEG for legacy platforms.

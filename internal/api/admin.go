@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
+	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
@@ -146,16 +147,55 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the job row — the dispatcher picks it up on next poll
+	// Create the job row — the dispatcher picks it up on next poll.
+	// When ?force=true, encode it in related_type so the handler re-processes
+	// all files (EXIF re-extraction) instead of only new/changed ones.
 	relatedType := "collection"
+	if r.URL.Query().Get("force") == "true" {
+		relatedType = "collection:force"
+	}
 	jobID, err := h.jobs.Create(r.Context(), "library_scan", &collectionID, &relatedType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
-	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID)
+	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID, "force", relatedType == "collection:force")
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+}
+
+// DELETE /api/v1/admin/collections/:id/derivatives
+// Deletes all derived files (variants, DZI tiles) for items in a collection.
+// A subsequent scan will regenerate them via process_media.
+func (h *adminHandler) deleteDerivatives(w http.ResponseWriter, r *http.Request) {
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	hashes, err := h.media.ListHashesByCollection(r.Context(), collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list items")
+		return
+	}
+
+	var deleted int
+	for _, hash := range hashes {
+		itemPath := imaging.ItemDataPath(h.dataPath, hash)
+		if err := os.RemoveAll(itemPath); err != nil {
+			slog.Info("delete derivatives", "hash", hash, "err", err)
+			continue
+		}
+		deleted++
+	}
+
+	// Clear variants_generated_at so the integrity check knows to re-queue
+	if err := h.media.ClearVariantsGenerated(r.Context(), collectionID); err != nil {
+		slog.Warn("clear variants_generated_at", "collection_id", collectionID, "err", err)
+	}
+
+	slog.Info("deleted derivatives", "collection_id", collectionID, "items", deleted)
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted})
 }
 
 // GET /api/v1/admin/jobs/:id

@@ -76,8 +76,11 @@ var supportedExtensions = map[string]string{
 //
 // Called by HandleScanJob — the job is already marked as 'running' by the dispatcher.
 // Returns an error on failure; the dispatcher handles MarkDone/MarkFailed.
+//
+// If force=true, all media items will be marked for review even if checksums are unchanged.
+// This really is only useful for debugging purposes, to force reparsing metadata.
 func RunScan(ctx context.Context, db utils.DBTX,
-	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string) error {
+	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string, force bool) error {
 
 	jobRepo := repository.NewJobRepository(db)
 	colRepo := repository.NewCollectionRepository(db)
@@ -169,9 +172,12 @@ func RunScan(ctx context.Context, db utils.DBTX,
 			return nil
 		}
 
-		if wasUnchanged {
+		if wasUnchanged && !force {
 			unchanged++
 			return nil
+		}
+		if wasUnchanged {
+			unchanged++
 		}
 
 		// Queue a process_media job for this item
@@ -298,6 +304,8 @@ func computeFileHash(path string, size int64) (string, error) {
 
 // HandleScanJob is a job handler for library_scan jobs.
 // It performs enumeration only — heavy processing is queued as separate process_media jobs.
+// When related_type is "collection:force", process_media is queued for every file
+// regardless of whether the file has changed (useful for re-extracting EXIF metadata).
 func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		if job.RelatedID == nil {
@@ -305,12 +313,14 @@ func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db util
 		}
 		collectionID := *job.RelatedID
 
+		force := job.RelatedType != nil && *job.RelatedType == "collection:force"
+
 		colRepo := repository.NewCollectionRepository(db)
 		relativePath, err := colRepo.GetRelativePath(ctx, collectionID)
 		if err != nil {
 			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
 		}
 
-		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath)
+		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath, force)
 	}
 }

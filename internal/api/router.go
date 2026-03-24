@@ -119,6 +119,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Post("/api/v1/admin/collections", admin.createCollection)
 		r.Delete("/api/v1/admin/collections/{id}", admin.deleteCollection)
 		r.Post("/api/v1/admin/collections/{id}/scan", admin.triggerScan)
+		r.Delete("/api/v1/admin/collections/{id}/derivatives", admin.deleteDerivatives)
 		r.Get("/api/v1/admin/collections/{id}/users", admin.listCollectionUsers)
 		r.Post("/api/v1/admin/collections/{id}/users", admin.grantUsersCollectionAccess)
 
