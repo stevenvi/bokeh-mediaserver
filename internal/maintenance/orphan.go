@@ -29,7 +29,8 @@ func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBT
 
 		var cleaned, checked int64
 
-		l1Entries, err := os.ReadDir(dataPath)
+		derivedPath := dataPath + "/derived_media"
+		l1Entries, err := os.ReadDir(derivedPath)
 		if err != nil {
 			return fmt.Errorf("read data path: %w", err)
 		}
@@ -75,7 +76,7 @@ func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBT
 			if !l1.IsDir() || len(l1.Name()) != 2 {
 				continue
 			}
-			l1Path := dataPath + "/" + l1.Name()
+			l1Path := derivedPath + "/" + l1.Name()
 
 			l2Entries, err := os.ReadDir(l1Path)
 			if err != nil {

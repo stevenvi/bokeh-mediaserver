@@ -70,19 +70,12 @@ func (r *MediaItemRepository) GetForProcessing(ctx context.Context, id int64) (r
 // enforcing that the given user has collection_access to the root ancestor collection.
 func (r *MediaItemRepository) GetFileHashAndPath(ctx context.Context, id, userID int64) (hash, relativePath string, err error) {
 	err = r.db.QueryRow(ctx,
-		`WITH RECURSIVE ancestors AS (
-		     SELECT id, parent_collection_id FROM collections WHERE id = (
-		         SELECT collection_id FROM media_items WHERE id = $1 AND hidden_at IS NULL
-		     )
-		     UNION ALL
-		     SELECT c.id, c.parent_collection_id FROM collections c
-		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
-		 )
-		 SELECT m.file_hash, m.relative_path FROM media_items m
+		`SELECT m.file_hash, m.relative_path FROM media_items m
+		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		       WHERE ca.collection_id = c.root_collection_id
 		         AND ca.user_id = $2
 		   )`,
 		id, userID,
@@ -103,20 +96,15 @@ func (r *MediaItemRepository) UpdateTitle(ctx context.Context, id int64, title s
 // are accessible if the user has access to the top-level parent.
 func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
 	rows, err := r.db.Query(ctx,
-		`WITH RECURSIVE ancestors AS (
-		     SELECT id, parent_collection_id FROM collections WHERE id = $1
-		     UNION ALL
-		     SELECT c.id, c.parent_collection_id FROM collections c
-		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
-		 )
-		 SELECT m.id, m.title, m.mime_type, m.ordinal,
+		`SELECT m.id, m.title, m.mime_type, m.ordinal,
 		        pm.placeholder, pm.variants_generated_at
 		 FROM media_items m
 		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
+		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.collection_id = $1 AND m.missing_since IS NULL AND m.hidden_at IS NULL
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		       WHERE ca.collection_id = c.root_collection_id
 		         AND ca.user_id = $4
 		   )
 		 ORDER BY m.ordinal ASC NULLS LAST, m.title ASC
@@ -323,7 +311,7 @@ func (r *MediaItemRepository) ListHashesByCollection(ctx context.Context, collec
 		`WITH RECURSIVE tree AS (
 			SELECT id FROM collections WHERE id = $1
 			UNION ALL
-			SELECT c.id FROM collections c JOIN tree t ON c.parent_id = t.id
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 		)
 		SELECT DISTINCT mi.file_hash
 		FROM media_items mi
@@ -344,7 +332,7 @@ func (r *MediaItemRepository) ClearVariantsGenerated(ctx context.Context, collec
 		`WITH RECURSIVE tree AS (
 			SELECT id FROM collections WHERE id = $1
 			UNION ALL
-			SELECT c.id FROM collections c JOIN tree t ON c.parent_id = t.id
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 		)
 		UPDATE photo_metadata SET variants_generated_at = NULL, placeholder = NULL
 		WHERE media_item_id IN (
@@ -355,23 +343,53 @@ func (r *MediaItemRepository) ClearVariantsGenerated(ctx context.Context, collec
 	return err
 }
 
-// GetRandomItemHashWithVariants picks a random item from a collection (direct only,
-// not recursive) that has generated variants. Returns the item's file_hash.
+// GetRandomItemHashWithVariants picks a random item with generated variants,
+// starting with the collection's direct items and expanding one depth level at a time.
+// It searches up to 8 nested levels; returns pgx.ErrNoRows if nothing is found.
 func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context, collectionID int64) (string, error) {
-	var hash string
-	err := r.db.QueryRow(ctx,
-		`SELECT mi.file_hash
-		 FROM media_items mi
-		 JOIN photo_metadata pm ON pm.media_item_id = mi.id
-		 WHERE mi.collection_id = $1
-		   AND mi.missing_since IS NULL
-		   AND mi.hidden_at IS NULL
-		   AND pm.variants_generated_at IS NOT NULL
-		 ORDER BY RANDOM()
-		 LIMIT 1`,
-		collectionID,
-	).Scan(&hash)
-	return hash, err
+	collectionIDs := []int64{collectionID}
+
+	for depth := 0; depth <= 8; depth++ {
+		if len(collectionIDs) == 0 {
+			break
+		}
+
+		var hash string
+		err := r.db.QueryRow(ctx,
+			`SELECT mi.file_hash
+			 FROM media_items mi
+			 JOIN photo_metadata pm ON pm.media_item_id = mi.id
+			 WHERE mi.collection_id = ANY($1)
+			   AND mi.missing_since IS NULL
+			   AND mi.hidden_at IS NULL
+			   AND pm.variants_generated_at IS NOT NULL
+			 ORDER BY RANDOM()
+			 LIMIT 1`,
+			collectionIDs,
+		).Scan(&hash)
+		if err == nil {
+			return hash, nil
+		}
+		if err != pgx.ErrNoRows {
+			return "", err
+		}
+
+		// Nothing at this depth — fetch the next level of children.
+		rows, err := r.db.Query(ctx,
+			`SELECT id FROM collections WHERE parent_collection_id = ANY($1)`,
+			collectionIDs,
+		)
+		if err != nil {
+			return "", err
+		}
+		children, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return "", err
+		}
+		collectionIDs = children
+	}
+
+	return "", pgx.ErrNoRows
 }
 
 // GetCollectionID returns the collection_id for a media item.
@@ -382,4 +400,97 @@ func (r *MediaItemRepository) GetCollectionID(ctx context.Context, itemID int64)
 		itemID,
 	).Scan(&collID)
 	return collID, err
+}
+
+// GetRootCollectionID returns the root collection ID for the collection containing
+// the given media item.
+func (r *MediaItemRepository) GetRootCollectionID(ctx context.Context, itemID int64) (int64, error) {
+	var rootID int64
+	err := r.db.QueryRow(ctx,
+		`SELECT c.root_collection_id
+		 FROM media_items mi
+		 JOIN collections c ON c.id = mi.collection_id
+		 WHERE mi.id = $1`,
+		itemID,
+	).Scan(&rootID)
+	return rootID, err
+}
+
+// UpsertAudioMetadata inserts or updates audio metadata for a media item.
+func (r *MediaItemRepository) UpsertAudioMetadata(ctx context.Context, itemID int64,
+	artistID, albumArtistID, albumID *int64,
+	title *string,
+	trackNumber, discNumber *int16,
+	durationSeconds *float64,
+	genre *string,
+	year *int16,
+	replayGainDB *float64,
+	hasEmbeddedArt bool,
+) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO audio_metadata
+		     (media_item_id, artist_id, album_artist_id, album_id, title,
+		      track_number, disc_number, duration_seconds,
+		      genre, year, replay_gain_db, has_embedded_art, processed_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+		 ON CONFLICT (media_item_id) DO UPDATE SET
+		     artist_id        = EXCLUDED.artist_id,
+		     album_artist_id  = EXCLUDED.album_artist_id,
+		     album_id         = EXCLUDED.album_id,
+		     title            = EXCLUDED.title,
+		     track_number     = EXCLUDED.track_number,
+		     disc_number      = EXCLUDED.disc_number,
+		     duration_seconds = EXCLUDED.duration_seconds,
+		     genre            = EXCLUDED.genre,
+		     year             = EXCLUDED.year,
+		     replay_gain_db   = EXCLUDED.replay_gain_db,
+		     has_embedded_art = EXCLUDED.has_embedded_art,
+		     processed_at     = now()`,
+		itemID, artistID, albumArtistID, albumID, title,
+		trackNumber, discNumber, durationSeconds,
+		genre, year, replayGainDB, hasEmbeddedArt,
+	)
+	return err
+}
+
+// ListTracksByAlbum returns all tracks for an album ordered by disc and track number.
+// Access is verified against the album's root_collection_id.
+func (r *MediaItemRepository) ListTracksByAlbum(ctx context.Context, albumID, userID int64) ([]models.TrackView, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT m.id, m.title, am.track_number, am.disc_number,
+		        am.duration_seconds, a.name, m.mime_type
+		 FROM audio_metadata am
+		 JOIN media_items m ON m.id = am.media_item_id
+		 LEFT JOIN artists a ON a.id = am.artist_id
+		 JOIN audio_albums al ON al.id = am.album_id
+		 WHERE am.album_id = $1
+		   AND m.missing_since IS NULL AND m.hidden_at IS NULL
+		   AND EXISTS (
+		       SELECT 1 FROM collection_access ca
+		       WHERE ca.collection_id = al.root_collection_id
+		         AND ca.user_id = $2
+		   )
+		 ORDER BY am.disc_number ASC NULLS LAST, am.track_number ASC NULLS LAST, m.title ASC`,
+		albumID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.TrackView])
+}
+
+// GetAudioStreamInfo returns fields needed to stream an audio file, with access check.
+func (r *MediaItemRepository) GetAudioStreamInfo(ctx context.Context, itemID int64, userID int64) (relativePath, mimeType string, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT m.relative_path, m.mime_type FROM media_items m
+		 JOIN collections c ON c.id = m.collection_id
+		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
+		   AND EXISTS (
+		       SELECT 1 FROM collection_access ca
+		       WHERE ca.collection_id = c.root_collection_id
+		         AND ca.user_id = $2
+		   )`,
+		itemID, userID,
+	).Scan(&relativePath, &mimeType)
+	return
 }

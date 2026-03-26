@@ -67,6 +67,16 @@ var supportedExtensions = map[string]string{
 	".mos": "image/x-leaf-mos",
 	".mdc": "image/x-minolta-mdc",
 	".pxn": "image/x-logitech-pxn",
+
+	// Audio formats
+	".mp3":  "audio/mpeg",
+	".flac": "audio/flac",
+	".m4a":  "audio/mp4",
+	".aac":  "audio/aac",
+	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
+	".opus": "audio/opus",
+	".wav":  "audio/wav",
 }
 
 // RunScan performs a lightweight enumeration scan of a collection's relative_path.

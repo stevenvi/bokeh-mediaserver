@@ -30,11 +30,19 @@ func (r *CollectionRepository) ExistsByRelativePath(ctx context.Context, relativ
 }
 
 // Create inserts a new top-level collection and returns its ID.
+// root_collection_id must equal the new row's own id, which isn't known until after
+// the insert. We pre-fetch the next sequence value so we can supply both id and
+// root_collection_id in a single statement, using OVERRIDING SYSTEM VALUE to bypass
+// the GENERATED ALWAYS constraint.
 func (r *CollectionRepository) Create(ctx context.Context, name, colType, relativePath string) (int64, error) {
 	var id int64
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO collections (name, type, relative_path)
-		 VALUES ($1, $2, $3)
+		`WITH nid AS (
+		     SELECT nextval(pg_get_serial_sequence('collections', 'id')) AS v
+		 )
+		 INSERT INTO collections (id, root_collection_id, name, type, relative_path)
+		 OVERRIDING SYSTEM VALUE
+		 SELECT v, v, $1, $2, $3 FROM nid
 		 RETURNING id`,
 		name, colType, relativePath,
 	).Scan(&id)
@@ -143,18 +151,12 @@ func (r *CollectionRepository) ListChildren(ctx context.Context, parentID int64)
 func (r *CollectionRepository) GetByIDForUser(ctx context.Context, id, userID int64) (*models.CollectionView, error) {
 	var c models.CollectionView
 	err := r.db.QueryRow(ctx,
-		`WITH RECURSIVE ancestors AS (
-		     SELECT id, parent_collection_id FROM collections WHERE id = $1 AND is_enabled = true
-		     UNION ALL
-		     SELECT c.id, c.parent_collection_id FROM collections c
-		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
-		 )
-		 SELECT c.id, c.parent_collection_id, c.name, c.type
+		`SELECT c.id, c.parent_collection_id, c.name, c.type
 		 FROM collections c
 		 WHERE c.id = $1 AND c.is_enabled = true
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
+		       WHERE ca.collection_id = c.root_collection_id
 		         AND ca.user_id = $2
 		   )`,
 		id, userID,
@@ -170,16 +172,10 @@ func (r *CollectionRepository) GetByIDForUser(ctx context.Context, id, userID in
 func (r *CollectionRepository) ExistsEnabledWithAccess(ctx context.Context, collectionID, userID int64) (bool, error) {
 	var ok bool
 	err := r.db.QueryRow(ctx,
-		`WITH RECURSIVE ancestors AS (
-		     SELECT id, parent_collection_id FROM collections WHERE id = $1 AND is_enabled = true
-		     UNION ALL
-		     SELECT c.id, c.parent_collection_id FROM collections c
-		     INNER JOIN ancestors a ON c.id = a.parent_collection_id
-		 )
-		 SELECT EXISTS (
-		     SELECT 1 FROM collection_access ca
-		     WHERE ca.collection_id = (SELECT id FROM ancestors WHERE parent_collection_id IS NULL)
-		       AND ca.user_id = $2
+		`SELECT EXISTS (
+		     SELECT 1 FROM collections c
+		     JOIN collection_access ca ON ca.collection_id = c.root_collection_id
+		     WHERE c.id = $1 AND c.is_enabled = true AND ca.user_id = $2
 		 )`,
 		collectionID, userID,
 	).Scan(&ok)
@@ -219,19 +215,21 @@ func (r *CollectionRepository) ListUsersWithAccess(ctx context.Context, collecti
 }
 
 // UpsertSubCollection upserts a sub-collection (directory) during scanning.
-// rootCollectionID is used to inherit the collection type.
+// rootCollectionID is used to inherit the collection type and set root_collection_id.
 func (r *CollectionRepository) UpsertSubCollection(ctx context.Context, parentID, rootCollectionID int64, name, relativePath string) (int64, error) {
 	var id int64
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO collections (parent_collection_id, name, type, relative_path)
+		`INSERT INTO collections (parent_collection_id, root_collection_id, name, type, relative_path)
 		 VALUES ($1, $2,
-		     (SELECT type FROM collections WHERE id = $3),
+		     $3,
+		     (SELECT type FROM collections WHERE id = $2),
 		     $4)
 		 ON CONFLICT (relative_path) WHERE relative_path IS NOT NULL
 		     DO UPDATE SET name                 = EXCLUDED.name,
-		                   parent_collection_id = EXCLUDED.parent_collection_id
+		                   parent_collection_id = EXCLUDED.parent_collection_id,
+		                   root_collection_id   = EXCLUDED.root_collection_id
 		 RETURNING id`,
-		parentID, name, rootCollectionID, relativePath,
+		parentID, rootCollectionID, name, relativePath,
 	).Scan(&id)
 	return id, err
 }

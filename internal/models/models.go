@@ -150,3 +150,68 @@ type AccessHistoryEntry struct {
 	Agent    string    `json:"agent"`
 	LastSeen time.Time `json:"last_seen"`
 }
+
+// Artist represents a music artist (materialized from audio metadata).
+type Artist struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	SortName    string    `json:"sort_name"`
+	ManualImage bool      `json:"manual_image"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// ArtistSummary is the user-facing view of an artist in a listing.
+type ArtistSummary struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	SortName string `json:"sort_name"`
+}
+
+// AudioAlbum is the full representation of an audio album, keyed by tag identity.
+type AudioAlbum struct {
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	ArtistID         *int64    `json:"artist_id,omitempty"`
+	Year             *int16    `json:"year,omitempty"`
+	Genre            *string   `json:"genre,omitempty"`
+	RootCollectionID int64     `json:"root_collection_id"`
+	IsCompilation    bool      `json:"is_compilation"`
+	ManualCover      bool      `json:"manual_cover"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// AudioMetadata stores ID3/tag data for a single audio media item.
+type AudioMetadata struct {
+	MediaItemID     int64    `json:"-"`
+	ArtistID        *int64   `json:"artist_id,omitempty"`
+	AlbumArtistID   *int64   `json:"album_artist_id,omitempty"`
+	AlbumID         *int64   `json:"album_id,omitempty"`
+	Title           *string  `json:"title,omitempty"`
+	TrackNumber     *int16   `json:"track_number,omitempty"`
+	DiscNumber      *int16   `json:"disc_number,omitempty"`
+	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	Genre           *string  `json:"genre,omitempty"`
+	Year            *int16   `json:"year,omitempty"`
+	ReplayGainDB    *float64 `json:"replay_gain_db,omitempty"`
+	HasEmbeddedArt  bool     `json:"has_embedded_art"`
+}
+
+// AlbumSummary is the user-facing view of an album in an artist listing.
+type AlbumSummary struct {
+	AlbumID       int64   `json:"album_id"`
+	Name          string  `json:"name"`
+	Year          *int16  `json:"year,omitempty"`
+	TrackCount    int     `json:"track_count"`
+	TotalDuration float64 `json:"total_duration"`
+}
+
+// TrackView is the user-facing projection of a track in an album listing.
+type TrackView struct {
+	ID              int64   `json:"id"`
+	Title           string  `json:"title"`
+	TrackNumber     *int16  `json:"track_number,omitempty"`
+	DiscNumber      *int16  `json:"disc_number,omitempty"`
+	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	ArtistName      *string `json:"artist_name,omitempty"`
+	MimeType        string  `json:"mime_type"`
+}

@@ -35,15 +35,19 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 
 	rateLimiter := newLoginRateLimiter()
 
-	userRepo := repository.NewUserRepository(db)
-	deviceRepo := repository.NewDeviceRepository(db)
+	albumRepo := repository.NewAlbumRepository(db)
+	artistRepo := repository.NewArtistRepository(db)
 	collRepo := repository.NewCollectionRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
+	deviceRepo := repository.NewDeviceRepository(db)
 	jobRepo := repository.NewJobRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
+	userRepo := repository.NewUserRepository(db)
 
 	authPlugins := authpkg.DefaultPlugins()
+
 	authHandler := newAuthHandler(db, userRepo, deviceRepo, guard, rateLimiter, jwtSecret, authPlugins, production)
 	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
+	music := &musicHandler{artists: artistRepo, albums: albumRepo, media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
 	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
 	admin := &adminHandler{
 		db: db, users: userRepo, devices: deviceRepo, guard: guard,
@@ -102,6 +106,17 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		r.Get("/images/{id}/tiles/image.dzi", photos.serveDZIManifest)
 		r.Get("/images/{id}/tiles/*", photos.serveDZITile)
 		r.Get("/images/collections/{id}/cover", photos.serveCollectionCover)
+		r.Get("/images/artists/{id}/cover", music.serveArtistImage)
+		r.Get("/images/albums/{albumId}/cover", music.serveAlbumCover)
+
+		// Music
+		r.Get("/api/v1/collections/{collectionId}/artists", music.listArtists)
+		r.Get("/api/v1/collections/{collectionId}/artists/{artistId}/albums", music.listArtistAlbums)
+		r.Get("/api/v1/collections/{collectionId}/albums/{albumId}/tracks", music.listAlbumTracks)
+
+		// Audio streaming
+		r.Get("/audio/{id}/stream", music.stream)
+		r.Head("/audio/{id}/stream", music.stream)
 	})
 
 	// ── Admin ─────────────────────────────────────────────────────────────────
@@ -136,6 +151,10 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		// Media item visibility
 		r.Post("/api/v1/admin/media/{id}/hide", admin.hideMediaItem)
 		r.Delete("/api/v1/admin/media/{id}/hide", admin.unhideMediaItem)
+
+		// Artist image management
+		r.Post("/api/v1/admin/artists/{id}/image", music.uploadArtistImage)
+		r.Delete("/api/v1/admin/artists/{id}/image", music.deleteArtistImage)
 
 		// Maintenance
 		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,128 +46,399 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 
 		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("processing %s", fsPath))
 
-		// Only process images for now
-		if !strings.HasPrefix(mimeType, "image/") {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "skipping non-image media")
+		// Route to the appropriate processor based on media type.
+		if strings.HasPrefix(mimeType, "audio/") {
+			return processAudioFile(ctx, worker, db, job, itemID, fsPath, mediaPath, dataPath)
+		} else if strings.HasPrefix(mimeType, "image/") {
+			return processImageFile(ctx, worker, db, job, itemID, fsPath, fileHash, mediaPath, dataPath)
+		} else {
+			_ = jobRepo.UpdateProgress(ctx, job.ID, "skipping unsupported media type")
 			_ = jobRepo.Delete(ctx, job.ID)
 			return nil
 		}
+	}
+}
 
-		// Extract EXIF
-		et, err := worker.exiftool()
-		if err != nil {
-			return fmt.Errorf("exiftool init: %w", err)
+func processImageFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, mediaPath, dataPath string) error {
+	mediaRepo := repository.NewMediaItemRepository(db)
+	jobRepo := repository.NewJobRepository(db)
+
+	// Extract EXIF
+	et, err := worker.exiftool()
+	if err != nil {
+		return fmt.Errorf("exiftool init: %w", err)
+	}
+
+	exifData, err := et.Extract(fsPath)
+	if err != nil {
+		slog.Warn("exiftool extract failed", "path", fsPath, "err", err)
+		exifData = map[string]any{}
+	}
+
+	// Update title from exiftool composite Title if available; fall back to filename already set at scan time.
+	if title := utils.ExifStr(exifData, "Title"); title != nil && *title != "" {
+		if err := mediaRepo.UpdateTitle(ctx, itemID, *title); err != nil {
+			slog.Warn("update title from exif", "item_id", itemID, "err", err)
 		}
+	}
 
-		exifData, err := et.Extract(fsPath)
-		if err != nil {
-			slog.Warn("exiftool extract failed", "path", fsPath, "err", err)
-			exifData = map[string]any{}
+	// Strip keys that are large, redundant, or expose internal paths before storage.
+	for _, key := range []string{"Directory", "SourceFile", "PreviewImage", "ThumbnailImage", "TiffMeteringImage"} {
+		delete(exifData, key)
+	}
+
+	// Upsert photo_metadata
+	rawJSON, _ := json.Marshal(exifData)
+	// "ISO" is an exiftool composite shorthand; "PhotographicSensitivity" is the
+	// actual EXIF spec tag. Some container formats (e.g. AVIF) only emit the latter.
+	isoValue := utils.ExifInt(exifData, "ISO")
+	if isoValue == nil {
+		isoValue = utils.ExifInt(exifData, "PhotographicSensitivity")
+	}
+
+	// "FocalLengthIn35mmFormat" is an exiftool alias; "FocalLenIn35mmFilm" is the
+	// canonical EXIF tag name (0xA405). Some formats only emit the latter.
+	focalLength35mm := utils.ExifFloat(exifData, "FocalLengthIn35mmFormat")
+	if focalLength35mm == nil {
+		focalLength35mm = utils.ExifFloat(exifData, "FocalLenIn35mmFilm")
+	}
+
+	// EXIF ImageWidth/ImageHeight reflect the raw sensor dimensions, which
+	// don't account for EXIF orientation rotation. Orientations 5-8 indicate
+	// a 90° or 270° rotation, so we swap width and height to match the
+	// displayed (auto-rotated) image dimensions.
+	widthPx := utils.ExifInt(exifData, "ImageWidth")
+	heightPx := utils.ExifInt(exifData, "ImageHeight")
+	if orient := utils.ExifInt(exifData, "Orientation"); orient != nil && *orient >= 5 && *orient <= 8 {
+		widthPx, heightPx = heightPx, widthPx
+	}
+
+	err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
+		widthPx, heightPx,
+		createdAt(fsPath, exifData),
+		utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
+		utils.ExifStr(exifData, "ExposureTime"),
+		utils.ExifFloat(exifData, "FNumber"),
+		isoValue,
+		utils.ExifFloat(exifData, "FocalLength"),
+		focalLength35mm,
+		utils.ExifStr(exifData, "ColorSpace"),
+		utils.ExifStr(exifData, "Description"),
+		rawJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert photo_metadata: %w", err)
+	}
+
+	// Generate image variants, DZI tiles, and placeholder — but skip if they
+	// already exist on disk (e.g. during a force rescan that only needs to
+	// refresh EXIF metadata).
+	variantsExist := imaging.VariantsExist(dataPath, fileHash)
+	dziExists := imaging.DZIExists(dataPath, fileHash)
+
+	if !variantsExist {
+		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
+		if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
+			return fmt.Errorf("generate variants: %w", err)
 		}
+	}
+	if !dziExists {
+		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating DZI tiles")
+		if err := imaging.GenerateDZI(fsPath, dataPath, fileHash); err != nil {
+			return fmt.Errorf("generate DZI: %w", err)
+		}
+	}
 
-		// Update title from exiftool composite Title if available; fall back to filename already set at scan time.
-		if title := utils.ExifStr(exifData, "Title"); title != nil && *title != "" {
-			if err := mediaRepo.UpdateTitle(ctx, itemID, *title); err != nil {
-				slog.Warn("update title from exif", "item_id", itemID, "err", err)
+	// Always generate placeholder and update variants_generated_at.
+	// UpsertPhotoMetadata resets variants_generated_at to NULL on every call,
+	// so we must restore it even when variants already existed on disk.
+	// TODO: I don't like this logic, let's circle back on it eventually
+	// (Nobody wants to regenerate the placeholder for unchanged images, but
+	// reimported collections whose derived files remain will need a placeholder
+	// generated for their images as it is stored in the db)
+	var placeholder *string
+	if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
+		slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
+	} else {
+		placeholder = &p
+	}
+	if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
+		return fmt.Errorf("update variants_generated_at: %w", err)
+	}
+
+	// Generate a collection cover from this item if the collection doesn't
+	// have one yet. This ensures new collections get a cover as soon as
+	// their first item is processed rather than waiting for the weekly cycle.
+	// TODO: Making this extra call to the db is inefficient, we can know the collection id at this stage
+	if collID, err := mediaRepo.GetCollectionID(ctx, itemID); err == nil {
+		if !imaging.CollectionCoverExists(dataPath, collID) {
+			if err := maintenance.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
+				slog.Warn("auto-generate collection cover", "collection_id", collID, "err", err)
 			}
 		}
+	}
 
-		// Strip keys that are large, redundant, or expose internal paths before storage.
-		for _, key := range []string{"Directory", "SourceFile", "PreviewImage", "ThumbnailImage", "TiffMeteringImage"} {
-			delete(exifData, key)
-		}
+	slog.Debug("finished processing media item", "item_id", itemID)
+	_ = jobRepo.Delete(ctx, job.ID)
+	return nil
+}
 
-		// Upsert photo_metadata
-		rawJSON, _ := json.Marshal(exifData)
-		// "ISO" is an exiftool composite shorthand; "PhotographicSensitivity" is the
-		// actual EXIF spec tag. Some container formats (e.g. AVIF) only emit the latter.
-		isoValue := utils.ExifInt(exifData, "ISO")
-		if isoValue == nil {
-			isoValue = utils.ExifInt(exifData, "PhotographicSensitivity")
-		}
+// processAudioFile handles audio media: extracts tags via exiftool, upserts artist,
+// album, and audio_metadata, and extracts album art.
+func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, mediaPath, dataPath string) error {
+	mediaRepo := repository.NewMediaItemRepository(db)
+	artistRepo := repository.NewArtistRepository(db)
+	albumRepo := repository.NewAlbumRepository(db)
+	jobRepo := repository.NewJobRepository(db)
 
-		// "FocalLengthIn35mmFormat" is an exiftool alias; "FocalLenIn35mmFilm" is the
-		// canonical EXIF tag name (0xA405). Some formats only emit the latter.
-		focalLength35mm := utils.ExifFloat(exifData, "FocalLengthIn35mmFormat")
-		if focalLength35mm == nil {
-			focalLength35mm = utils.ExifFloat(exifData, "FocalLenIn35mmFilm")
-		}
+	_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting audio tags")
 
-		// EXIF ImageWidth/ImageHeight reflect the raw sensor dimensions, which
-		// don't account for EXIF orientation rotation. Orientations 5-8 indicate
-		// a 90° or 270° rotation, so we swap width and height to match the
-		// displayed (auto-rotated) image dimensions.
-		widthPx := utils.ExifInt(exifData, "ImageWidth")
-		heightPx := utils.ExifInt(exifData, "ImageHeight")
-		if orient := utils.ExifInt(exifData, "Orientation"); orient != nil && *orient >= 5 && *orient <= 8 {
-			widthPx, heightPx = heightPx, widthPx
-		}
+	et, err := worker.exiftool()
+	if err != nil {
+		return fmt.Errorf("exiftool init: %w", err)
+	}
 
-		err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
-			widthPx, heightPx,
-			createdAt(fsPath, exifData),
-			utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
-			utils.ExifStr(exifData, "ExposureTime"),
-			utils.ExifFloat(exifData, "FNumber"),
-			isoValue,
-			utils.ExifFloat(exifData, "FocalLength"),
-			focalLength35mm,
-			utils.ExifStr(exifData, "ColorSpace"),
-			utils.ExifStr(exifData, "Description"),
-			rawJSON,
-		)
-		if err != nil {
-			return fmt.Errorf("upsert photo_metadata: %w", err)
-		}
+	exifData, err := et.Extract(fsPath)
+	if err != nil {
+		slog.Warn("exiftool extract failed for audio", "path", fsPath, "err", err)
+		exifData = map[string]any{}
+	}
 
-		// Generate image variants, DZI tiles, and placeholder — but skip if they
-		// already exist on disk (e.g. during a force rescan that only needs to
-		// refresh EXIF metadata).
-		variantsExist := imaging.VariantsExist(dataPath, fileHash)
-		dziExists := imaging.DZIExists(dataPath, fileHash)
+	// Extract tag values
+	title := utils.ExifStr(exifData, "Title")
+	artist := utils.ExifStr(exifData, "Artist")
+	albumArtist := utils.ExifStr(exifData, "AlbumArtist")
+	albumName := utils.ExifStr(exifData, "Album")
+	genre := utils.ExifStr(exifData, "Genre")
+	compilationTag := utils.ExifInt(exifData, "Compilation")
+	isCompilation := compilationTag != nil && *compilationTag == 1
 
-		if !variantsExist {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
-			if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
-				return fmt.Errorf("generate variants: %w", err)
-			}
-		}
-		if !dziExists {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating DZI tiles")
-			if err := imaging.GenerateDZI(fsPath, dataPath, fileHash); err != nil {
-				return fmt.Errorf("generate DZI: %w", err)
-			}
-		}
+	// Apply fallbacks: untagged files still get sensible defaults.
+	effectiveTitle := ""
+	if title != nil && strings.TrimSpace(*title) != "" {
+		effectiveTitle = *title
+	} else {
+		base := filepath.Base(fsPath)
+		effectiveTitle = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	title = &effectiveTitle
 
-		if !variantsExist || !dziExists {
-			// Generate a tiny placeholder and mark as done
-			var placeholder *string
-			if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
-				slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
+	effectiveArtist := "Unknown Artist"
+	if artist != nil && strings.TrimSpace(*artist) != "" {
+		effectiveArtist = *artist
+	}
+
+	effectiveAlbumArtist := ""
+	if albumArtist != nil && strings.TrimSpace(*albumArtist) != "" {
+		effectiveAlbumArtist = *albumArtist
+	}
+
+	effectiveAlbum := "Unknown Album"
+	if albumName != nil && strings.TrimSpace(*albumName) != "" {
+		effectiveAlbum = *albumName
+	}
+
+	// Update media item title from tag
+	if err := mediaRepo.UpdateTitle(ctx, itemID, effectiveTitle); err != nil {
+		slog.Warn("update title from audio tag", "item_id", itemID, "err", err)
+	}
+
+	// Parse track number (exiftool may return "3" or "3/12")
+	var trackNumber *int16
+	if t := utils.ExifStr(exifData, "Track"); t != nil {
+		trackNumber = parseTrackNumber(*t)
+	}
+
+	// Parse disc number (PartOfSet may return "1" or "1/2")
+	var discNumber *int16
+	if d := utils.ExifStr(exifData, "PartOfSet"); d != nil {
+		discNumber = parseTrackNumber(*d)
+	}
+
+	// Parse year
+	var year *int16
+	if y := utils.ExifInt(exifData, "Year"); y != nil {
+		v := int16(*y)
+		year = &v
+	}
+
+	// Parse duration
+	durationSeconds := parseDuration(exifData)
+
+	// Check for embedded picture
+	_, hasPicture := exifData["Picture"]
+	if !hasPicture {
+		// Some formats use CoverArt or other tag names
+		_, hasPicture = exifData["CoverArt"]
+	}
+
+	// Upsert track artist (always non-empty due to fallback)
+	artistID, err := artistRepo.Upsert(ctx, effectiveArtist)
+	if err != nil {
+		slog.Warn("upsert artist", "name", effectiveArtist, "err", err)
+	}
+
+	// Upsert album artist (if present and different from track artist)
+	var albumArtistID *int64
+	if effectiveAlbumArtist != "" {
+		if effectiveAlbumArtist == effectiveArtist {
+			albumArtistID = &artistID
+		} else {
+			id, err := artistRepo.Upsert(ctx, effectiveAlbumArtist)
+			if err != nil {
+				slog.Warn("upsert album artist", "name", effectiveAlbumArtist, "err", err)
 			} else {
-				placeholder = &p
-			}
-			if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
-				return fmt.Errorf("update variants_generated_at: %w", err)
+				albumArtistID = &id
 			}
 		}
+	}
 
-		// Generate a collection cover from this item if the collection doesn't
-		// have one yet. This ensures new collections get a cover as soon as
-		// their first item is processed rather than waiting for the weekly cycle.
-		// TODO: Making this extra call to the db is inefficient, we can know the collection id at this stage
-		if collID, err := mediaRepo.GetCollectionID(ctx, itemID); err == nil {
-			if !imaging.CollectionCoverExists(dataPath, collID) {
-				if err := maintenance.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
-					slog.Warn("auto-generate collection cover", "collection_id", collID, "err", err)
-				}
+	// Resolve root collection for album scoping
+	rootCollectionID, err := mediaRepo.GetRootCollectionID(ctx, itemID)
+	if err != nil {
+		slog.Warn("could not resolve root collection", "item_id", itemID, "err", err)
+	}
+
+	// Upsert album. For compilations (TCMP/Compilation tag = 1), always use
+	// "Various Artists" as the album artist so all tracks share one album entry
+	// and the album appears under "Various Artists" in the library. For regular
+	// albums, use the album artist tag if present, otherwise fall back to the
+	// track artist so the album is attributed to the correct artist.
+	var albumID *int64
+	if rootCollectionID != 0 {
+		effectiveAlbumArtistID := albumArtistID
+		if isCompilation {
+			variousID, err := artistRepo.Upsert(ctx, "Various Artists")
+			if err != nil {
+				slog.Warn("upsert Various Artists", "err", err)
+			} else {
+				effectiveAlbumArtistID = &variousID
+			}
+		} else if effectiveAlbumArtistID == nil {
+			effectiveAlbumArtistID = &artistID
+		}
+		id, err := albumRepo.UpsertAudioAlbum(ctx, effectiveAlbum, effectiveAlbumArtistID, year, genre, rootCollectionID, isCompilation)
+		if err != nil {
+			slog.Warn("upsert album", "name", effectiveAlbum, "err", err)
+		} else {
+			albumID = &id
+		}
+	}
+
+	// Store the non-nil artist ID pointer
+	var artistIDPtr *int64
+	if artistID != 0 {
+		artistIDPtr = &artistID
+	}
+
+	// Upsert audio metadata
+	if err := mediaRepo.UpsertAudioMetadata(ctx, itemID,
+		artistIDPtr, albumArtistID, albumID,
+		title, trackNumber, discNumber,
+		durationSeconds, genre, year,
+		nil, // replay_gain_db — not extracted yet
+		hasPicture,
+	); err != nil {
+		return fmt.Errorf("upsert audio_metadata: %w", err)
+	}
+
+	// Extract album art if not already present
+	if hasPicture && albumID != nil {
+		if !imaging.AlbumCoverExists(dataPath, *albumID) {
+			_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting album art")
+			if err := extractAlbumArtForAlbum(fsPath, dataPath, *albumID); err != nil {
+				slog.Warn("extract album art", "path", fsPath, "err", err)
 			}
 		}
+	}
 
-		slog.Debug("finished processing media item", "item_id", itemID)
-		_ = jobRepo.Delete(ctx, job.ID)
+	slog.Debug("finished processing audio file", "item_id", itemID)
+	_ = jobRepo.Delete(ctx, job.ID)
+	return nil
+}
+
+// extractAlbumArtForAlbum uses exiftool to extract embedded picture data from an
+// audio file and generates an album cover from it.
+func extractAlbumArtForAlbum(fsPath, dataPath string, albumID int64) error {
+	cmd := exec.Command("exiftool", "-b", "-Picture", fsPath)
+	imageBytes, err := cmd.Output()
+	if err != nil || len(imageBytes) == 0 {
+		// Try CoverArt tag (used by some formats)
+		cmd = exec.Command("exiftool", "-b", "-CoverArt", fsPath)
+		imageBytes, err = cmd.Output()
+		if err != nil || len(imageBytes) == 0 {
+			return fmt.Errorf("no embedded art found")
+		}
+	}
+
+	return imaging.GenerateAlbumCoverFromBytes(imageBytes, dataPath, albumID)
+}
+
+// parseTrackNumber parses a track/disc string like "3", "3/12", or "03" into a *int16.
+func parseTrackNumber(s string) *int16 {
+	s = strings.TrimSpace(s)
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[:idx]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
 		return nil
 	}
+	v := int16(n)
+	return &v
+}
+
+// parseDuration extracts the duration from exiftool data. Exiftool returns duration
+// in various formats depending on the container: "225.34" (seconds as float),
+// "3:45" (M:SS), "0:03:45" (H:MM:SS), or "225.34 s" (with unit suffix).
+func parseDuration(exifData map[string]any) *float64 {
+	v, ok := exifData["Duration"]
+	if !ok || v == nil {
+		return nil
+	}
+
+	switch t := v.(type) {
+	case float64:
+		if t > 0 {
+			return &t
+		}
+		return nil
+	case string:
+		return parseDurationString(t)
+	}
+	return nil
+}
+
+func parseDurationString(s string) *float64 {
+	s = strings.TrimSpace(s)
+	// Strip trailing unit suffix like " s" or " sec"
+	s = strings.TrimSuffix(s, " s")
+	s = strings.TrimSuffix(s, " sec")
+	s = strings.TrimSpace(s)
+
+	// Try as a plain number first
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+		return &f
+	}
+
+	// Try as H:MM:SS or M:SS
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return nil
+	}
+
+	var total float64
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return nil
+		}
+		total += f * math.Pow(60, float64(len(parts)-1-i))
+	}
+	if total > 0 {
+		return &total
+	}
+	return nil
 }
 
 // createdAt returns the best available timestamp for a media file.

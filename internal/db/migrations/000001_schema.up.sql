@@ -62,12 +62,13 @@ CREATE INDEX idx_devices_lru ON devices(user_id, last_seen_at) WHERE banned_at I
 CREATE TABLE collections (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     parent_collection_id        bigint REFERENCES collections(id) ON DELETE CASCADE,
+    root_collection_id          bigint REFERENCES collections(id) ON DELETE CASCADE,
     name                        text NOT NULL,
     type                        text NOT NULL
                                     CHECK (type IN (
                                         'video:movie',
                                         'video:home_movie',
-                                        'audio:album',
+                                        'audio:music',
                                         'audio:radio',
                                         'image:photo'
                                     )),
@@ -80,6 +81,7 @@ CREATE TABLE collections (
 );
 
 CREATE INDEX idx_collections_parent ON collections(parent_collection_id);
+CREATE INDEX idx_collections_root   ON collections(root_collection_id);
 CREATE INDEX idx_collections_enabled ON collections(id) WHERE is_enabled = true;
 CREATE UNIQUE INDEX idx_collections_relative_path ON collections(relative_path)
     WHERE relative_path IS NOT NULL;
@@ -147,6 +149,65 @@ CREATE INDEX idx_photo_metadata_shutter_speed ON photo_metadata(shutter_speed);
 CREATE INDEX idx_photo_metadata_aperture ON photo_metadata(aperture);
 CREATE INDEX idx_photo_metadata_iso ON photo_metadata(iso);
 CREATE INDEX idx_photo_metadata_focal_length ON photo_metadata(focal_length_mm);
+
+CREATE TABLE artists (
+    id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    name                        text NOT NULL,
+    sort_name                   text NOT NULL,
+    manual_image                boolean NOT NULL DEFAULT false,
+    created_at                  timestamptz NOT NULL DEFAULT now(),
+    search_vector               tsvector GENERATED ALWAYS AS (
+                                    to_tsvector('simple', name)
+                                ) STORED
+);
+
+CREATE UNIQUE INDEX idx_artists_name ON artists(name);
+CREATE INDEX idx_artists_sort ON artists(sort_name);
+CREATE INDEX idx_artists_search ON artists USING GIN(search_vector);
+
+CREATE TABLE audio_albums (
+    id                  bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    name                text NOT NULL,
+    artist_id           bigint REFERENCES artists(id) ON DELETE SET NULL,
+    year                smallint,
+    genre               text,
+    root_collection_id  bigint NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    is_compilation      boolean NOT NULL DEFAULT false,
+    manual_cover        boolean NOT NULL DEFAULT false,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    search_vector       tsvector GENERATED ALWAYS AS (
+                            to_tsvector('simple', name)
+                        ) STORED
+);
+
+-- One album per (name, artist, root library). COALESCE handles NULL artist_id.
+CREATE UNIQUE INDEX idx_audio_albums_identity
+    ON audio_albums(name, COALESCE(artist_id, 0), root_collection_id);
+CREATE INDEX idx_audio_albums_artist    ON audio_albums(artist_id);
+CREATE INDEX idx_audio_albums_root_coll ON audio_albums(root_collection_id);
+CREATE INDEX idx_audio_albums_search    ON audio_albums USING GIN(search_vector);
+
+CREATE TABLE audio_metadata (
+    media_item_id               bigint PRIMARY KEY
+                                    REFERENCES media_items(id) ON DELETE CASCADE,
+    artist_id                   bigint REFERENCES artists(id) ON DELETE SET NULL,
+    album_artist_id             bigint REFERENCES artists(id) ON DELETE SET NULL,
+    album_id                    bigint REFERENCES audio_albums(id) ON DELETE SET NULL,
+    title                       text,
+    track_number                smallint,
+    disc_number                 smallint DEFAULT 1,
+    duration_seconds            numeric(8,2),
+    genre                       text,
+    year                        smallint,
+    replay_gain_db              numeric(5,2),
+    has_embedded_art            boolean NOT NULL DEFAULT false,
+    processed_at                timestamptz
+);
+
+CREATE INDEX idx_audio_meta_album ON audio_metadata(album_id);
+
+CREATE INDEX idx_audio_meta_artist ON audio_metadata(artist_id);
+CREATE INDEX idx_audio_meta_album_artist ON audio_metadata(album_artist_id);
 
 CREATE TABLE jobs (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,

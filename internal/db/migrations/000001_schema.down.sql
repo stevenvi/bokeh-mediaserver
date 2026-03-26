@@ -1,4 +1,6 @@
 DROP TABLE IF EXISTS jobs;
+DROP TABLE IF EXISTS audio_metadata;
+DROP TABLE IF EXISTS artists;
 DROP TABLE IF EXISTS photo_metadata;
 DROP TABLE IF EXISTS media_items;
 DROP TABLE IF EXISTS collection_access;
