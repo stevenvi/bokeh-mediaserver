@@ -6,12 +6,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
@@ -652,6 +654,49 @@ func (h *adminHandler) hideMediaItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/admin/directories
+// GET /api/v1/admin/directories/*
+// Lists subdirectories at the given path within the media root.
+// The wildcard path is appended to mediaPath and must resolve within it.
+func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
+	raw := chi.URLParam(r, "*")
+	subPath, err := url.PathUnescape(raw)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	base := filepath.Clean(h.mediaPath)
+	full := filepath.Clean(filepath.Join(base, subPath))
+
+	// Reject anything that escapes the media root.
+	if full != base && !strings.HasPrefix(full, base+string(filepath.Separator)) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	entries, err := os.ReadDir(full)
+	if err != nil {
+		slog.Debug("listDirectories", full, err)
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	names := make([]string, 0)
+	for _, entry := range entries {
+		// Use os.Stat to follow symlinks when deciding if the target is a directory.
+		info, err := os.Stat(filepath.Join(full, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+
+	writeJSON(w, http.StatusOK, names)
 }
 
 // DELETE /api/v1/admin/media/:id/hide
