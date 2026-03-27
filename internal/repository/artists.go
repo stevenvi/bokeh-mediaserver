@@ -144,6 +144,22 @@ func (r *ArtistRepository) SetManualImage(ctx context.Context, id int64, manual 
 	return err
 }
 
+// ListArtistIDsWithoutManualImage returns IDs of artists that have manual_image = false
+// and have at least one non-compilation album where they are the album artist.
+// Artists who only appear on compilation albums are excluded.
+func (r *ArtistRepository) ListArtistIDsWithoutManualImage(ctx context.Context) ([]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT DISTINCT a.id
+		 FROM artists a
+		 JOIN audio_albums al ON al.artist_id = a.id
+		 WHERE a.manual_image = false
+		   AND al.is_compilation = false`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
 // GenerateSortName creates a sort-friendly name by moving common articles to the end.
 func GenerateSortName(name string) string {
 	lower := strings.ToLower(name)

@@ -201,6 +201,14 @@ func GenerateArtistImageFromUpload(srcPath string, dataPath string, artistID int
 	)
 }
 
+// GenerateArtistCover loads an album cover AVIF and writes it as the artist image.
+func GenerateArtistCover(srcAvifPath string, dataPath string, artistID int64) error {
+	return squareCoverFromFile(srcAvifPath,
+		ArtistImagePath(dataPath, artistID, "avif"),
+		ArtistImagePath(dataPath, artistID, "webp"),
+	)
+}
+
 // AlbumCoverDir returns the directory for an album's cover images.
 func AlbumCoverDir(dataPath string, albumID int64) string {
 	return filepath.Join(dataPath, "album_images", fmt.Sprintf("%d", albumID))

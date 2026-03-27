@@ -12,22 +12,26 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-// HandleCoverCycle returns a job handler that cycles collection cover images.
-// For each enabled collection without manual_cover, it picks a random item
+// HandleCoverCycle returns a job handler that cycles cover images.
+// Path 1: for each enabled collection without manual_cover, picks a random item
 // with generated variants and creates a square-cropped cover from its thumb.
+// Path 2: for each artist without manual_image, picks a random non-compilation
+// album cover and uses it as the artist image.
 func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		jobRepo := repository.NewJobRepository(db)
-		collRepo := repository.NewCollectionRepository(db)
+		jobRepo    := repository.NewJobRepository(db)
+		collRepo   := repository.NewCollectionRepository(db)
+		artistRepo := repository.NewArtistRepository(db)
 
 		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting cover cycle")
 
+		// Path 1: photo collection covers
 		collIDs, err := collRepo.ListCollectionswithNonManualCoverIDs(ctx)
 		if err != nil {
 			return fmt.Errorf("list collections: %w", err)
 		}
 
-		var updated int
+		var updatedColls int
 		for _, collID := range collIDs {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -36,12 +40,62 @@ func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, 
 				slog.Warn("cover cycle: skip collection", "collection_id", collID, "err", err)
 				continue
 			}
-			updated++
+			updatedColls++
 		}
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("cycled %d/%d collection covers", updated, len(collIDs)))
+		_ = jobRepo.UpdateProgress(ctx, job.ID,
+			fmt.Sprintf("cycled %d/%d collection covers; starting artist images", updatedColls, len(collIDs)))
+
+		// Path 2: music artist images
+		artistIDs, err := artistRepo.ListArtistIDsWithoutManualImage(ctx)
+		if err != nil {
+			return fmt.Errorf("list artists: %w", err)
+		}
+
+		var updatedArtists int
+		for _, artistID := range artistIDs {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := GenerateCoverForArtist(ctx, db, dataPath, artistID); err != nil {
+				slog.Warn("cover cycle: skip artist", "artist_id", artistID, "err", err)
+				continue
+			}
+			updatedArtists++
+		}
+
+		_ = jobRepo.UpdateProgress(ctx, job.ID,
+			fmt.Sprintf("cycled %d/%d collection covers, %d/%d artist images",
+				updatedColls, len(collIDs), updatedArtists, len(artistIDs)))
+
 		return nil
 	}
+}
+
+// GenerateCoverForArtist picks a random non-compilation album for the given artist,
+// checks that an album cover AVIF exists on disk, and generates the artist image from it.
+// Returns nil silently if no eligible album or cover exists.
+func GenerateCoverForArtist(ctx context.Context, db utils.DBTX, dataPath string, artistID int64) error {
+	albumRepo := repository.NewAlbumRepository(db)
+
+	albumID, err := albumRepo.GetRandomNonCompilationAlbumIDByArtist(ctx, artistID)
+	if err == pgx.ErrNoRows {
+		return nil // no eligible albums
+	}
+	if err != nil {
+		return fmt.Errorf("pick random album: %w", err)
+	}
+
+	if !imaging.AlbumCoverExists(dataPath, albumID) {
+		return nil // album cover not generated yet
+	}
+
+	srcPath := imaging.AlbumCoverPath(dataPath, albumID, "avif")
+	if err := imaging.GenerateArtistCover(srcPath, dataPath, artistID); err != nil {
+		return fmt.Errorf("generate artist cover: %w", err)
+	}
+
+	return nil
 }
 
 // GenerateCoverForCollection picks a random item with variants from the

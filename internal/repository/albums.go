@@ -61,3 +61,18 @@ func (r *AlbumRepository) SetManualCover(ctx context.Context, id int64, manual b
 		`UPDATE audio_albums SET manual_cover = $2 WHERE id = $1`, id, manual)
 	return err
 }
+
+// GetRandomNonCompilationAlbumIDByArtist returns a random non-compilation album ID
+// for the given artist. Returns pgx.ErrNoRows if none exist.
+func (r *AlbumRepository) GetRandomNonCompilationAlbumIDByArtist(ctx context.Context, artistID int64) (int64, error) {
+	var id int64
+	err := r.db.QueryRow(ctx,
+		`SELECT id FROM audio_albums
+		 WHERE artist_id = $1
+		   AND is_compilation = false
+		 ORDER BY RANDOM()
+		 LIMIT 1`,
+		artistID,
+	).Scan(&id)
+	return id, err
+}
