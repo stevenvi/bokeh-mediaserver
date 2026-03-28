@@ -173,7 +173,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
 		job := &models.Job{
 			ID:          jobID,
 			Type:        "process_media",
@@ -230,7 +230,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
 		job := &models.Job{
 			ID:          jobID,
 			Type:        "process_media",
@@ -257,7 +257,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
 		job := &models.Job{ID: jobID, Type: "process_media", Status: "running"}
 		err = handler(ctx, tx, job)
 		assert.Error(t, err, "should fail without related_id")

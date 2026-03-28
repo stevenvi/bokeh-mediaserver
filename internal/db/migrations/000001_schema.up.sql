@@ -12,6 +12,7 @@ CREATE TABLE server_config (
     integrity_schedule          text DEFAULT '0 4 * * 0',
     device_cleanup_schedule     text DEFAULT '0 2 1 * *',
     cover_cycle_schedule        text DEFAULT '0 5 * * 1',
+    transcode_bitrate_kbps      int NOT NULL DEFAULT 4000,
     updated_at                  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -236,3 +237,43 @@ CREATE TABLE jobs (
 
 CREATE INDEX idx_jobs_lookup ON jobs(type, related_id, status);
 CREATE INDEX idx_jobs_queued ON jobs(status, queued_at) WHERE status = 'queued';
+
+CREATE TABLE video_metadata (
+    media_item_id               bigint PRIMARY KEY
+                                    REFERENCES media_items(id) ON DELETE CASCADE,
+    duration_seconds            int,
+    width                       int,
+    height                      int,
+    bitrate_kbps                int,
+    video_codec                 text,
+    audio_codec                 text,
+    transcoded_at               timestamptz,
+    date                        date,       -- release date (movies) or start date (home movies)
+    end_date                    date,       -- home movies only
+    author                      text,       -- home movies only
+    manual_cover                bool NOT NULL DEFAULT false
+);
+
+CREATE TABLE video_bookmarks (
+    user_id                     bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_item_id               bigint NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+    position_seconds            int NOT NULL,
+    last_watched_at             timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, media_item_id)
+);
+
+CREATE INDEX idx_video_bookmarks_last_watched ON video_bookmarks(last_watched_at);
+
+CREATE OR REPLACE FUNCTION cull_old_bookmarks()
+RETURNS TRIGGER AS $$
+BEGIN
+    DELETE FROM video_bookmarks
+    WHERE user_id = NEW.user_id
+      AND last_watched_at < NOW() - INTERVAL '30 days';
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER video_bookmark_cull
+AFTER INSERT OR UPDATE ON video_bookmarks
+FOR EACH ROW EXECUTE FUNCTION cull_old_bookmarks();

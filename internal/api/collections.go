@@ -84,7 +84,12 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireAccess(w, r, id) {
+	userID := userIDFromRequest(r)
+
+	// Fetch collection metadata (also enforces access)
+	col, err := h.collections.GetByIDForUser(r.Context(), id, userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
@@ -95,9 +100,16 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * pageSize
 
-	userID := userIDFromRequest(r)
-	// Fetch one extra row to determine whether there's a next page.
-	items, err := h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize+1, offset)
+	var items []models.MediaItemView
+
+	if col.Type == "video:movie" || col.Type == "video:home_movie" {
+		// Video collections use a dedicated query with JOIN to video_metadata and video_bookmarks.
+		items, err = h.media.ListVideoItemsByCollection(r.Context(), id, userID, col.Type, pageSize+1, offset)
+	} else {
+		// Fetch one extra row to determine whether there's a next page.
+		items, err = h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize+1, offset)
+	}
+
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

@@ -1,3 +1,7 @@
+DROP TRIGGER IF EXISTS video_bookmark_cull ON video_bookmarks;
+DROP FUNCTION IF EXISTS cull_old_bookmarks;
+DROP TABLE IF EXISTS video_bookmarks;
+DROP TABLE IF EXISTS video_metadata;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS audio_metadata;
 DROP TABLE IF EXISTS artists;

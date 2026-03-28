@@ -14,7 +14,8 @@ import (
 
 // HandleIntegrityCheck returns a job handler that:
 // 1. Deletes media items missing for >90 days and cleans up their derived files
-// 2. Queues process_media jobs for items with missing variants
+// 2. Re-queues transcode for video items whose HLS manifest was deleted on disk
+// 3. Re-queues process_media for home movie items whose cover is missing
 func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		jobRepo := repository.NewJobRepository(db)
@@ -28,11 +29,74 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 			return fmt.Errorf("prune stale items: %w", err)
 		}
 
-		summary := fmt.Sprintf("integrity check complete: %d stale items pruned", pruned)
+		// check video derivatives (re-queue transcode/process_media for broken outputs)
+		requeued, err := checkVideoDerivatives(ctx, mediaRepo, jobRepo, dataPath, job.ID)
+		if err != nil {
+			slog.Warn("check video derivatives failed", "err", err)
+		}
+
+		summary := fmt.Sprintf("integrity check complete: %d stale items pruned, %d video jobs re-queued", pruned, requeued)
 		_ = jobRepo.UpdateProgress(ctx, job.ID, summary)
 		slog.Info(summary)
 		return nil
 	}
+}
+
+// checkVideoDerivatives iterates video_metadata rows and re-queues jobs when
+// the expected output files are missing from disk.
+func checkVideoDerivatives(ctx context.Context, mediaRepo *repository.MediaItemRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {
+	_ = jobRepo.UpdateProgress(ctx, jobID, "checking video derivatives")
+
+	items, err := mediaRepo.ListVideoItemsForIntegrity(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("query video_metadata: %w", err)
+	}
+
+	var requeued int64
+	relatedType := "media_item"
+
+	for _, item := range items {
+		if ctx.Err() != nil {
+			break
+		}
+
+		// Re-queue transcode if transcoded_at is set but the manifest is gone
+		if item.TranscodedAt != nil {
+			manifestPath := imaging.VideoHLSManifest(dataPath, item.FileHash)
+			if _, statErr := os.Stat(manifestPath); os.IsNotExist(statErr) {
+				// Clear transcoded_at so the transcoder will run again
+				if err := mediaRepo.ClearTranscodedAt(ctx, item.ItemID); err != nil {
+					slog.Warn("clear transcoded_at", "item_id", item.ItemID, "err", err)
+					continue
+				}
+				active, _ := jobRepo.IsActive(ctx, "transcode", item.ItemID)
+				if !active {
+					if _, err := jobRepo.Create(ctx, "transcode", &item.ItemID, &relatedType); err != nil {
+						slog.Warn("re-queue transcode", "item_id", item.ItemID, "err", err)
+					} else {
+						requeued++
+					}
+				}
+			}
+		}
+
+		// Re-queue process_media for home movies whose cover is missing
+		if item.CollectionType == "video:home_movie" {
+			coverPath := imaging.VariantPath(dataPath, item.FileHash, "cover", "avif")
+			if _, statErr := os.Stat(coverPath); os.IsNotExist(statErr) {
+				active, _ := jobRepo.IsActive(ctx, "process_media", item.ItemID)
+				if !active {
+					if _, err := jobRepo.Create(ctx, "process_media", &item.ItemID, &relatedType); err != nil {
+						slog.Warn("re-queue process_media for cover", "item_id", item.ItemID, "err", err)
+					} else {
+						requeued++
+					}
+				}
+			}
+		}
+	}
+
+	return requeued, nil
 }
 
 func pruneStaleItems(ctx context.Context, mediaRepo *repository.MediaItemRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {

@@ -82,9 +82,10 @@ func CollectionCoverExists(dataPath string, collectionID int64) bool {
 	return err == nil
 }
 
-// squareCoverFromFile loads an image file, auto-rotates it,
-// center-crops to square, resizes to 400px, and writes AVIF and WebP to the given paths.
-func squareCoverFromFile(srcPath string, avifPath, webpPath string) error {
+// coverFromFile loads srcPath, auto-rotates, center-crops to widthRatio:heightRatio,
+// resizes to 400px wide, and writes AVIF + WebP to the given paths.
+// Use widthRatio=1, heightRatio=1 for a square crop.
+func coverFromFile(srcPath, avifPath, webpPath string, widthRatio, heightRatio int) error {
 	if err := os.MkdirAll(filepath.Dir(avifPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir cover dir: %w", err)
 	}
@@ -99,18 +100,24 @@ func squareCoverFromFile(srcPath string, avifPath, webpPath string) error {
 		return fmt.Errorf("auto-rotate: %w", err)
 	}
 
-	// Center-crop to square
+	// Center-crop to widthRatio:heightRatio
 	w, h := img.Width(), img.Height()
-	if w != h {
-		side := min(w, h)
-		left := (w - side) / 2
-		top := (h - side) / 2
-		if err := img.ExtractArea(left, top, side, side); err != nil {
-			return fmt.Errorf("crop cover to square: %w", err)
+	targetH := w * heightRatio / widthRatio
+	if targetH > h {
+		// Image is more portrait than the target ratio — crop width instead
+		targetW := h * widthRatio / heightRatio
+		left := (w - targetW) / 2
+		if err := img.ExtractArea(left, 0, targetW, h); err != nil {
+			return fmt.Errorf("crop cover: %w", err)
+		}
+	} else if targetH < h {
+		top := (h - targetH) / 2
+		if err := img.ExtractArea(0, top, w, targetH); err != nil {
+			return fmt.Errorf("crop cover: %w", err)
 		}
 	}
 
-	// Resize to 400x400
+	// Resize to 400px wide
 	if img.Width() != 400 {
 		scale := 400.0 / float64(img.Width())
 		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
@@ -137,6 +144,12 @@ func squareCoverFromFile(srcPath string, avifPath, webpPath string) error {
 	}
 
 	return nil
+}
+
+// squareCoverFromFile loads an image file, auto-rotates it,
+// center-crops to square, resizes to 400px, and writes AVIF and WebP to the given paths.
+func squareCoverFromFile(srcPath, avifPath, webpPath string) error {
+	return coverFromFile(srcPath, avifPath, webpPath, 1, 1)
 }
 
 // squareCoverFromBytes writes raw image bytes to a temp file and calls squareCoverFromFile.
@@ -465,6 +478,79 @@ func GeneratePlaceholder(srcPath string) (string, error) {
 	}
 
 	return base64.StdEncoding.EncodeToString(webpBytes), nil
+}
+
+// VideoHLSDir returns the directory for a video item's stored HLS transcode.
+func VideoHLSDir(dataPath, hash string) string {
+	return filepath.Join(ItemDataPath(dataPath, hash), "hls")
+}
+
+// VideoHLSManifest returns the path to the HLS manifest for a video item.
+func VideoHLSManifest(dataPath, hash string) string {
+	return filepath.Join(VideoHLSDir(dataPath, hash), "manifest.m3u8")
+}
+
+// GenerateVideoCoverFromBytes takes raw image bytes, center-crops to the given
+// aspect ratio (widthRatio:heightRatio), resizes to 400px wide, and writes
+// AVIF and WebP to VariantPath(dataPath, hash, "cover", ext).
+//
+// Standard ratios:
+//   - Movie posters: widthRatio=2, heightRatio=3  (portrait, 400×600)
+//   - Home movies:   widthRatio=3, heightRatio=4  (near-square, 400×533)
+func GenerateVideoCoverFromBytes(imageBytes []byte, dataPath, hash string, widthRatio, heightRatio int) error {
+	tmp, err := os.CreateTemp("", "bokeh-video-cover-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := tmp.Write(imageBytes); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	return coverFromFile(tmp.Name(),
+		VariantPath(dataPath, hash, "cover", "avif"),
+		VariantPath(dataPath, hash, "cover", "webp"),
+		widthRatio, heightRatio,
+	)
+}
+
+// GenerateVideoCoverFromFrame uses ffmpeg to extract a single frame at a deterministic
+// random offset (between 5% and 95% of duration) and generates a cover image from it,
+// applying the same widthRatio:heightRatio center-crop as GenerateVideoCoverFromBytes.
+// Output: cover.{avif,webp} at 400px wide.
+func GenerateVideoCoverFromFrame(srcPath, dataPath, hash string, durationSecs, widthRatio, heightRatio int) error {
+	// Pick a random offset in [5%, 95%] of duration using a deterministic
+	// seed derived from the hash to avoid relying on global random state.
+	var seed uint64
+	for i, c := range []byte(hash) {
+		if i >= 8 {
+			break
+		}
+		seed = seed*256 + uint64(c)
+	}
+	frac := 0.05 + (float64(seed%1000)/1000.0)*0.90
+	offsetSecs := frac * float64(durationSecs)
+
+	cmd := exec.Command("ffmpeg",
+		"-ss", fmt.Sprintf("%.3f", offsetSecs),
+		"-i", srcPath,
+		"-vframes", "1",
+		"-f", "image2pipe",
+		"-vcodec", "mjpeg",
+		"-q:v", "2",
+		"pipe:1",
+	)
+	jpegBytes, err := cmd.Output()
+	if err != nil || len(jpegBytes) == 0 {
+		return fmt.Errorf("ffmpeg frame extract: %w", err)
+	}
+
+	return GenerateVideoCoverFromBytes(jpegBytes, dataPath, hash, widthRatio, heightRatio)
 }
 
 // GenerateWebP transcodes an AVIF variant to WebP on the fly.

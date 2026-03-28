@@ -88,6 +88,31 @@ type CollectionView struct {
 	Type               string `json:"type"`
 }
 
+// VideoMetadata stores technical and descriptive data for a video media item.
+type VideoMetadata struct {
+	DurationSeconds *int       `json:"duration_seconds,omitempty"`
+	Width           *int       `json:"width,omitempty"`
+	Height          *int       `json:"height,omitempty"`
+	BitrateKbps     *int       `json:"bitrate_kbps,omitempty"`
+	VideoCodec      *string    `json:"video_codec,omitempty"`
+	AudioCodec      *string    `json:"audio_codec,omitempty"`
+	TranscodedAt    *time.Time `json:"transcoded_at,omitempty"`
+	Date            *time.Time `json:"date,omitempty"`
+	EndDate         *time.Time `json:"end_date,omitempty"`
+	Author          *string    `json:"author,omitempty"`
+	ManualCover     bool       `json:"manual_cover"`
+	// BookmarkSeconds is populated per-user at query time; nil means no bookmark.
+	BookmarkSeconds *int `json:"bookmark_seconds,omitempty"`
+}
+
+// VideoBookmark stores a user's playback position for a video item.
+type VideoBookmark struct {
+	UserID          int64     `json:"user_id"`
+	MediaItemID     int64     `json:"media_item_id"`
+	PositionSeconds int       `json:"position_seconds"`
+	LastWatchedAt   time.Time `json:"last_watched_at"`
+}
+
 // MediaItemView is the user-facing projection of a media item in a collection listing.
 type MediaItemView struct {
 	ID       int64  `json:"id"`
@@ -97,6 +122,7 @@ type MediaItemView struct {
 
 	// Populated when fetching item detail
 	Photo *PhotoMetadata `json:"photo,omitempty"`
+	Video *VideoMetadata `json:"video,omitempty"`
 }
 
 // SlideshowItem is a projection used by the slideshow endpoint.

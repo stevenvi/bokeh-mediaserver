@@ -8,12 +8,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/cors"
 	authpkg "github.com/stevenvi/bokeh-mediaserver/internal/auth"
+	"github.com/stevenvi/bokeh-mediaserver/internal/config"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 // NewRouter builds and returns the fully configured Chi router.
-func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret, mediaPath, dataPath, clientOrigin string, production bool) http.Handler {
+func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher, cfg *config.Config, jwtSecret, mediaPath, dataPath, clientOrigin string, production bool) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Recoverer)
@@ -49,6 +50,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
 	music := &musicHandler{artists: artistRepo, albums: albumRepo, media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
 	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
+	video := &videoHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
 	admin := &adminHandler{
 		db: db, users: userRepo, devices: deviceRepo, guard: guard,
 		collections: collRepo, media: mediaRepo, jobs: jobRepo, pool: pool,
@@ -117,6 +119,22 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		// Audio streaming
 		r.Get("/audio/{id}/stream", music.stream)
 		r.Head("/audio/{id}/stream", music.stream)
+
+		// Video streaming
+		r.Get("/videos/{id}/stream", video.stream)
+		r.Get("/videos/{id}/raw", video.raw)
+		r.Head("/videos/{id}/raw", video.raw)
+		r.Get("/videos/{id}/hls/manifest.m3u8", video.hlsManifest)
+		r.Get("/videos/{id}/hls/{segment}", video.hlsSegment)
+		r.Get("/videos/{id}/live/manifest.m3u8", video.liveManifest)
+		r.Get("/videos/{id}/live/{segment}", video.liveSegment)
+
+		// Video images
+		r.Get("/images/videos/{id}/cover", video.cover)
+
+		// Video bookmarks
+		r.Put("/api/v1/media/{id}/bookmark", video.upsertBookmark)
+		r.Delete("/api/v1/media/{id}/bookmark", video.deleteBookmark)
 	})
 
 	// ── Admin ─────────────────────────────────────────────────────────────────
@@ -151,6 +169,9 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, jwtSecret,
 		// Media item visibility
 		r.Post("/api/v1/admin/media/{id}/hide", admin.hideMediaItem)
 		r.Delete("/api/v1/admin/media/{id}/hide", admin.unhideMediaItem)
+
+		// Video cover management
+		r.Post("/api/v1/admin/media/{id}/cover", video.uploadCover)
 
 		// Artist image management
 		r.Post("/api/v1/admin/artists/{id}/image", music.uploadArtistImage)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
@@ -31,9 +32,18 @@ type Dispatcher struct {
 	mainPool       *Pool
 	processingPool *Pool
 
+	paused atomic.Bool
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
+
+// Pause prevents new jobs from being claimed on the next poll cycle.
+// In-flight jobs may continue running. Used when on-the-fly streaming starts.
+func (d *Dispatcher) Pause() { d.paused.Store(true) }
+
+// Resume allows the dispatcher to claim jobs again.
+func (d *Dispatcher) Resume() { d.paused.Store(false) }
 
 // NewDispatcher creates a dispatcher with the given worker pools.
 // mainPool handles scan/maintenance jobs; processingPool handles media processing.
@@ -93,6 +103,10 @@ func (d *Dispatcher) poll(ctx context.Context) {
 }
 
 func (d *Dispatcher) pollOnce(ctx context.Context) {
+	if d.paused.Load() {
+		return
+	}
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 

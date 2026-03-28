@@ -77,6 +77,11 @@ var supportedExtensions = map[string]string{
 	".oga":  "audio/ogg",
 	".opus": "audio/opus",
 	".wav":  "audio/wav",
+
+	// Video formats
+	".mp4": "video/mp4",
+	".mov": "video/quicktime",
+	".mkv": "video/x-matroska",
 }
 
 // RunScan performs a lightweight enumeration scan of a collection's relative_path.

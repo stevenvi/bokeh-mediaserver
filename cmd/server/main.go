@@ -22,6 +22,8 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/streaming"
+	"github.com/stevenvi/bokeh-mediaserver/internal/transcoder"
 )
 
 func main() {
@@ -64,6 +66,14 @@ func run() error {
 	slog.Info("running startup recovery")
 	jobRepo := repository.NewJobRepository(db_pool)
 	mediaRepo := repository.NewMediaItemRepository(db_pool)
+
+	// Load transcode bitrate from server_config
+	if kbps, err := jobRepo.LoadTranscodeBitrate(ctx); err != nil {
+		slog.Warn("could not load transcode_bitrate_kbps; using default", "err", err)
+	} else {
+		cfg.TranscodeBitrateKbps = kbps
+	}
+
 	if err := jobRepo.RecoverStuck(ctx); err != nil {
 		return fmt.Errorf("recovery: %w", err)
 	}
@@ -96,19 +106,40 @@ func run() error {
 	// ── Job dispatcher ────────────────────────────────────────────────────────
 	dispatcher := jobs.NewDispatcher(db_pool, mainPool, processingPool)
 	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath), false)
-	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath), true)
+	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps), true)
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
 	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath), false)
 	dispatcher.Register("device_cleanup", maintenance.HandleDeviceCleanup(), false)
 	dispatcher.Register("cover_cycle", maintenance.HandleCoverCycle(cfg.DataPath), false)
+	dispatcher.Register("transcode", transcoder.HandleTranscode(cfg), true)
 	dispatcher.Start(ctx)
+
+	// ── Streaming idle sweeper ─────────────────────────────────────────────────
+	streaming.StartIdleSweeper(ctx)
+
+	// ── Transcode monitor: resume paused transcodes when streaming is idle ──────
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if streaming.ActiveSessionCount() == 0 {
+					transcoder.ResumeActive()
+					dispatcher.Resume()
+				}
+			}
+		}
+	}()
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────
 	scheduler := jobs.NewScheduler(db_pool)
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(db_pool, mainPool, guard, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
+	router := api.NewRouter(db_pool, mainPool, guard, dispatcher, cfg, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

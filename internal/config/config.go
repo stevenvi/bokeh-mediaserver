@@ -21,6 +21,7 @@ type Config struct {
 	LogPath               string // Path to output log files to (empty for stdout)
 	ClientOrigin          string // Allowed CORS origin for the web client (e.g. http://localhost:5173); empty disables CORS
 	Production            bool   // Enables Secure flag on auth cookies; set DEPLOY_ENV=production
+	TranscodeBitrateKbps  int    // Target bitrate for video transcodes in kbps; loaded from server_config at startup
 }
 
 func Load() (*Config, error) {
