@@ -135,8 +135,8 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// --- Step 4: cover art ---
-	// Crop ratio: movie posters are 2:3 (portrait); home movies use 4:3 (TV ratio).
-	coverWidthRatio, coverHeightRatio := 3, 4
+	// Crop ratio: movie posters are 2:3 (portrait); home movies use 4:3 (TV/landscape ratio).
+	coverWidthRatio, coverHeightRatio := 4, 3
 	if collType == "video:movie" {
 		coverWidthRatio, coverHeightRatio = 2, 3
 	}

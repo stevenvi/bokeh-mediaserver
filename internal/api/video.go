@@ -345,7 +345,7 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	collType, _ := h.media.GetRootCollectionType(r.Context(), id)
-	widthRatio, heightRatio := 3, 4
+	widthRatio, heightRatio := 4, 3
 	if collType == "video:movie" {
 		widthRatio, heightRatio = 2, 3
 	}
