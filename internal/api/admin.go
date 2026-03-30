@@ -332,10 +332,11 @@ func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/admin/users
 func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name         string          `json:"name"`
-		IsAdmin      bool            `json:"is_admin"`
-		AuthProvider string          `json:"auth_provider"`
-		Credentials  json.RawMessage `json:"credentials"`
+		Name            string          `json:"name"`
+		IsAdmin         bool            `json:"is_admin"`
+		LocalAccessOnly bool			`json:"local_access_only"`
+		AuthProvider    string          `json:"auth_provider"`
+		Credentials     json.RawMessage `json:"credentials"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -360,11 +361,13 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.IsAdmin {
-		if err := h.users.SetAdmin(r.Context(), userID, true); err != nil {
-			writeError(w, http.StatusInternalServerError, "db error")
-			return
-		}
+	if err := h.users.SetAdmin(r.Context(), userID, body.IsAdmin); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if err := h.users.SetLocalAccessOnly(r.Context(), userID, body.LocalAccessOnly); err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": userID})

@@ -22,6 +22,7 @@ CREATE TABLE users (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name                        text NOT NULL,
     is_admin                    boolean NOT NULL DEFAULT false,
+    local_access_only           boolean NOT NULL DEFAULT false,
     auth_provider               text NOT NULL DEFAULT 'local',
     auth_data                   jsonb NOT NULL DEFAULT '{}',
     config                      jsonb NOT NULL DEFAULT '{}',
@@ -32,9 +33,10 @@ CREATE TABLE users (
 CREATE INDEX idx_users_name_provider ON users(name, auth_provider);
 
 -- Development admin user: admin / admin (bcrypt hash)
-INSERT INTO users (name, is_admin, auth_provider, auth_data)
+INSERT INTO users (name, is_admin, local_access_only, auth_provider, auth_data)
 VALUES (
     'admin',
+    true,
     true,
     'local',
     '{"password_hash": "$2a$10$4jXsM1XJS0KMA/YWo.EEIuBF8WwnbIusxElCkxe9hoZ7fzTLjGyTm"}'

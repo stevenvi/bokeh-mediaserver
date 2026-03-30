@@ -56,6 +56,25 @@ func (r *UserRepository) GetAdminStatus(ctx context.Context, userID int64) (bool
 	return isAdmin, err
 }
 
+// GetLocalAccessOnly returns whether a user is restricted to local network access only.
+func (r *UserRepository) GetLocalAccessOnly(ctx context.Context, userID int64) (bool, error) {
+	var localAccessOnly bool
+	err := r.db.QueryRow(ctx, `SELECT local_access_only FROM users WHERE id = $1`, userID).Scan(&localAccessOnly)
+	return localAccessOnly, err
+}
+
+// SetLocalAccessOnly updates a user's local network access restrictions.
+func (r *UserRepository) SetLocalAccessOnly(ctx context.Context, userID int64, localAccessOnly bool) (error) {
+	tag, err := r.db.Exec(ctx, `UPDATE users SET local_access_only = $1 WHERE id = $2`, localAccessOnly, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Create inserts a new user and returns the ID.
 func (r *UserRepository) Create(ctx context.Context, name, authProvider string, authData json.RawMessage) (int64, error) {
 	var id int64

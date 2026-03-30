@@ -118,7 +118,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 
 	if h.rl.IsLocked(ip) {
-		writeError(w, http.StatusTooManyRequests, "too many login attempts; try again later")
+		writeError(w, http.StatusTooManyRequests, "try again later")
 		return
 	}
 
@@ -132,6 +132,17 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.rl.Record(ip)
 		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	// TODO: Stop all the one-property query madness here!!
+	localAccessOnly, err := h.users.GetLocalAccessOnly(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "user lookup failed")
+		return
+	}
+	if localAccessOnly && !isLocalRequest(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -292,6 +303,17 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 
 	if device.ExpiresAt != nil && time.Now().After(*device.ExpiresAt) {
 		writeError(w, http.StatusUnauthorized, "refresh token expired")
+		return
+	}
+
+	localAccessOnly, err := h.users.GetLocalAccessOnly(r.Context(), device.UserID)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "user lookup failed")
+		return
+	}
+	if localAccessOnly && !isLocalRequest(r) {
+		clearAuthCookies(w)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
