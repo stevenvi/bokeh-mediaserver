@@ -676,7 +676,12 @@ func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	names := make([]string, 0)
+	type DirectoryEntry struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+
+	names := make([]DirectoryEntry, 0)
 	for _, entry := range entries {
 		// Use os.Stat to follow symlinks when deciding if the target is a directory.
 		info, err := os.Stat(filepath.Join(full, entry.Name()))
@@ -684,7 +689,32 @@ func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if info.IsDir() {
-			names = append(names, entry.Name())
+			// Try to guess the file type in this folder
+			entries2, err2 := os.ReadDir(filepath.Join(full, entry.Name()))
+			if err2 != nil {
+				slog.Error("Cannot read directory, will not return it to user", "directory", entry.Name())
+				continue
+			}
+
+			type_guess := "video:movie"
+			for _, entry2 := range entries2 {
+				if entry2.Type().IsRegular() {
+					mimeType, ok := utils.SupportedExtensions[filepath.Ext(entry2.Name())]
+					if (ok) {
+						switch {
+						case strings.HasPrefix(mimeType, "image"):
+							type_guess = "image:photo"
+							break
+						case strings.HasPrefix(mimeType, "audio"):
+							type_guess = "audio:music"
+							break
+						default:
+							type_guess = "video:movie"
+						}
+					}
+				}
+			}
+			names = append(names, DirectoryEntry{Name: entry.Name(), Type: type_guess})
 		}
 	}
 
