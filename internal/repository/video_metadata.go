@@ -9,18 +9,10 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-type VideoMetadataRepository struct {
-	db utils.DBTX
-}
-
-func NewVideoMetadataRepository(db utils.DBTX) *VideoMetadataRepository {
-	return &VideoMetadataRepository{db: db}
-}
-
-// UpsertVideoMetadata inserts or updates video metadata for a media item.
+// VideoUpsert inserts or updates video metadata for a media item.
 // Does NOT reset transcoded_at on re-process — transcoding is expensive and
 // must be explicitly re-triggered by clearing the field.
-func (r *VideoMetadataRepository) UpsertVideoMetadata(ctx context.Context, itemID int64,
+func VideoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	durationSeconds *int,
 	width, height *int,
 	bitrateKbps *int,
@@ -28,7 +20,7 @@ func (r *VideoMetadataRepository) UpsertVideoMetadata(ctx context.Context, itemI
 	date, endDate *time.Time,
 	author *string,
 ) error {
-	_, err := r.db.Exec(ctx,
+	_, err := db.Exec(ctx,
 		`INSERT INTO video_metadata
 		    (media_item_id, duration_seconds, width, height, bitrate_kbps,
 		     video_codec, audio_codec, date, end_date, author)
@@ -49,11 +41,11 @@ func (r *VideoMetadataRepository) UpsertVideoMetadata(ctx context.Context, itemI
 	return err
 }
 
-// GetVideoMetadataWithBookmark fetches video_metadata for an item, with the
+// VideoWithBookmark fetches video_metadata for an item, with the
 // requesting user's bookmark position populated if one exists.
-func (r *VideoMetadataRepository) GetVideoMetadataWithBookmark(ctx context.Context, itemID int64, userID int64) (*models.VideoMetadata, error) {
+func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID int64) (*models.VideoMetadata, error) {
 	var m models.VideoMetadata
-	err := r.db.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`SELECT vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
 		        vm.date, vm.end_date, vm.author, vm.manual_cover,
@@ -75,10 +67,10 @@ func (r *VideoMetadataRepository) GetVideoMetadataWithBookmark(ctx context.Conte
 	return &m, nil
 }
 
-// ListVideoItemsForIntegrity returns all non-missing video items with their
+// VideosForIntegrityCheck returns all non-missing video items with their
 // file hash, transcoded_at timestamp, and root collection type.
-func (r *VideoMetadataRepository) ListVideoItemsForIntegrity(ctx context.Context) ([]VideoIntegrityItem, error) {
-	rows, err := r.db.Query(ctx,
+func VideosForIntegrityCheck(ctx context.Context, db utils.DBTX) ([]VideoIntegrityItem, error) {
+	rows, err := db.Query(ctx,
 		`SELECT vm.media_item_id, mi.file_hash, vm.transcoded_at, c.type AS collection_type
 		 FROM video_metadata vm
 		 JOIN media_items mi ON mi.id = vm.media_item_id
@@ -91,22 +83,57 @@ func (r *VideoMetadataRepository) ListVideoItemsForIntegrity(ctx context.Context
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[VideoIntegrityItem])
 }
 
-// ClearTranscodedAt sets transcoded_at to NULL for a video item, allowing it
+// VideoClearTranscodedAt sets transcoded_at to NULL for a video item, allowing it
 // to be re-transcoded.
-func (r *VideoMetadataRepository) ClearTranscodedAt(ctx context.Context, itemID int64) error {
-	_, err := r.db.Exec(ctx,
+func VideoClearTranscodedAt(ctx context.Context, db utils.DBTX, itemID int64) error {
+	_, err := db.Exec(ctx,
 		`UPDATE video_metadata SET transcoded_at = NULL WHERE media_item_id = $1`,
 		itemID,
 	)
 	return err
 }
 
-// IsVideoManualCover returns true if manual_cover is false for the item,
+// VideoNeedsTranscode returns true if the item has not yet been transcoded
+// (transcoded_at IS NULL in video_metadata).
+func VideoNeedsTranscode(ctx context.Context, db utils.DBTX, itemID int64) (bool, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM video_metadata
+		 WHERE media_item_id = $1 AND transcoded_at IS NULL`,
+		itemID,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// VideoMetadataForTranscode returns the bitrate and transcoded_at fields for a
+// media item's video_metadata. Used by the transcoder to decide whether to proceed.
+func VideoMetadataForTranscode(ctx context.Context, db utils.DBTX, itemID int64) (*models.VideoMetadata, error) {
+	var m models.VideoMetadata
+	err := db.QueryRow(ctx,
+		`SELECT bitrate_kbps, transcoded_at FROM video_metadata WHERE media_item_id = $1`,
+		itemID,
+	).Scan(&m.BitrateKbps, &m.TranscodedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// VideoSetTranscodedAt records the time a transcode completed for a media item.
+func VideoSetTranscodedAt(ctx context.Context, db utils.DBTX, itemID int64, t time.Time) error {
+	_, err := db.Exec(ctx,
+		`UPDATE video_metadata SET transcoded_at = $2 WHERE media_item_id = $1`,
+		itemID, t,
+	)
+	return err
+}
+
+// VideoHasManulCover returns true if manual_cover is false for the item,
 // meaning auto-generated cover art is appropriate. Returns false (not manual)
 // if no row exists yet (first processing run).
-func (r *VideoMetadataRepository) IsVideoManualCover(ctx context.Context, itemID int64) (bool, error) {
+func VideoHasManulCover(ctx context.Context, db utils.DBTX, itemID int64) (bool, error) {
 	var manualCover bool
-	err := r.db.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`SELECT manual_cover FROM video_metadata WHERE media_item_id = $1`,
 		itemID,
 	).Scan(&manualCover)
@@ -117,44 +144,9 @@ func (r *VideoMetadataRepository) IsVideoManualCover(ctx context.Context, itemID
 	return !manualCover, nil
 }
 
-// VideoNeedsTranscode returns true if the item has not yet been transcoded
-// (transcoded_at IS NULL in video_metadata).
-func (r *VideoMetadataRepository) VideoNeedsTranscode(ctx context.Context, itemID int64) (bool, error) {
-	var count int
-	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM video_metadata
-		 WHERE media_item_id = $1 AND transcoded_at IS NULL`,
-		itemID,
-	).Scan(&count)
-	return count > 0, err
-}
-
-// GetVideoMetaForTranscode returns the bitrate and transcoded_at fields for a
-// media item's video_metadata. Used by the transcoder to decide whether to proceed.
-func (r *VideoMetadataRepository) GetVideoMetaForTranscode(ctx context.Context, itemID int64) (*models.VideoMetadata, error) {
-	var m models.VideoMetadata
-	err := r.db.QueryRow(ctx,
-		`SELECT bitrate_kbps, transcoded_at FROM video_metadata WHERE media_item_id = $1`,
-		itemID,
-	).Scan(&m.BitrateKbps, &m.TranscodedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
-// SetTranscodedAt records the time a transcode completed for a media item.
-func (r *VideoMetadataRepository) SetTranscodedAt(ctx context.Context, itemID int64, t time.Time) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE video_metadata SET transcoded_at = $2 WHERE media_item_id = $1`,
-		itemID, t,
-	)
-	return err
-}
-
-// SetVideoManualCover sets the manual_cover flag on a video_metadata row.
-func (r *VideoMetadataRepository) SetVideoManualCover(ctx context.Context, itemID int64, manual bool) error {
-	_, err := r.db.Exec(ctx,
+// VideoSetManualCover sets the manual_cover flag on a video_metadata row.
+func VideoSetManualCover(ctx context.Context, db utils.DBTX, itemID int64, manual bool) error {
+	_, err := db.Exec(ctx,
 		`UPDATE video_metadata SET manual_cover = $2 WHERE media_item_id = $1`,
 		itemID, manual,
 	)

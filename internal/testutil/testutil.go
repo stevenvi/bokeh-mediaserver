@@ -132,8 +132,7 @@ func findRepoRoot() string {
 // InsertCollection is a test helper that creates a collection and returns its ID.
 func InsertCollection(t *testing.T, db utils.DBTX, name, colType, relativePath string) int64 {
 	t.Helper()
-	repo := repository.NewCollectionRepository(db)
-	id, err := repo.Create(context.Background(), name, colType, relativePath)
+	id, err := repository.CollectionCreate(context.Background(), db, name, colType, relativePath)
 	require.NoError(t, err)
 	return id
 }
@@ -141,8 +140,7 @@ func InsertCollection(t *testing.T, db utils.DBTX, name, colType, relativePath s
 // InsertMediaItem is a test helper that creates a media_item and returns its ID.
 func InsertMediaItem(t *testing.T, db utils.DBTX, collectionID int64, title, relativePath, mimeType string) int64 {
 	t.Helper()
-	repo := repository.NewMediaItemRepository(db)
-	id, _, err := repo.Upsert(context.Background(), collectionID, title, relativePath, 1024, "abc123", mimeType)
+	id, _, err := repository.MediaItemUpsert(context.Background(), db, collectionID, title, relativePath, 1024, "abc123", mimeType)
 	require.NoError(t, err)
 	return id
 }

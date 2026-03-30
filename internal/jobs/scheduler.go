@@ -34,20 +34,14 @@ var scheduledJobs = []scheduledJob{
 // appropriate times. Schedules are re-read from the DB periodically to pick
 // up admin changes without requiring a restart.
 type Scheduler struct {
-	collections *repository.CollectionRepository
-	configs     *repository.ServerConfigRepository
-	jobs        *repository.JobRepository
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	db     utils.DBTX
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // NewScheduler creates a new scheduler.
 func NewScheduler(db utils.DBTX) *Scheduler {
-	return &Scheduler{
-		collections: repository.NewCollectionRepository(db),
-		configs:     repository.NewServerConfigRepository(db),
-		jobs:        repository.NewJobRepository(db),
-	}
+	return &Scheduler{db: db}
 }
 
 // Start begins the scheduler loop.
@@ -77,7 +71,7 @@ func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
 		cfg[sj.configKey] = sj.defaultSchedule
 	}
 
-	overrides, err := s.configs.LoadSchedules(ctx)
+	overrides, err := repository.ServerConfigSchedules(ctx, s.db)
 	if err != nil {
 		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
 		return cfg
@@ -174,14 +168,14 @@ func (s *Scheduler) run(ctx context.Context) {
 func (s *Scheduler) TriggerScans(ctx context.Context) {
 	slog.Info("scheduled scan triggered")
 
-	collIDs, err := s.collections.ListTopLevelEnabled(ctx)
+	collIDs, err := repository.CollectionsTopLevelEnabled(ctx, s.db)
 	if err != nil {
 		slog.Error("query collections for scheduled scan", "err", err)
 		return
 	}
 
 	for _, collID := range collIDs {
-		active, err := s.jobs.IsActive(ctx, "library_scan", collID)
+		active, err := repository.JobIsActive(ctx, s.db, "library_scan", collID)
 		if err != nil {
 			slog.Warn("check active scan", "collection_id", collID, "err", err)
 			continue
@@ -192,7 +186,7 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 		}
 
 		relatedType := "collection"
-		jobID, err := s.jobs.Create(ctx, "library_scan", &collID, &relatedType)
+		jobID, err := repository.JobCreate(ctx, s.db, "library_scan", &collID, &relatedType)
 		if err != nil {
 			slog.Error("create scheduled scan job", "collection_id", collID, "err", err)
 			continue
@@ -219,7 +213,7 @@ func (s *Scheduler) TriggerCoverCycle(ctx context.Context) {
 func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
 	slog.Info("scheduled job triggered", "type", jobType)
 
-	active, err := s.jobs.IsActiveByType(ctx, jobType)
+	active, err := repository.JobIsActiveByType(ctx, s.db, jobType)
 	if err != nil {
 		slog.Error("check active job", "type", jobType, "err", err)
 		return
@@ -229,7 +223,7 @@ func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
 		return
 	}
 
-	jobID, err := s.jobs.Create(ctx, jobType, nil, nil)
+	jobID, err := repository.JobCreate(ctx, s.db, jobType, nil, nil)
 	if err != nil {
 		slog.Error("create scheduled job", "type", jobType, "err", err)
 		return

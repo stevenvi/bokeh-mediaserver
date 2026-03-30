@@ -124,8 +124,7 @@ func (LocalPlugin) Authenticate(ctx context.Context, db utils.DBTX, raw json.Raw
 		return 0, fmt.Errorf("invalid credentials format: %w", err)
 	}
 
-	users := repository.NewUserRepository(db)
-	userID, authData, err := users.FindByNameAndProvider(ctx, creds.Username, "local")
+	userID, authData, err := repository.UserByNameAndProvider(ctx, db, creds.Username, "local")
 	if err != nil {
 		return 0, errors.New("invalid username or password")
 	}
@@ -157,8 +156,7 @@ func (LocalPlugin) CreateUser(ctx context.Context, db utils.DBTX, name string, r
 
 	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
 
-	users := repository.NewUserRepository(db)
-	return users.Create(ctx, name, "local", authData)
+	return repository.UserCreate(ctx, db, name, "local", authData)
 }
 
 func (LocalPlugin) UpdateCredentials(ctx context.Context, db utils.DBTX, userID int64, raw json.RawMessage) error {
@@ -176,15 +174,13 @@ func (LocalPlugin) UpdateCredentials(ctx context.Context, db utils.DBTX, userID 
 
 	authData, _ := json.Marshal(localAuthData{PasswordHash: string(hash)})
 
-	users := repository.NewUserRepository(db)
-	if err := users.UpdateAuthData(ctx, userID, authData); err != nil {
+	if err := repository.UserUpdateAuth(ctx, db, userID, authData); err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			return errors.New("user not found or uses a different auth provider")
 		}
 		return fmt.Errorf("update credentials: %w", err)
 	}
 
-	devices := repository.NewDeviceRepository(db)
-	_, err = devices.DeleteAllForUser(ctx, userID)
+	_, err = repository.DevicesDeleteForUser(ctx, db, userID)
 	return err
 }

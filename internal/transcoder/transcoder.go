@@ -73,32 +73,28 @@ func HandleTranscode(cfg *config.Config) func(ctx context.Context, db utils.DBTX
 		}
 		itemID := *job.RelatedID
 
-		jobRepo := repository.NewJobRepository(db)
-		mediaRepo := repository.NewMediaItemRepository(db)
-		videoMetadata := repository.NewVideoMetadataRepository(db)
-
 		// Fetch video metadata to check if transcode is still needed
-		meta, err := videoMetadata.GetVideoMetaForTranscode(ctx, itemID)
+		meta, err := repository.VideoMetadataForTranscode(ctx, db, itemID)
 		if err != nil {
 			return fmt.Errorf("fetch video_metadata for item %d: %w", itemID, err)
 		}
 
 		// Already transcoded — delete job and return
 		if meta.TranscodedAt != nil {
-			_ = jobRepo.Delete(ctx, job.ID)
+			_ = repository.JobDelete(ctx, db, job.ID)
 			slog.Info("already transcoded", "itemID", strconv.FormatInt(itemID, 10))
 			return nil
 		}
 
 		// Bitrate at or below threshold — no benefit to transcoding
 		if meta.BitrateKbps != nil && *meta.BitrateKbps <= cfg.TranscodeBitrateKbps {
-			_ = jobRepo.Delete(ctx, job.ID)
+			_ = repository.JobDelete(ctx, db, job.ID)
 			slog.Info("transcode unnecessary", "itemID", strconv.FormatInt(itemID, 10))
 			return nil
 		}
 
 		// Fetch file path
-		relativePath, _, fileHash, err := mediaRepo.GetForProcessing(ctx, itemID)
+		relativePath, _, fileHash, err := repository.MediaItemForProcessing(ctx, db, itemID)
 		if err != nil {
 			return fmt.Errorf("fetch media item %d: %w", itemID, err)
 		}
@@ -136,7 +132,7 @@ func HandleTranscode(cfg *config.Config) func(ctx context.Context, db utils.DBTX
 		activeMu.Lock()
 		activeCmds[job.ID] = cmd
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("transcoding %s", fsPath))
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, fmt.Sprintf("transcoding %s", fsPath))
 
 		if err := cmd.Start(); err != nil {
 			delete(activeCmds, job.ID)
@@ -161,13 +157,12 @@ func HandleTranscode(cfg *config.Config) func(ctx context.Context, db utils.DBTX
 		}
 
 		// Mark transcoded_at
-		if err := videoMetadata.SetTranscodedAt(ctx, itemID, time.Now()); err != nil {
+		if err := repository.VideoSetTranscodedAt(ctx, db, itemID, time.Now()); err != nil {
 			slog.Warn("set transcoded_at", "item_id", itemID, "err", err)
 		}
 
 		slog.Info("transcode complete", "item_id", itemID)
-		_ = jobRepo.Delete(ctx, job.ID)
+		_ = repository.JobDelete(ctx, db, job.ID)
 		return nil
 	}
 }
-

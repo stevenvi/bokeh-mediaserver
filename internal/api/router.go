@@ -10,7 +10,6 @@ import (
 	authpkg "github.com/stevenvi/bokeh-mediaserver/internal/auth"
 	"github.com/stevenvi/bokeh-mediaserver/internal/config"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 // NewRouter builds and returns the fully configured Chi router.
@@ -36,30 +35,17 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 
 	rateLimiter := newLoginRateLimiter()
 
-	albumRepo := repository.NewAlbumRepository(db)
-	artistRepo := repository.NewArtistRepository(db)
-	audioMetadataRepo := repository.NewAudioMetadataRepository(db)
-	collRepo := repository.NewCollectionRepository(db)
-	deviceRepo := repository.NewDeviceRepository(db)
-	jobRepo := repository.NewJobRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
-	photoMetadataRepo := repository.NewPhotoMetadataRepository(db)
-	userRepo := repository.NewUserRepository(db)
-	videoMetadataRepo := repository.NewVideoMetadataRepository(db)
-
 	authPlugins := authpkg.DefaultPlugins()
 
-	authHandler := newAuthHandler(db, userRepo, deviceRepo, guard, rateLimiter, jwtSecret, authPlugins, production)
-	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
-	music := &musicHandler{artists: artistRepo, albums: albumRepo, audioMetadata: audioMetadataRepo, media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
-	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, photoMetadata: photoMetadataRepo}
-	video := &videoHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher, videoMetadata: videoMetadataRepo}
+	authHandler := newAuthHandler(db, guard, rateLimiter, jwtSecret, authPlugins, production)
+	collections := &collectionsHandler{db: db}
+	music := &musicHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
+	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
+	video := &videoHandler{db: db, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
 	admin := &adminHandler{
-		db: db, users: userRepo, devices: deviceRepo, guard: guard,
-		collections: collRepo, media: mediaRepo, jobs: jobRepo, pool: pool,
+		db: db, guard: guard, pool: pool,
 		authPlugins: authPlugins, authHandler: authHandler,
 		mediaPath: mediaPath, dataPath: dataPath,
-		photoMetadata: photoMetadataRepo,
 	}
 
 	// ── Public ────────────────────────────────────────────────────────────────

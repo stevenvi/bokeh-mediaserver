@@ -19,14 +19,10 @@ import (
 // album cover and uses it as the artist image.
 func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		jobRepo    := repository.NewJobRepository(db)
-		collRepo   := repository.NewCollectionRepository(db)
-		artistRepo := repository.NewArtistRepository(db)
-
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting cover cycle")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting cover cycle")
 
 		// Path 1: photo collection covers
-		collIDs, err := collRepo.ListCollectionswithNonManualCoverIDs(ctx)
+		collIDs, err := repository.CollectionsWithNonManualCoverIDs(ctx, db)
 		if err != nil {
 			return fmt.Errorf("list collections: %w", err)
 		}
@@ -43,11 +39,11 @@ func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, 
 			updatedColls++
 		}
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID,
+		_ = repository.JobUpdateProgress(ctx, db, job.ID,
 			fmt.Sprintf("cycled %d/%d collection covers; starting artist images", updatedColls, len(collIDs)))
 
 		// Path 2: music artist images
-		artistIDs, err := artistRepo.ListArtistIDsWithoutManualImage(ctx)
+		artistIDs, err := repository.ArtistsWithoutManualImage(ctx, db)
 		if err != nil {
 			return fmt.Errorf("list artists: %w", err)
 		}
@@ -64,7 +60,7 @@ func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, 
 			updatedArtists++
 		}
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID,
+		_ = repository.JobUpdateProgress(ctx, db, job.ID,
 			fmt.Sprintf("cycled %d/%d collection covers, %d/%d artist images",
 				updatedColls, len(collIDs), updatedArtists, len(artistIDs)))
 
@@ -76,9 +72,7 @@ func HandleCoverCycle(dataPath string) func(ctx context.Context, db utils.DBTX, 
 // checks that an album cover AVIF exists on disk, and generates the artist image from it.
 // Returns nil silently if no eligible album or cover exists.
 func GenerateCoverForArtist(ctx context.Context, db utils.DBTX, dataPath string, artistID int64) error {
-	albumRepo := repository.NewAlbumRepository(db)
-
-	albumID, err := albumRepo.GetRandomNonCompilationAlbumIDByArtist(ctx, artistID)
+	albumID, err := repository.AlbumGetRandomNonCompilationIDByArtist(ctx, db, artistID)
 	if err == pgx.ErrNoRows {
 		return nil // no eligible albums
 	}
@@ -102,9 +96,7 @@ func GenerateCoverForArtist(ctx context.Context, db utils.DBTX, dataPath string,
 // given collection and generates a square-cropped cover image from its thumb.
 // Returns nil if the collection has no eligible items (silently skips).
 func GenerateCoverForCollection(ctx context.Context, db utils.DBTX, dataPath string, collectionID int64) error {
-	mediaRepo := repository.NewMediaItemRepository(db)
-
-	hash, err := mediaRepo.GetRandomItemHashWithVariants(ctx, collectionID)
+	hash, err := repository.MediaItemRandomHashWithVariants(ctx, db, collectionID)
 	if err == pgx.ErrNoRows {
 		return nil // no items with variants yet
 	}

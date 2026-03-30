@@ -27,11 +27,7 @@ var homemovieFilenameRe = regexp.MustCompile(`^(\d{4})\.(\d{2})(?:\.(\d{2})(?:-(
 // applies home movie filename fallback, upserts video_metadata, generates
 // cover art or thumbnail, and queues a transcode job if needed.
 func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, dataPath string, transcodeBitrateKbps int) error {
-	jobRepo := repository.NewJobRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
-	videoMetadata := repository.NewVideoMetadataRepository(db)
-
-	_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting video metadata")
+	_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting video metadata")
 
 	// --- Step 1: exiftool extraction ---
 	et, err := worker.exiftool()
@@ -88,7 +84,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// --- Step 2: root collection type for home movie filename fallback ---
-	collType, err := mediaRepo.GetRootCollectionType(ctx, itemID)
+	collType, err := repository.MediaItemRootCollectionType(ctx, db, itemID)
 	if err != nil {
 		slog.Warn("could not determine collection type", "item_id", itemID, "err", err)
 	}
@@ -121,13 +117,13 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 
 	// Apply title to media_items
 	if finalTitle != nil && strings.TrimSpace(*finalTitle) != "" {
-		if err := mediaRepo.UpdateTitle(ctx, itemID, *finalTitle); err != nil {
+		if err := repository.MediaItemUpdateTitle(ctx, db, itemID, *finalTitle); err != nil {
 			slog.Warn("update title from video metadata", "item_id", itemID, "err", err)
 		}
 	}
 
 	// --- Step 3: upsert video_metadata ---
-	if err := videoMetadata.UpsertVideoMetadata(ctx, itemID,
+	if err := repository.VideoUpsert(ctx, db, itemID,
 		durationSeconds, width, height, bitrateKbps,
 		videoCodec, audioCodec,
 		finalDate, endDate, author,
@@ -143,10 +139,10 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Priority: embedded metadata art > keyframe fallback. Manual covers are never overwritten.
-	notManual, err := videoMetadata.IsVideoManualCover(ctx, itemID)
+	notManual, err := repository.VideoHasManulCover(ctx, db, itemID)
 	if err == nil && notManual {
 		if len(coverArtBytes) > 0 {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating cover art")
+			_ = repository.JobUpdateProgress(ctx, db, job.ID, "generating cover art")
 			if err := imaging.GenerateVideoCoverFromBytes(coverArtBytes, dataPath, fileHash, coverWidthRatio, coverHeightRatio); err != nil {
 				slog.Warn("generate video cover from embedded art", "item_id", itemID, "err", err)
 			}
@@ -154,7 +150,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 			// Only generate from keyframe if no cover exists yet
 			coverPath := imaging.VariantPath(dataPath, fileHash, "cover", "avif")
 			if !fileExists(coverPath) {
-				_ = jobRepo.UpdateProgress(ctx, job.ID, "generating cover from keyframe")
+				_ = repository.JobUpdateProgress(ctx, db, job.ID, "generating cover from keyframe")
 				if err := imaging.GenerateVideoCoverFromFrame(fsPath, dataPath, fileHash, *durationSeconds, coverWidthRatio, coverHeightRatio); err != nil {
 					slog.Warn("generate video cover from keyframe", "item_id", itemID, "err", err)
 				}
@@ -165,14 +161,14 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// --- Step 6: queue transcode if needed ---
 	if bitrateKbps != nil && *bitrateKbps > transcodeBitrateKbps && transcodeBitrateKbps > 0 {
 		// Only queue if not already transcoded
-		needsTranscode, err := videoMetadata.VideoNeedsTranscode(ctx, itemID)
+		needsTranscode, err := repository.VideoNeedsTranscode(ctx, db, itemID)
 		if err != nil {
 			slog.Warn("check transcode status", "item_id", itemID, "err", err)
 		} else if needsTranscode {
-			active, err := jobRepo.IsActive(ctx, "transcode", itemID)
+			active, err := repository.JobIsActive(ctx, db, "transcode", itemID)
 			if err == nil && !active {
 				relatedType := "media_item"
-				if _, err := jobRepo.Create(ctx, "transcode", &itemID, &relatedType); err != nil {
+				if _, err := repository.JobCreate(ctx, db, "transcode", &itemID, &relatedType); err != nil {
 					slog.Warn("queue transcode job", "item_id", itemID, "err", err)
 				}
 			}
@@ -180,7 +176,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	slog.Debug("finished processing video file", "item_id", itemID)
-	_ = jobRepo.Delete(ctx, job.ID)
+	_ = repository.JobDelete(ctx, db, job.ID)
 	return nil
 }
 
@@ -276,7 +272,6 @@ func parseVideoBitrate(exifData map[string]any) *int {
 	}
 	return nil
 }
-
 
 // fileExists reports whether the file at path exists on disk.
 func fileExists(path string) bool {

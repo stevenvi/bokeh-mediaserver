@@ -17,30 +17,27 @@ const deviceStaleAge = 365 * 24 * time.Hour
 // not seen in the past year.
 func HandleDeviceCleanup() func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		deviceRepo := repository.NewDeviceRepository(db)
-		jobRepo := repository.NewJobRepository(db)
-
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting device cleanup")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting device cleanup")
 
 		cutoff := time.Now().Add(-deviceStaleAge)
-		ids, err := deviceRepo.ListStaleNonBanned(ctx, cutoff)
+		ids, err := repository.DevicesStaleNonBanned(ctx, db, cutoff)
 		if err != nil {
 			return fmt.Errorf("list stale devices: %w", err)
 		}
 
 		if len(ids) == 0 {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "no stale devices to remove")
+			_ = repository.JobUpdateProgress(ctx, db, job.ID, "no stale devices to remove")
 			return nil
 		}
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("removing %d stale devices", len(ids)))
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, fmt.Sprintf("removing %d stale devices", len(ids)))
 
-		if err := deviceRepo.DeleteByIDs(ctx, ids); err != nil {
+		if err := repository.DevicesDeleteByID(ctx, db, ids); err != nil {
 			return fmt.Errorf("delete stale devices: %w", err)
 		}
 
 		summary := fmt.Sprintf("device cleanup complete: %d stale devices removed", len(ids))
-		_ = jobRepo.UpdateProgress(ctx, job.ID, summary)
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, summary)
 		slog.Info(summary)
 		return nil
 	}

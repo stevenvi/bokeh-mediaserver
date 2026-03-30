@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 func userIDFromRequest(r *http.Request) int64 {
@@ -19,10 +20,9 @@ func userIDFromRequest(r *http.Request) int64 {
 }
 
 type photosHandler struct {
-	media          *repository.MediaItemRepository
-	photoMetadata  *repository.PhotoMetadataRepository
-	dataPath       string
-	mediaPath      string
+	db        utils.DBTX
+	dataPath  string
+	mediaPath string
 }
 
 // GET /api/v1/media/:id
@@ -32,7 +32,7 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.media.GetByID(r.Context(), id, userIDFromRequest(r))
+	item, err := repository.MediaItemGet(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
@@ -48,7 +48,7 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := h.photoMetadata.GetExifRaw(r.Context(), id, userIDFromRequest(r))
+	raw, err := repository.PhotoExifRaw(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "EXIF data not found")
 		return
@@ -62,7 +62,7 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 // getItemHashAndPath fetches the content hash and full filesystem path for a media item
 // in a single DB roundtrip.
 func (h *photosHandler) getItemHashAndPath(id int64, r *http.Request) (hash, fsPath string, err error) {
-	hash, relativePath, err := h.media.GetFileHashAndPath(r.Context(), id, userIDFromRequest(r))
+	hash, relativePath, err := repository.MediaItemFileHashAndPath(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		return "", "", err
 	}

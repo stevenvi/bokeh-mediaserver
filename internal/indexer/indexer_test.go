@@ -295,9 +295,8 @@ func copyFile(t *testing.T, src, dst string) {
 
 func createTestJob(t *testing.T, db utils.DBTX, jobType string, relatedID *int64) int64 {
 	t.Helper()
-	repo := repository.NewJobRepository(db)
 	relatedType := "collection"
-	id, err := repo.Create(context.Background(), jobType, relatedID, &relatedType)
+	id, err := repository.JobCreate(context.Background(), db, jobType, relatedID, &relatedType)
 	require.NoError(t, err)
 	return id
 }

@@ -10,22 +10,45 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-type MediaItemRepository struct {
-	db utils.DBTX
+// MediaItemUpsert inserts or updates a media item, returning the ID and whether the file was unchanged.
+// Uses a CTE to capture pre-existing state for change detection in a single round-trip.
+func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, title, relativePath string, fileSizeBytes int64, fileHash, mimeType string) (id int64, wasUnchanged bool, err error) {
+	err = db.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT id, file_size_bytes, file_hash
+			FROM media_items
+			WHERE relative_path = $3
+		),
+		upserted AS (
+			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (relative_path, collection_id) DO UPDATE SET
+				indexed_at      = now(),
+				missing_since   = NULL,
+				collection_id   = EXCLUDED.collection_id,
+				file_size_bytes = EXCLUDED.file_size_bytes,
+				file_hash       = EXCLUDED.file_hash,
+				mime_type       = EXCLUDED.mime_type
+			RETURNING id
+		)
+		SELECT
+			u.id,
+			(p.id IS NOT NULL AND p.file_size_bytes = $4 AND p.file_hash = $5) AS was_unchanged
+		FROM upserted u
+		LEFT JOIN prev p ON true`,
+		collectionID, title, relativePath, fileSizeBytes, fileHash, mimeType,
+	).Scan(&id, &wasUnchanged)
+	return
 }
 
-func NewMediaItemRepository(db utils.DBTX) *MediaItemRepository {
-	return &MediaItemRepository{db: db}
-}
-
-// GetByID returns a media item by ID with photo metadata, enforcing that the given user
+// MediaItemGet returns a media item by ID with photo metadata, enforcing that the given user
 // has access to the collection it belongs to. Returns an error (→ 404) if the item does
 // not exist, is hidden, or the user lacks collection_access.
-func (r *MediaItemRepository) GetByID(ctx context.Context, id, userID int64) (*models.MediaItemView, error) {
+func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models.MediaItemView, error) {
 	var item models.MediaItemView
 	var photo models.PhotoMetadata
 	var hasPhoto bool
-	err := r.db.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`SELECT m.id, m.title, m.mime_type, m.ordinal,
 		        pm.media_item_id IS NOT NULL,
 		        pm.width_px, pm.height_px, pm.created_at,
@@ -57,19 +80,26 @@ func (r *MediaItemRepository) GetByID(ctx context.Context, id, userID int64) (*m
 	return &item, nil
 }
 
-// GetForProcessing returns fields needed for media processing. Only returns non-missing items.
-func (r *MediaItemRepository) GetForProcessing(ctx context.Context, id int64) (relativePath, mimeType, fileHash string, err error) {
-	err = r.db.QueryRow(ctx,
+// MediaItemForProcessing returns fields needed for media processing. Only returns non-missing items.
+func MediaItemForProcessing(ctx context.Context, db utils.DBTX, id int64) (relativePath, mimeType, fileHash string, err error) {
+	err = db.QueryRow(ctx,
 		`SELECT relative_path, mime_type, file_hash FROM media_items WHERE id = $1 AND missing_since IS NULL`,
 		id,
 	).Scan(&relativePath, &mimeType, &fileHash)
 	return
 }
 
-// GetFileHashAndPath returns the content hash and relative filesystem path for a media item,
+// DeleteMediaItem removes a media item by ID. Note that it will come right back on next scan,
+// so hiding is likely what you will actually want to be doing.
+func DeleteMediaItem(ctx context.Context, db utils.DBTX, id int64) error {
+	_, err := db.Exec(ctx, `DELETE FROM media_items WHERE id = $1`, id)
+	return err
+}
+
+// MediaItemFileHashAndPath returns the content hash and relative filesystem path for a media item,
 // enforcing that the given user has collection_access to the root ancestor collection.
-func (r *MediaItemRepository) GetFileHashAndPath(ctx context.Context, id, userID int64) (hash, relativePath string, err error) {
-	err = r.db.QueryRow(ctx,
+func MediaItemFileHashAndPath(ctx context.Context, db utils.DBTX, id, userID int64) (hash, relativePath string, err error) {
+	err = db.QueryRow(ctx,
 		`SELECT m.file_hash, m.relative_path FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL
@@ -83,19 +113,19 @@ func (r *MediaItemRepository) GetFileHashAndPath(ctx context.Context, id, userID
 	return
 }
 
-// UpdateTitle sets the title for a media item.
-func (r *MediaItemRepository) UpdateTitle(ctx context.Context, id int64, title string) error {
-	_, err := r.db.Exec(ctx,
+// MediaItemUpdateTitle sets the title for a media item.
+func MediaItemUpdateTitle(ctx context.Context, db utils.DBTX, id int64, title string) error {
+	_, err := db.Exec(ctx,
 		`UPDATE media_items SET title = $2 WHERE id = $1`, id, title,
 	)
 	return err
 }
 
-// ListByCollectionPaginated returns paginated media items for a collection.
+// MediaItemsByCollectionPaginated returns paginated media items for a collection.
 // Access is checked against the root ancestor collection, so sub-collections
 // are accessible if the user has access to the top-level parent.
-func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
-	rows, err := r.db.Query(ctx,
+func MediaItemsByCollectionPaginated(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
+	rows, err := db.Query(ctx,
 		`SELECT m.id, m.title, m.mime_type, m.ordinal,
 		        pm.placeholder, pm.variants_generated_at
 		 FROM media_items m
@@ -133,59 +163,21 @@ func (r *MediaItemRepository) ListByCollectionPaginated(ctx context.Context, col
 	})
 }
 
-// Upsert inserts or updates a media item, returning the ID and whether the file was unchanged.
-// Uses a CTE to capture pre-existing state for change detection in a single round-trip.
-func (r *MediaItemRepository) Upsert(ctx context.Context, collectionID int64, title, relativePath string, fileSizeBytes int64, fileHash, mimeType string) (id int64, wasUnchanged bool, err error) {
-	err = r.db.QueryRow(ctx, `
-		WITH prev AS (
-			SELECT id, file_size_bytes, file_hash
-			FROM media_items
-			WHERE relative_path = $3
-		),
-		upserted AS (
-			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
-			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (relative_path, collection_id) DO UPDATE SET
-				indexed_at      = now(),
-				missing_since   = NULL,
-				collection_id   = EXCLUDED.collection_id,
-				file_size_bytes = EXCLUDED.file_size_bytes,
-				file_hash       = EXCLUDED.file_hash,
-				mime_type       = EXCLUDED.mime_type
-			RETURNING id
-		)
-		SELECT
-			u.id,
-			(p.id IS NOT NULL AND p.file_size_bytes = $4 AND p.file_hash = $5) AS was_unchanged
-		FROM upserted u
-		LEFT JOIN prev p ON true`,
-		collectionID, title, relativePath, fileSizeBytes, fileHash, mimeType,
-	).Scan(&id, &wasUnchanged)
-	return
-}
-
-// Delete removes a media item by ID. Note that it will come right back on next scan,
-// so hiding is likely what you will actually want to be doing.
-func (r *MediaItemRepository) Delete(ctx context.Context, id int64) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM media_items WHERE id = $1`, id)
-	return err
-}
-
-// Marks an item as hidden or visible in the database. This is effectively a soft delete,
+// MediaItemSetHidden marks an item as hidden or visible in the database. This is effectively a soft delete,
 // which prevents removed items from showing back up after a collection scan.
-func (r *MediaItemRepository) SetHidden(ctx context.Context, id int64, hidden bool) error {
+func MediaItemSetHidden(ctx context.Context, db utils.DBTX, id int64, hidden bool) error {
 	var err error
 	if hidden {
-		_, err = r.db.Exec(ctx, `UPDATE media_items SET hidden_at = now() WHERE id = $1`, id)
+		_, err = db.Exec(ctx, `UPDATE media_items SET hidden_at = now() WHERE id = $1`, id)
 	} else {
-		_, err = r.db.Exec(ctx, `UPDATE media_items SET hidden_at = NULL WHERE id = $1`, id)
+		_, err = db.Exec(ctx, `UPDATE media_items SET hidden_at = NULL WHERE id = $1`, id)
 	}
 	return err
 }
 
-// FindHashesExisting returns the subset of provided hashes that exist in the DB.
-func (r *MediaItemRepository) FindHashesExisting(ctx context.Context, hashes []string) (map[string]struct{}, error) {
-	rows, err := r.db.Query(ctx,
+// MediaItemFindExistingHashes returns the subset of provided hashes that exist in the DB.
+func MediaItemFindExistingHashes(ctx context.Context, db utils.DBTX, hashes []string) (map[string]struct{}, error) {
+	rows, err := db.Query(ctx,
 		`SELECT file_hash FROM media_items WHERE file_hash = ANY($1)`,
 		hashes,
 	)
@@ -203,15 +195,15 @@ func (r *MediaItemRepository) FindHashesExisting(ctx context.Context, hashes []s
 	return existing, nil
 }
 
-// StaleItem represents a media item that has been missing long enough to prune.
-type StaleItem struct {
+// StaleMediaItem represents a media item that has been missing long enough to prune.
+type StaleMediaItem struct {
 	ID   int64
 	Hash string
 }
 
-// ListStaleItems returns items missing for more than 90 days.
-func (r *MediaItemRepository) ListStaleItems(ctx context.Context) ([]StaleItem, error) {
-	rows, err := r.db.Query(ctx,
+// MediaItemsStale returns items missing for more than 90 days.
+func MediaItemsStale(ctx context.Context, db utils.DBTX) ([]StaleMediaItem, error) {
+	rows, err := db.Query(ctx,
 		`SELECT id, file_hash FROM media_items
 		 WHERE missing_since IS NOT NULL
 		   AND missing_since < now() - interval '90 days'`,
@@ -219,13 +211,13 @@ func (r *MediaItemRepository) ListStaleItems(ctx context.Context) ([]StaleItem, 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[StaleItem])
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[StaleMediaItem])
 }
 
-// ListHashesByCollection returns all file hashes for non-missing items in a collection
+// MediaItemHashesByCollection returns all file hashes for non-missing items in a collection
 // and its sub-collections (recursive).
-func (r *MediaItemRepository) ListHashesByCollection(ctx context.Context, collectionID int64) ([]string, error) {
-	rows, err := r.db.Query(ctx,
+func MediaItemHashesByCollection(ctx context.Context, db utils.DBTX, collectionID int64) ([]string, error) {
+	rows, err := db.Query(ctx,
 		`WITH RECURSIVE tree AS (
 			SELECT id FROM collections WHERE id = $1
 			UNION ALL
@@ -243,10 +235,10 @@ func (r *MediaItemRepository) ListHashesByCollection(ctx context.Context, collec
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
-// GetRandomItemHashWithVariants picks a random item with generated variants,
+// MediaItemRandomHashWithVariants picks a random item with generated variants,
 // starting with the collection's direct items and expanding one depth level at a time.
 // It searches up to 8 nested levels; returns pgx.ErrNoRows if nothing is found.
-func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context, collectionID int64) (string, error) {
+func MediaItemRandomHashWithVariants(ctx context.Context, db utils.DBTX, collectionID int64) (string, error) {
 	collectionIDs := []int64{collectionID}
 
 	for depth := 0; depth <= 8; depth++ {
@@ -255,7 +247,7 @@ func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context,
 		}
 
 		var hash string
-		err := r.db.QueryRow(ctx,
+		err := db.QueryRow(ctx,
 			`SELECT mi.file_hash
 			 FROM media_items mi
 			 JOIN photo_metadata pm ON pm.media_item_id = mi.id
@@ -275,7 +267,7 @@ func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context,
 		}
 
 		// Nothing at this depth — fetch the next level of children.
-		rows, err := r.db.Query(ctx,
+		rows, err := db.Query(ctx,
 			`SELECT id FROM collections WHERE parent_collection_id = ANY($1)`,
 			collectionIDs,
 		)
@@ -292,21 +284,21 @@ func (r *MediaItemRepository) GetRandomItemHashWithVariants(ctx context.Context,
 	return "", pgx.ErrNoRows
 }
 
-// GetCollectionID returns the collection_id for a media item.
-func (r *MediaItemRepository) GetCollectionID(ctx context.Context, itemID int64) (int64, error) {
+// MediaItemCollectionID returns the collection_id for a media item.
+func MediaItemCollectionID(ctx context.Context, db utils.DBTX, itemID int64) (int64, error) {
 	var collID int64
-	err := r.db.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`SELECT collection_id FROM media_items WHERE id = $1`,
 		itemID,
 	).Scan(&collID)
 	return collID, err
 }
 
-// GetRootCollectionID returns the root collection ID for the collection containing
+// MediaItemRootCollectionID returns the root collection ID for the collection containing
 // the given media item.
-func (r *MediaItemRepository) GetRootCollectionID(ctx context.Context, itemID int64) (int64, error) {
+func MediaItemRootCollectionID(ctx context.Context, db utils.DBTX, itemID int64) (int64, error) {
 	var rootID int64
-	err := r.db.QueryRow(ctx,
+	err := db.QueryRow(ctx,
 		`SELECT c.root_collection_id
 		 FROM media_items mi
 		 JOIN collections c ON c.id = mi.collection_id
@@ -316,9 +308,24 @@ func (r *MediaItemRepository) GetRootCollectionID(ctx context.Context, itemID in
 	return rootID, err
 }
 
-// GetAudioStreamInfo returns fields needed to stream an audio file, with access check.
-func (r *MediaItemRepository) GetAudioStreamInfo(ctx context.Context, itemID int64, userID int64) (relativePath, mimeType string, err error) {
-	err = r.db.QueryRow(ctx,
+// MediaItemRootCollectionType returns the type of the root collection that contains the
+// given media item (e.g. "video:movie", "video:home_movie").
+func MediaItemRootCollectionType(ctx context.Context, db utils.DBTX, itemID int64) (string, error) {
+	var colType string
+	err := db.QueryRow(ctx,
+		`SELECT rc.type
+		 FROM media_items mi
+		 JOIN collections c  ON c.id  = mi.collection_id
+		 JOIN collections rc ON rc.id = c.root_collection_id
+		 WHERE mi.id = $1`,
+		itemID,
+	).Scan(&colType)
+	return colType, err
+}
+
+// MediaItemGetAudioStreamInfo returns fields needed to stream an audio file, with access check.
+func MediaItemGetAudioStreamInfo(ctx context.Context, db utils.DBTX, itemID int64, userID int64) (relativePath, mimeType string, err error) {
+	err = db.QueryRow(ctx,
 		`SELECT m.relative_path, m.mime_type FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
@@ -332,25 +339,10 @@ func (r *MediaItemRepository) GetAudioStreamInfo(ctx context.Context, itemID int
 	return
 }
 
-// GetRootCollectionType returns the type of the root collection that contains the
-// given media item (e.g. "video:movie", "video:home_movie").
-func (r *MediaItemRepository) GetRootCollectionType(ctx context.Context, itemID int64) (string, error) {
-	var colType string
-	err := r.db.QueryRow(ctx,
-		`SELECT rc.type
-		 FROM media_items mi
-		 JOIN collections c  ON c.id  = mi.collection_id
-		 JOIN collections rc ON rc.id = c.root_collection_id
-		 WHERE mi.id = $1`,
-		itemID,
-	).Scan(&colType)
-	return colType, err
-}
-
-// GetVideoStreamInfo returns fields needed to stream a video file, with access check.
+// MediaItemGetVideoStreamInfo returns fields needed to stream a video file, with access check.
 // Returns relativePath, mimeType, and file_hash.
-func (r *MediaItemRepository) GetVideoStreamInfo(ctx context.Context, itemID int64, userID int64) (relativePath, mimeType, hash string, err error) {
-	err = r.db.QueryRow(ctx,
+func MediaItemGetVideoStreamInfo(ctx context.Context, db utils.DBTX, itemID int64, userID int64) (relativePath, mimeType, hash string, err error) {
+	err = db.QueryRow(ctx,
 		`SELECT m.relative_path, m.mime_type, m.file_hash FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
@@ -364,28 +356,6 @@ func (r *MediaItemRepository) GetVideoStreamInfo(ctx context.Context, itemID int
 	return
 }
 
-// UpsertVideoBookmark inserts or updates a user's playback position for a video.
-func (r *MediaItemRepository) UpsertVideoBookmark(ctx context.Context, userID, itemID int64, positionSeconds int) error {
-	_, err := r.db.Exec(ctx,
-		`INSERT INTO video_bookmarks (user_id, media_item_id, position_seconds)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (user_id, media_item_id) DO UPDATE SET
-		     position_seconds = EXCLUDED.position_seconds,
-		     last_watched_at  = NOW()`,
-		userID, itemID, positionSeconds,
-	)
-	return err
-}
-
-// DeleteVideoBookmark removes a user's bookmark for a video item.
-func (r *MediaItemRepository) DeleteVideoBookmark(ctx context.Context, userID, itemID int64) error {
-	_, err := r.db.Exec(ctx,
-		`DELETE FROM video_bookmarks WHERE user_id = $1 AND media_item_id = $2`,
-		userID, itemID,
-	)
-	return err
-}
-
 // VideoIntegrityItem holds the fields needed by the integrity checker for a single video item.
 type VideoIntegrityItem struct {
 	ItemID         int64
@@ -394,17 +364,17 @@ type VideoIntegrityItem struct {
 	CollectionType string
 }
 
-// ListVideoItemsByCollection returns media items in a video collection.
+// MediaItemVideosByCollection returns media items in a video collection.
 // For video:movie collections it recurses into sub-collections (ordered by title).
 // For video:home_movie collections it returns only the direct collection (ordered by relative_path).
 // BookmarkSeconds is populated per-user.
-func (r *MediaItemRepository) ListVideoItemsByCollection(ctx context.Context, collectionID int64, userID int64, collectionType string, limit, offset int) ([]models.MediaItemView, error) {
+func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, collectionType string, limit, offset int) ([]models.MediaItemView, error) {
 	var rows pgx.Rows
 	var err error
 
 	if collectionType == "video:movie" {
 		// Recursive CTE to include all descendant collections
-		rows, err = r.db.Query(ctx,
+		rows, err = db.Query(ctx,
 			`WITH RECURSIVE descendants AS (
 			     SELECT id FROM collections WHERE id = $1
 			     UNION ALL
@@ -432,7 +402,7 @@ func (r *MediaItemRepository) ListVideoItemsByCollection(ctx context.Context, co
 		)
 	} else {
 		// video:home_movie — single collection, ordered by path
-		rows, err = r.db.Query(ctx,
+		rows, err = db.Query(ctx,
 			`SELECT m.id, m.title, m.mime_type, m.ordinal,
 			        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 			        vm.video_codec, vm.audio_codec, vm.transcoded_at,
@@ -485,10 +455,10 @@ type SlideshowQuery struct {
 	IncludeCursor bool // include the item the cursor points to in results (inclusive/exclusive)
 }
 
-// GetSlideshowItems returns a page of photo items via keyset pagination.
+// SlideshowItems returns a page of photo items via keyset pagination.
 // When Recursive is true, items from all descendant collections are included.
 // The caller receives pageSize+1 rows and must trim to detect whether a next page exists.
-func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, q SlideshowQuery) ([]models.SlideshowItem, error) {
+func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]models.SlideshowItem, error) {
 	args := []any{q.CollectionID, q.PageSize + 1}
 	addArg := func(v any) string {
 		args = append(args, v)
@@ -566,26 +536,26 @@ func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, q Slidesho
 		cte, collectionFilter, cursorClause, dir, dir,
 	)
 
-	rows, err := r.db.Query(ctx, query, args...)
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowItem])
 }
 
-// SlideshowItemPosition holds the sort-key fields needed to construct a cursor for a given item.
-type SlideshowItemPosition struct {
+// SlideshowItemPositionObj holds the sort-key fields needed to construct a cursor for a given item.
+type SlideshowItemPositionObj struct {
 	ID           int64
 	CollectionID int64
 	CreatedAt    *time.Time
 }
 
-// GetSlideshowItemPosition returns the sort-key fields for a media item, used to construct
+// SlideshowItemPosition returns the sort-key fields for a media item, used to construct
 // a cursor when the client specifies a start item. Returns nil if the item does not exist
 // or is hidden/missing.
-func (r *CollectionRepository) GetSlideshowItemPosition(ctx context.Context, itemID int64) (*SlideshowItemPosition, error) {
-	var pos SlideshowItemPosition
-	err := r.db.QueryRow(ctx, `
+func SlideshowItemPosition(ctx context.Context, db utils.DBTX, itemID int64) (*SlideshowItemPositionObj, error) {
+	var pos SlideshowItemPositionObj
+	err := db.QueryRow(ctx, `
 		SELECT mi.id, mi.collection_id, pm.created_at
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
@@ -603,9 +573,9 @@ func (r *CollectionRepository) GetSlideshowItemPosition(ctx context.Context, ite
 	return &pos, nil
 }
 
-// GetSlideshowMetadata returns per-month item counts for the slideshow scrollbar.
+// SlideshowMetadata returns per-month item counts for the slideshow scrollbar.
 // Items with NULL created_at are excluded.
-func (r *CollectionRepository) GetSlideshowMetadata(ctx context.Context, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
+func SlideshowMetadata(ctx context.Context, db utils.DBTX, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
 	var cte, collectionFilter string
 	if recursive {
 		cte = `WITH RECURSIVE collection_tree AS (
@@ -637,17 +607,17 @@ func (r *CollectionRepository) GetSlideshowMetadata(ctx context.Context, collect
 		cte, collectionFilter,
 	)
 
-	rows, err := r.db.Query(ctx, query, collectionID)
+	rows, err := db.Query(ctx, query, collectionID)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowMonthCount])
 }
 
-// MarkMissingSince marks items in a collection that haven't been indexed since `before`.
+// MediaItemMarkMissingSince marks items in a collection that haven't been indexed since `before`.
 // Returns number of rows affected.
-func (r *CollectionRepository) MarkMissingSince(ctx context.Context, collectionID int64, before time.Time) (int64, error) {
-	tag, err := r.db.Exec(ctx,
+func MediaItemMarkMissingSince(ctx context.Context, db utils.DBTX, collectionID int64, before time.Time) (int64, error) {
+	tag, err := db.Exec(ctx,
 		`UPDATE media_items
 		 SET missing_since = now()
 		 WHERE collection_id = $1

@@ -18,7 +18,6 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-
 // RunScan performs a lightweight enumeration scan of a collection's relative_path.
 // It walks the directory tree, upserts media_items, and queues process_media
 // jobs for new or changed files. Heavy processing (EXIF, variants, DZI) is
@@ -32,17 +31,13 @@ import (
 func RunScan(ctx context.Context, db utils.DBTX,
 	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string, force bool) error {
 
-	jobRepo := repository.NewJobRepository(db)
-	colRepo := repository.NewCollectionRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
-
 	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
 	jobStart := time.Now()
 
 	logMsg := func(msg string) {
 		slog.Info(msg, "job_id", jobID, "collection_id", collectionID)
-		_ = jobRepo.UpdateProgress(ctx, jobID, msg)
+		_ = repository.JobUpdateProgress(ctx, db, jobID, msg)
 	}
 
 	// Construct full path: mediaPath is base, rootPath is relative path within media
@@ -50,7 +45,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 	logMsg(fmt.Sprintf("scan started: %s", collectionPath))
 
 	// Phase 1 — walk directory tree and upsert sub-collections (folders)
-	pathToID, err := walkFolders(ctx, colRepo, collectionID, collectionPath, mediaPath)
+	pathToID, err := walkFolders(ctx, db, collectionID, collectionPath, mediaPath)
 	if err != nil {
 		return fmt.Errorf("walk folders: %w", err)
 	}
@@ -115,7 +110,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 
 		title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 
-		itemID, wasUnchanged, err := mediaRepo.Upsert(ctx, folderCollectionID, title, relativePath, fileSize, fileHash, mimeType)
+		itemID, wasUnchanged, err := repository.MediaItemUpsert(ctx, db, folderCollectionID, title, relativePath, fileSize, fileHash, mimeType)
 		if err != nil {
 			slog.Warn("upsert media_item failed", "path", path, "err", err)
 			errCount++
@@ -132,7 +127,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 
 		// Queue a process_media job for this item
 		relatedType := "media_item"
-		_, err = jobRepo.Create(ctx, "process_media", &itemID, &relatedType)
+		_, err = repository.JobCreate(ctx, db, "process_media", &itemID, &relatedType)
 		if err != nil {
 			slog.Warn("queue process_media job", "item_id", itemID, "err", err)
 			errCount++
@@ -148,7 +143,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 	}
 
 	// Phase 3 — mark files not seen this scan as missing
-	markedMissing, err := colRepo.MarkMissingSince(ctx, collectionID, jobStart)
+	markedMissing, err := repository.MediaItemMarkMissingSince(ctx, db, collectionID, jobStart)
 	if err != nil {
 		return fmt.Errorf("mark missing: %w", err)
 	}
@@ -157,14 +152,14 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		enumerated, unchanged, queued, errCount, markedMissing)
 	logMsg(summary)
 
-	colRepo.TouchLastScanned(ctx, collectionID)
+	repository.CollectionTouchLastScanned(ctx, db, collectionID)
 
 	return nil
 }
 
 // walkFolders upserts a sub-collection row for each directory under rootPath.
 // Returns a map from absolute directory path to collection ID for use during file enumeration.
-func walkFolders(ctx context.Context, colRepo *repository.CollectionRepository, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
+func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
 	pathToID := map[string]int64{rootPath: rootCollectionID}
 
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
@@ -185,7 +180,7 @@ func walkFolders(ctx context.Context, colRepo *repository.CollectionRepository, 
 		}
 
 		name := filepath.Base(path)
-		id, err := colRepo.UpsertSubCollection(ctx, parentID, rootCollectionID, name, relPath)
+		id, err := repository.CollectionUpsertSubCollection(ctx, db, parentID, rootCollectionID, name, relPath)
 		if err != nil {
 			return fmt.Errorf("upsert folder %s: %w", path, err)
 		}
@@ -265,8 +260,7 @@ func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db util
 
 		force := job.RelatedType != nil && *job.RelatedType == "collection:force"
 
-		colRepo := repository.NewCollectionRepository(db)
-		relativePath, err := colRepo.GetRelativePath(ctx, collectionID)
+		relativePath, err := repository.CollectionGetRelativePath(ctx, db, collectionID)
 		if err != nil {
 			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
 		}

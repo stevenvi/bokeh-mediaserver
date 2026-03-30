@@ -13,15 +13,15 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/streaming"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type videoHandler struct {
-	media          *repository.MediaItemRepository
-	videoMetadata  *repository.VideoMetadataRepository
-	dataPath       string
-	mediaPath      string
-	cfg            *config.Config
-	dispatcher     *jobs.Dispatcher
+	db         utils.DBTX
+	dataPath   string
+	mediaPath  string
+	cfg        *config.Config
+	dispatcher *jobs.Dispatcher
 }
 
 // isLocalRequest returns true if the request originates from an RFC 1918 or
@@ -89,7 +89,7 @@ func (h *videoHandler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if stored transcode exists
-	_, _, fileHash, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	_, _, fileHash, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
@@ -111,7 +111,7 @@ func (h *videoHandler) raw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	relativePath, mimeType, _, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	relativePath, mimeType, _, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
@@ -129,7 +129,7 @@ func (h *videoHandler) hlsManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, fileHash, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	_, _, fileHash, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
@@ -152,7 +152,7 @@ func (h *videoHandler) hlsSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, fileHash, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	_, _, fileHash, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
@@ -185,13 +185,13 @@ func (h *videoHandler) liveManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := userIDFromRequest(r)
-	relativePath, _, _, err := h.media.GetVideoStreamInfo(r.Context(), id, userID)
+	relativePath, _, _, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	meta, err := h.videoMetadata.GetVideoMetadataWithBookmark(r.Context(), id, userID)
+	meta, err := repository.VideoWithBookmark(r.Context(), h.db, id, userID)
 	if err != nil {
 		// metadata may not exist yet; treat bitrate as unknown
 		meta = nil
@@ -239,7 +239,7 @@ func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, fileHash, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	_, _, fileHash, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
@@ -289,7 +289,7 @@ func (h *videoHandler) upsertBookmark(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := userIDFromRequest(r)
-	if err := h.media.UpsertVideoBookmark(r.Context(), userID, id, body.PositionSeconds); err != nil {
+	if err := repository.VideoBookmarkUpsert(r.Context(), h.db, userID, id, body.PositionSeconds); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save bookmark")
 		return
 	}
@@ -305,7 +305,7 @@ func (h *videoHandler) deleteBookmark(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := userIDFromRequest(r)
-	if err := h.media.DeleteVideoBookmark(r.Context(), userID, id); err != nil {
+	if err := repository.VideoBookmarkDelete(r.Context(), h.db, userID, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete bookmark")
 		return
 	}
@@ -339,13 +339,13 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, fileHash, err := h.media.GetVideoStreamInfo(r.Context(), id, userIDFromRequest(r))
+	_, _, fileHash, err := repository.MediaItemGetVideoStreamInfo(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "video not found")
 		return
 	}
 
-	collType, _ := h.media.GetRootCollectionType(r.Context(), id)
+	collType, _ := repository.MediaItemRootCollectionType(r.Context(), h.db, id)
 	widthRatio, heightRatio := 4, 3
 	if collType == "video:movie" {
 		widthRatio, heightRatio = 2, 3
@@ -356,11 +356,10 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.videoMetadata.SetVideoManualCover(r.Context(), id, true); err != nil {
+	if err := repository.VideoSetManualCover(r.Context(), h.db, id, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update video metadata")
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
-

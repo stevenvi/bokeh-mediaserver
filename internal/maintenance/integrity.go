@@ -18,26 +18,22 @@ import (
 // 3. Re-queues process_media for home movie items whose cover is missing
 func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		jobRepo := repository.NewJobRepository(db)
-		mediaRepo := repository.NewMediaItemRepository(db)
-		videoMetadataRepo := repository.NewVideoMetadataRepository(db)
-
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting integrity check")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting integrity check")
 
 		// prune stale missing items (missing for >90 days)
-		pruned, err := pruneStaleItems(ctx, mediaRepo, jobRepo, dataPath, job.ID)
+		pruned, err := pruneStaleItems(ctx, db, dataPath, job.ID)
 		if err != nil {
 			return fmt.Errorf("prune stale items: %w", err)
 		}
 
 		// check video derivatives (re-queue transcode/process_media for broken outputs)
-		requeued, err := checkVideoDerivatives(ctx, videoMetadataRepo, jobRepo, dataPath, job.ID)
+		requeued, err := checkVideoDerivatives(ctx, db, dataPath, job.ID)
 		if err != nil {
 			slog.Warn("check video derivatives failed", "err", err)
 		}
 
 		summary := fmt.Sprintf("integrity check complete: %d stale items pruned, %d video jobs re-queued", pruned, requeued)
-		_ = jobRepo.UpdateProgress(ctx, job.ID, summary)
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, summary)
 		slog.Info(summary)
 		return nil
 	}
@@ -45,10 +41,10 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 
 // checkVideoDerivatives iterates video_metadata rows and re-queues jobs when
 // the expected output files are missing from disk.
-func checkVideoDerivatives(ctx context.Context, videoMetadataRepo *repository.VideoMetadataRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {
-	_ = jobRepo.UpdateProgress(ctx, jobID, "checking video derivatives")
+func checkVideoDerivatives(ctx context.Context, db utils.DBTX, dataPath string, jobID int64) (int64, error) {
+	_ = repository.JobUpdateProgress(ctx, db, jobID, "checking video derivatives")
 
-	items, err := videoMetadataRepo.ListVideoItemsForIntegrity(ctx)
+	items, err := repository.VideosForIntegrityCheck(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("query video_metadata: %w", err)
 	}
@@ -66,13 +62,13 @@ func checkVideoDerivatives(ctx context.Context, videoMetadataRepo *repository.Vi
 			manifestPath := imaging.VideoHLSManifest(dataPath, item.FileHash)
 			if _, statErr := os.Stat(manifestPath); os.IsNotExist(statErr) {
 				// Clear transcoded_at so the transcoder will run again
-				if err := videoMetadataRepo.ClearTranscodedAt(ctx, item.ItemID); err != nil {
+				if err := repository.VideoClearTranscodedAt(ctx, db, item.ItemID); err != nil {
 					slog.Warn("clear transcoded_at", "item_id", item.ItemID, "err", err)
 					continue
 				}
-				active, _ := jobRepo.IsActive(ctx, "transcode", item.ItemID)
+				active, _ := repository.JobIsActive(ctx, db, "transcode", item.ItemID)
 				if !active {
-					if _, err := jobRepo.Create(ctx, "transcode", &item.ItemID, &relatedType); err != nil {
+					if _, err := repository.JobCreate(ctx, db, "transcode", &item.ItemID, &relatedType); err != nil {
 						slog.Warn("re-queue transcode", "item_id", item.ItemID, "err", err)
 					} else {
 						requeued++
@@ -85,9 +81,9 @@ func checkVideoDerivatives(ctx context.Context, videoMetadataRepo *repository.Vi
 		if item.CollectionType == "video:home_movie" {
 			coverPath := imaging.VariantPath(dataPath, item.FileHash, "cover", "avif")
 			if _, statErr := os.Stat(coverPath); os.IsNotExist(statErr) {
-				active, _ := jobRepo.IsActive(ctx, "process_media", item.ItemID)
+				active, _ := repository.JobIsActive(ctx, db, "process_media", item.ItemID)
 				if !active {
-					if _, err := jobRepo.Create(ctx, "process_media", &item.ItemID, &relatedType); err != nil {
+					if _, err := repository.JobCreate(ctx, db, "process_media", &item.ItemID, &relatedType); err != nil {
 						slog.Warn("re-queue process_media for cover", "item_id", item.ItemID, "err", err)
 					} else {
 						requeued++
@@ -100,18 +96,18 @@ func checkVideoDerivatives(ctx context.Context, videoMetadataRepo *repository.Vi
 	return requeued, nil
 }
 
-func pruneStaleItems(ctx context.Context, mediaRepo *repository.MediaItemRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {
-	items, err := mediaRepo.ListStaleItems(ctx)
+func pruneStaleItems(ctx context.Context, db utils.DBTX, dataPath string, jobID int64) (int64, error) {
+	items, err := repository.MediaItemsStale(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("query stale items: %w", err)
 	}
 
 	if len(items) == 0 {
-		_ = jobRepo.UpdateProgress(ctx, jobID, "no stale items to prune")
+		_ = repository.JobUpdateProgress(ctx, db, jobID, "no stale items to prune")
 		return 0, nil
 	}
 
-	_ = jobRepo.UpdateProgress(ctx, jobID,
+	_ = repository.JobUpdateProgress(ctx, db, jobID,
 		fmt.Sprintf("pruning %d stale items", len(items)))
 
 	var pruned int64
@@ -121,7 +117,7 @@ func pruneStaleItems(ctx context.Context, mediaRepo *repository.MediaItemReposit
 		}
 
 		// Delete from DB (cascades to photo_metadata)
-		if err := mediaRepo.Delete(ctx, item.ID); err != nil {
+		if err := repository.DeleteMediaItem(ctx, db, item.ID); err != nil {
 			slog.Warn("delete stale media item", "item_id", item.ID, "err", err)
 			continue
 		}

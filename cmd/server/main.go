@@ -51,11 +51,11 @@ func run() error {
 
 	// ── Database pool ─────────────────────────────────────────────────────────
 	ctx := context.Background()
-	db_pool, err := db.Open(ctx, cfg.DatabaseURL)
+	db, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("db: %w", err)
 	}
-	defer db_pool.Close()
+	defer db.Close()
 
 	// ── Imaging module initialization ─────────────────────────────────────────
 	slog.Info("initializing imaging module")
@@ -64,21 +64,18 @@ func run() error {
 
 	// ── Startup recovery ──────────────────────────────────────────────────────
 	slog.Info("running startup recovery")
-	configRepo := repository.NewServerConfigRepository(db_pool)
-	jobRepo := repository.NewJobRepository(db_pool)
-	photoMetadata := repository.NewPhotoMetadataRepository(db_pool)
 
 	// Load transcode bitrate from server_config
-	if kbps, err := configRepo.LoadTranscodeBitrate(ctx); err != nil {
+	if kbps, err := repository.ServerConfigTranscodeBitrate(ctx, db); err != nil {
 		slog.Warn("could not load transcode_bitrate_kbps; using default", "err", err)
 	} else {
 		cfg.TranscodeBitrateKbps = kbps
 	}
 
-	if err := jobRepo.RecoverStuck(ctx); err != nil {
+	if err := repository.JobsResetStuck(ctx, db); err != nil {
 		return fmt.Errorf("recovery: %w", err)
 	}
-	if count, err := photoMetadata.CountPendingVariants(ctx); err != nil {
+	if count, err := repository.PhotoCountPendingVariants(ctx, db); err != nil {
 		return fmt.Errorf("count incomplete variants: %w", err)
 	} else if count > 0 {
 		slog.Warn("photos pending variant generation — will process on next scan",
@@ -92,7 +89,7 @@ func run() error {
 
 	// ── Device guard (load banned devices) ────────────────────────────────────
 	guard := api.NewDeviceGuard()
-	if err := guard.LoadBanned(ctx, db_pool); err != nil {
+	if err := guard.LoadBanned(ctx, db); err != nil {
 		return fmt.Errorf("load banned devices: %w", err)
 	}
 
@@ -105,7 +102,7 @@ func run() error {
 	defer processingWorkers.CloseAll()
 
 	// ── Job dispatcher ────────────────────────────────────────────────────────
-	dispatcher := jobs.NewDispatcher(db_pool, mainPool, processingPool)
+	dispatcher := jobs.NewDispatcher(db, mainPool, processingPool)
 	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath), false)
 	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps), true)
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
@@ -136,11 +133,11 @@ func run() error {
 	}()
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────
-	scheduler := jobs.NewScheduler(db_pool)
+	scheduler := jobs.NewScheduler(db)
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(db_pool, mainPool, guard, dispatcher, cfg, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
+	router := api.NewRouter(db, mainPool, guard, dispatcher, cfg, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

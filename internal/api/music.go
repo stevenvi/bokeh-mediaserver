@@ -10,15 +10,13 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type musicHandler struct {
-	albums         *repository.AlbumRepository
-	artists        *repository.ArtistRepository
-	audioMetadata  *repository.AudioMetadataRepository
-	media          *repository.MediaItemRepository
-	dataPath       string
-	mediaPath      string
+	db        utils.DBTX
+	dataPath  string
+	mediaPath string
 }
 
 // GET /api/v1/collections/{collectionId}/artists
@@ -32,7 +30,7 @@ func (h *musicHandler) listArtists(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * pageSize
 	search := r.URL.Query().Get("search")
 
-	artists, total, err := h.artists.ListByCollection(r.Context(), collectionID, pageSize, offset, search)
+	artists, total, err := repository.ArtistsInCollection(r.Context(), h.db, collectionID, pageSize, offset, search)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list artists")
 		return
@@ -58,13 +56,13 @@ func (h *musicHandler) listArtistAlbums(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	artist, err := h.artists.GetByID(r.Context(), artistID)
+	artist, err := repository.ArtistGet(r.Context(), h.db, artistID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "artist not found")
 		return
 	}
 
-	albums, err := h.artists.ListAlbumsByArtist(r.Context(), artistID, collectionID)
+	albums, err := repository.ArtistGetAlbums(r.Context(), h.db, artistID, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list albums")
 		return
@@ -84,13 +82,13 @@ func (h *musicHandler) listAlbumTracks(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := userIDFromRequest(r)
 
-	album, err := h.albums.GetByID(r.Context(), albumID)
+	album, err := repository.AlbumGet(r.Context(), h.db, albumID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "album not found")
 		return
 	}
 
-	tracks, err := h.audioMetadata.ListTracksByAlbum(r.Context(), albumID, userID)
+	tracks, err := repository.AudioTracksByAlbum(r.Context(), h.db, albumID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list tracks")
 		return
@@ -126,7 +124,7 @@ func (h *musicHandler) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := userIDFromRequest(r)
 
-	relativePath, mimeType, err := h.media.GetAudioStreamInfo(r.Context(), id, userID)
+	relativePath, mimeType, err := repository.MediaItemGetAudioStreamInfo(r.Context(), h.db, id, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "track not found")
 		return
@@ -216,7 +214,7 @@ func (h *musicHandler) uploadArtistImage(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Verify artist exists
-	_, err := h.artists.GetByID(r.Context(), id)
+	_, err := repository.ArtistGet(r.Context(), h.db, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "artist not found")
 		return
@@ -253,7 +251,7 @@ func (h *musicHandler) uploadArtistImage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := h.artists.SetManualImage(r.Context(), id, true); err != nil {
+	if err := repository.ArtistSetManualImage(r.Context(), h.db, id, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update artist")
 		return
 	}
@@ -274,7 +272,7 @@ func (h *musicHandler) deleteArtistImage(w http.ResponseWriter, r *http.Request)
 		_ = os.Remove(path)
 	}
 
-	if err := h.artists.SetManualImage(r.Context(), id, false); err != nil {
+	if err := repository.ArtistSetManualImage(r.Context(), h.db, id, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update artist")
 		return
 	}

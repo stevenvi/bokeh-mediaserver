@@ -23,20 +23,13 @@ import (
 )
 
 type adminHandler struct {
-	db             *pgxpool.Pool // kept for Begin() in setCollectionAccess
-	collections    *repository.CollectionRepository
-	devices        *repository.DeviceRepository
-	jobs           *repository.JobRepository
-	media          *repository.MediaItemRepository
-	photoMetadata  *repository.PhotoMetadataRepository
-	users          *repository.UserRepository
-
-	guard          *DeviceGuard
-	pool           *jobs.Pool
-	authPlugins    map[string]auth.Plugin
-	authHandler    *authHandler
-	mediaPath      string
-	dataPath       string
+	db          *pgxpool.Pool
+	guard       *DeviceGuard
+	pool        *jobs.Pool
+	authPlugins map[string]auth.Plugin
+	authHandler *authHandler
+	mediaPath   string
+	dataPath    string
 }
 
 // POST /api/v1/admin/collections
@@ -68,7 +61,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	id, err := h.collections.Create(r.Context(), body.Name, body.Type, body.RelativePath)
+	id, err := repository.CollectionCreate(r.Context(), h.db, body.Name, body.Type, body.RelativePath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create collection: "+err.Error())
 		return
@@ -76,7 +69,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 	// Auto-queue a scan for the newly created collection
 	relatedType := "collection"
-	jobID, err := h.jobs.Create(r.Context(), "library_scan", &id, &relatedType)
+	jobID, err := repository.JobCreate(r.Context(), h.db, "library_scan", &id, &relatedType)
 	if err != nil {
 		slog.Warn("auto-queue scan for new collection", "collection_id", id, "err", err)
 	} else {
@@ -94,7 +87,7 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Only top-level collections can be deleted via this endpoint.
-	col, err := h.collections.GetByID(r.Context(), collectionID)
+	col, err := repository.CollectionGet(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -105,13 +98,13 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Gather descendant IDs before deletion so we can clean up their covers.
-	descendantIDs, err := h.collections.ListDescendantIDs(r.Context(), collectionID)
+	descendantIDs, err := repository.CollectionGetDescendantCollectionIDs(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
-	affected, err := h.collections.Delete(r.Context(), collectionID)
+	affected, err := repository.CollectionDelete(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -131,7 +124,7 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 
 // GET /api/v1/admin/collections
 func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
-	collections, err := h.collections.ListTopLevel(r.Context())
+	collections, err := repository.CollectionsTopLevel(r.Context(), h.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -146,7 +139,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isEnabled, err := h.collections.GetEnabled(r.Context(), collectionID)
+	isEnabled, err := repository.CollectionIsEnabled(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -157,7 +150,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Prevent duplicate scans
-	active, err := h.jobs.IsActive(r.Context(), "library_scan", collectionID)
+	active, err := repository.JobIsActive(r.Context(), h.db, "library_scan", collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "job check failed")
 		return
@@ -174,7 +167,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("force") == "true" {
 		relatedType = "collection:force"
 	}
-	jobID, err := h.jobs.Create(r.Context(), "library_scan", &collectionID, &relatedType)
+	jobID, err := repository.JobCreate(r.Context(), h.db, "library_scan", &collectionID, &relatedType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
@@ -193,7 +186,7 @@ func (h *adminHandler) deleteDerivatives(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	hashes, err := h.media.ListHashesByCollection(r.Context(), collectionID)
+	hashes, err := repository.MediaItemHashesByCollection(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list items")
 		return
@@ -210,7 +203,7 @@ func (h *adminHandler) deleteDerivatives(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Clear variants_generated_at so the integrity check knows to re-queue
-	if err := h.photoMetadata.ClearVariantsGenerated(r.Context(), collectionID); err != nil {
+	if err := repository.PhotoClearVariantsGenerated(r.Context(), h.db, collectionID); err != nil {
 		slog.Warn("clear variants_generated_at", "collection_id", collectionID, "err", err)
 	}
 
@@ -225,7 +218,7 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := h.jobs.GetByID(r.Context(), jobID)
+	job, err := repository.JobGet(r.Context(), h.db, jobID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -236,7 +229,7 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 
 // triggerSimpleJob creates a job with no related entity and returns 202 with the job ID.
 func (h *adminHandler) triggerSimpleJob(w http.ResponseWriter, r *http.Request, jobType string) {
-	jobID, err := h.jobs.Create(r.Context(), jobType, nil, nil)
+	jobID, err := repository.JobCreate(r.Context(), h.db, jobType, nil, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
@@ -305,7 +298,7 @@ func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.collections.SetManualCover(r.Context(), collectionID, true); err != nil {
+	if err := repository.CollectionSetManualCover(r.Context(), h.db, collectionID, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update collection")
 		return
 	}
@@ -315,7 +308,7 @@ func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Requ
 
 // GET /api/v1/admin/users
 func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.users.ListAll(r.Context())
+	users, err := repository.UsersGet(r.Context(), h.db)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -336,7 +329,7 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name            string          `json:"name"`
 		IsAdmin         bool            `json:"is_admin"`
-		LocalAccessOnly bool			`json:"local_access_only"`
+		LocalAccessOnly bool            `json:"local_access_only"`
 		AuthProvider    string          `json:"auth_provider"`
 		Credentials     json.RawMessage `json:"credentials"`
 	}
@@ -363,11 +356,11 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.users.SetAdmin(r.Context(), userID, body.IsAdmin); err != nil {
+	if err := repository.UserSetAdmin(r.Context(), h.db, userID, body.IsAdmin); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	if err := h.users.SetLocalAccessOnly(r.Context(), userID, body.LocalAccessOnly); err != nil {
+	if err := repository.UserSetLocalOnly(r.Context(), h.db, userID, body.LocalAccessOnly); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -389,7 +382,7 @@ func (h *adminHandler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	affected, err := h.users.Delete(r.Context(), targetID)
+	affected, err := repository.UserDelete(r.Context(), h.db, targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -409,7 +402,7 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	providerName, err := h.users.GetAuthProvider(r.Context(), targetID)
+	providerName, err := repository.UserAuthProvider(r.Context(), h.db, targetID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -456,7 +449,7 @@ func (h *adminHandler) revokeUserDevice(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	affected, err := h.devices.Delete(r.Context(), deviceID, targetID)
+	affected, err := repository.DeviceDelete(r.Context(), h.db, deviceID, targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -477,7 +470,7 @@ func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ids, err := h.devices.DeleteAllForUser(r.Context(), targetID)
+	ids, err := repository.DevicesDeleteForUser(r.Context(), h.db, targetID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -494,7 +487,7 @@ func (h *adminHandler) listCollectionUsers(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ids, err := h.collections.ListUsersWithAccess(r.Context(), collectionID)
+	ids, err := repository.CollectionGetUsersWithAccess(r.Context(), h.db, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -518,7 +511,7 @@ func (h *adminHandler) grantUsersCollectionAccess(w http.ResponseWriter, r *http
 		return
 	}
 
-	if err := h.collections.GrantAccessToUsers(r.Context(), collectionID, body.UserIDs); err != nil {
+	if err := repository.CollectionGrantAccessToUsers(r.Context(), h.db, collectionID, body.UserIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -533,7 +526,7 @@ func (h *adminHandler) getCollectionAccess(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ids, err := h.collections.ListAccessForUser(r.Context(), userID)
+	ids, err := repository.CollectionsAccessibleByUser(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -557,12 +550,7 @@ func (h *adminHandler) grantCollectionAccess(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if msg, status := h.collections.ValidateTopLevel(r.Context(), body.CollectionIDs); msg != "" {
-		writeError(w, status, msg)
-		return
-	}
-
-	if err := h.collections.GrantAccess(r.Context(), userID, body.CollectionIDs); err != nil {
+	if err := repository.CollectionGrantAccessToUser(r.Context(), h.db, userID, body.CollectionIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -584,13 +572,6 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if len(body.CollectionIDs) > 0 {
-		if msg, status := h.collections.ValidateTopLevel(r.Context(), body.CollectionIDs); msg != "" {
-			writeError(w, status, msg)
-			return
-		}
-	}
-
 	// Transaction: atomically replace all access for this user
 	tx, err := h.db.Begin(r.Context())
 	if err != nil {
@@ -599,15 +580,13 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 	}
 	defer tx.Rollback(r.Context())
 
-	txCollections := repository.NewCollectionRepository(tx)
-
-	if err := txCollections.DeleteAllAccess(r.Context(), userID); err != nil {
+	if err := repository.UserDeleteAllCollectionAccess(r.Context(), tx, userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
 	if len(body.CollectionIDs) > 0 {
-		if err := txCollections.GrantAccess(r.Context(), userID, body.CollectionIDs); err != nil {
+		if err := repository.CollectionGrantAccessToUser(r.Context(), tx, userID, body.CollectionIDs); err != nil {
 			writeError(w, http.StatusInternalServerError, "db error")
 			return
 		}
@@ -632,7 +611,7 @@ func (h *adminHandler) revokeCollectionAccess(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := h.collections.RevokeAccess(r.Context(), userID, collectionID); err != nil {
+	if err := repository.UserDeleteCollectionAccess(r.Context(), h.db, userID, collectionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -646,7 +625,7 @@ func (h *adminHandler) hideMediaItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.media.SetHidden(r.Context(), itemID, true); err != nil {
+	if err := repository.MediaItemSetHidden(r.Context(), h.db, itemID, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -705,7 +684,7 @@ func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
 			for _, entry2 := range entries2 {
 				if entry2.Type().IsRegular() {
 					mimeType, ok := utils.SupportedExtensions[filepath.Ext(entry2.Name())]
-					if (ok) {
+					if ok {
 						switch {
 						case strings.HasPrefix(mimeType, "image"):
 							type_guess = "image:photo"
@@ -732,7 +711,7 @@ func (h *adminHandler) unhideMediaItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.media.SetHidden(r.Context(), itemID, false); err != nil {
+	if err := repository.MediaItemSetHidden(r.Context(), h.db, itemID, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -766,7 +745,7 @@ func (h *adminHandler) jobEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			job, err := h.jobs.GetByID(r.Context(), jobID)
+			job, err := repository.JobGet(r.Context(), h.db, jobID)
 			if err != nil {
 				return
 			}

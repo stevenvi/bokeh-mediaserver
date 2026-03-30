@@ -18,8 +18,6 @@ import (
 
 type authHandler struct {
 	db         utils.DBTX
-	users      *repository.UserRepository
-	devices    *repository.DeviceRepository
 	guard      *DeviceGuard
 	rl         *loginRateLimiter
 	plugins    map[string]auth.Plugin
@@ -27,8 +25,8 @@ type authHandler struct {
 	production bool
 }
 
-func newAuthHandler(db utils.DBTX, users *repository.UserRepository, devices *repository.DeviceRepository, guard *DeviceGuard, rl *loginRateLimiter, secret string, plugins map[string]auth.Plugin, production bool) *authHandler {
-	return &authHandler{db: db, users: users, devices: devices, guard: guard, rl: rl, secret: secret, plugins: plugins, production: production}
+func newAuthHandler(db utils.DBTX, guard *DeviceGuard, rl *loginRateLimiter, secret string, plugins map[string]auth.Plugin, production bool) *authHandler {
+	return &authHandler{db: db, guard: guard, rl: rl, secret: secret, plugins: plugins, production: production}
 }
 
 // clientIP returns the request's remote IP, stripping the port if present.
@@ -136,7 +134,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// TODO: Stop all the one-property query madness here!!
-	localAccessOnly, err := h.users.GetLocalAccessOnly(r.Context(), userID)
+	localAccessOnly, err := repository.UserIsLocalOnly(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "user lookup failed")
 		return
@@ -146,14 +144,14 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isAdmin, err := h.users.GetAdminStatus(r.Context(), userID)
+	isAdmin, err := repository.UserIsAdmin(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user lookup failed")
 		return
 	}
 
 	// Look up existing device for this (userID, device_uuid).
-	existing, err := h.devices.FindByUserAndUUID(r.Context(), userID, body.DeviceUUID)
+	existing, err := repository.DeviceFindByUserAndUUID(r.Context(), h.db, userID, body.DeviceUUID)
 	if err != nil && err != repository.ErrNotFound {
 		writeError(w, http.StatusInternalServerError, "device lookup failed")
 		return
@@ -180,13 +178,13 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	var deviceID int64
 	if existing == nil {
 		// New device — check count and possibly evict LRU.
-		count, err := h.devices.CountActiveForUser(r.Context(), userID)
+		count, err := repository.DevicesCountActiveForUser(r.Context(), h.db, userID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "device count failed")
 			return
 		}
-		if count >= repository.MaxDevicesPerUser {
-			evictedID, err := h.devices.EvictLRU(r.Context(), userID)
+		if count >= repository.DevicesMaxPerUser {
+			evictedID, err := repository.DeviceEvictLRU(r.Context(), h.db, userID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "device eviction failed")
 				return
@@ -195,20 +193,20 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 				h.guard.Revoke(evictedID, auth.AccessTokenTTL)
 			}
 		}
-		deviceID, err = h.devices.Create(r.Context(), userID, body.DeviceUUID, body.DeviceName, hashRefresh, expiresAt, entry)
+		deviceID, err = repository.DeviceCreate(r.Context(), h.db, userID, body.DeviceUUID, body.DeviceName, hashRefresh, expiresAt, entry)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "device creation failed")
 			return
 		}
 	} else {
 		deviceID = existing.ID
-		if err := h.devices.UpdateSession(r.Context(), deviceID, hashRefresh, "", expiresAt, entry, body.DeviceName); err != nil {
+		if err := repository.DeviceUpdateSession(r.Context(), h.db, deviceID, hashRefresh, "", expiresAt, entry, body.DeviceName); err != nil {
 			writeError(w, http.StatusInternalServerError, "session update failed")
 			return
 		}
 	}
 
-	h.users.TouchLastSeen(r.Context(), userID)
+	repository.UserTouchLastSeen(r.Context(), h.db, userID)
 
 	accessToken, err := auth.IssueToken(userID, deviceID, isAdmin, h.secret)
 	if err != nil {
@@ -265,14 +263,14 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 
 	// Check for replayed (already-rotated) token — indicates theft.
-	stolenUserID, _, found, err := h.devices.FindByPreviousRefreshTokenHash(r.Context(), hash)
+	stolenUserID, _, found, err := repository.DeviceFindByPreviousRefreshTokenHash(r.Context(), h.db, hash)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 	if found {
 		// TODO: Deleted data provides no audit log!
-		ids, _ := h.devices.DeleteAllForUser(r.Context(), stolenUserID)
+		ids, _ := repository.DevicesDeleteForUser(r.Context(), h.db, stolenUserID)
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 		slog.Warn("refresh token reuse detected — all devices revoked",
 			"user_id", stolenUserID, "ip", ip)
@@ -282,7 +280,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Normal path: find the active device.
-	device, err := h.devices.FindByRefreshTokenHash(r.Context(), hash)
+	device, err := repository.DeviceFindByRefreshTokenHash(r.Context(), h.db, hash)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token")
 		return
@@ -292,7 +290,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	// This is a little heavy-handed, maybe we should just revoke the offending device instead of all devices?
 	// TODO: Deleted data provides no audit log!
 	if device.DeviceUUID != deviceUUID {
-		ids, _ := h.devices.DeleteAllForUser(r.Context(), device.UserID)
+		ids, _ := repository.DevicesDeleteForUser(r.Context(), h.db, device.UserID)
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 		slog.Warn("refresh device_uuid mismatch — all devices revoked",
 			"user_id", device.UserID, "ip", ip)
@@ -306,7 +304,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localAccessOnly, err := h.users.GetLocalAccessOnly(r.Context(), device.UserID)
+	localAccessOnly, err := repository.UserIsLocalOnly(r.Context(), h.db, device.UserID)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "user lookup failed")
 		return
@@ -317,7 +315,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isAdmin, err := h.users.GetAdminStatus(r.Context(), device.UserID)
+	isAdmin, err := repository.UserIsAdmin(r.Context(), h.db, device.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "user lookup failed")
 		return
@@ -334,12 +332,12 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		Agent:    r.Header.Get("User-Agent"),
 		LastSeen: time.Now(),
 	}
-	if err := h.devices.UpdateSession(r.Context(), device.ID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), entry, ""); err != nil {
+	if err := repository.DeviceUpdateSession(r.Context(), h.db, device.ID, hashRefresh, hash, time.Now().Add(auth.RefreshTokenTTL), entry, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "token rotation failed")
 		return
 	}
 
-	h.users.TouchLastSeen(r.Context(), device.UserID)
+	repository.UserTouchLastSeen(r.Context(), h.db, device.UserID)
 
 	accessToken, err := auth.IssueToken(device.UserID, device.ID, isAdmin, h.secret)
 	if err != nil {
@@ -364,7 +362,7 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
 	// Delete the device row so its refresh token becomes invalid immediately.
-	_, _ = h.devices.Delete(r.Context(), claims.DeviceID, userID)
+	_, _ = repository.DeviceDelete(r.Context(), h.db, claims.DeviceID, userID)
 	// Revoke the access token for its remaining TTL via the in-memory guard.
 	h.guard.Revoke(claims.DeviceID, auth.AccessTokenTTL)
 
@@ -395,7 +393,7 @@ func (h *authHandler) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	affected, err := h.devices.Delete(r.Context(), deviceID, userID)
+	affected, err := repository.DeviceDelete(r.Context(), h.db, deviceID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -424,7 +422,7 @@ func (h *authHandler) banDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.devices.Ban(r.Context(), deviceID, userID); err != nil {
+	if err := repository.DeviceBan(r.Context(), h.db, deviceID, userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -443,7 +441,7 @@ func (h *authHandler) unbanDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.devices.Unban(r.Context(), deviceID, userID); err != nil {
+	if err := repository.DeviceUnban(r.Context(), h.db, deviceID, userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
@@ -457,7 +455,7 @@ func (h *authHandler) changeCredentials(w http.ResponseWriter, r *http.Request) 
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	providerName, err := h.users.GetAuthProvider(r.Context(), userID)
+	providerName, err := repository.UserAuthProvider(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -489,7 +487,7 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 	claims := ClaimsFromContext(r.Context())
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
-	user, err := h.users.FindByID(r.Context(), userID)
+	user, err := repository.UserGet(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -505,7 +503,7 @@ func (h *authHandler) me(w http.ResponseWriter, r *http.Request) {
 
 // writeDeviceList is shared between the user and admin device-listing handlers.
 func (h *authHandler) writeDeviceList(w http.ResponseWriter, r *http.Request, userID int64) {
-	devices, err := h.devices.ListForUser(r.Context(), userID)
+	devices, err := repository.DevicesGetForUser(r.Context(), h.db, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

@@ -29,8 +29,7 @@ func NewDeviceGuard() *DeviceGuard {
 
 // LoadBanned populates the banned set from the database at startup.
 func (this *DeviceGuard) LoadBanned(ctx context.Context, db utils.DBTX) error {
-	repo := repository.NewDeviceRepository(db)
-	ids, err := repo.LoadBannedIDs(ctx)
+	ids, err := repository.DeviceGetBannedIDs(ctx, db)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 // Pool is a worker pool with an unbounded submit queue.
@@ -112,13 +113,13 @@ func (p *Pool) Workers() int {
 }
 
 // PollStatus polls a job until it reaches a terminal state (done or failed).
-func PollStatus(ctx context.Context, jobs *repository.JobRepository, jobID int64, interval time.Duration) (*models.Job, error) {
+func PollStatus(ctx context.Context, db utils.DBTX, jobID int64, interval time.Duration) (*models.Job, error) {
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(interval):
-			job, err := jobs.GetByID(ctx, jobID)
+			job, err := repository.JobGet(ctx, db, jobID)
 			if err != nil {
 				return nil, err
 			}

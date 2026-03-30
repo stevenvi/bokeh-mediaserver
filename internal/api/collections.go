@@ -11,17 +11,17 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type collectionsHandler struct {
-	collections *repository.CollectionRepository
-	media       *repository.MediaItemRepository
+	db utils.DBTX
 }
 
 // GET /api/v1/collections — top-level enabled collections the user has access to.
 // Users see only those in collection_access.
 func (h *collectionsHandler) list(w http.ResponseWriter, r *http.Request) {
-	collections, err := h.collections.ListAccessibleByUser(r.Context(), userIDFromRequest(r))
+	collections, err := repository.CollectionsListAccessibleByUser(r.Context(), h.db, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -37,7 +37,7 @@ func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := h.collections.GetByIDForUser(r.Context(), id, userIDFromRequest(r))
+	c, err := repository.CollectionGetForUser(r.Context(), h.db, id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -49,7 +49,7 @@ func (h *collectionsHandler) get(w http.ResponseWriter, r *http.Request) {
 // requireAccess checks that the collection exists, is enabled, and the requesting user
 // has access. Returns false (and writes the error response) if any check fails.
 func (h *collectionsHandler) requireAccess(w http.ResponseWriter, r *http.Request, collectionID int64) bool {
-	ok, err := h.collections.ExistsEnabledWithAccess(r.Context(), collectionID, userIDFromRequest(r))
+	ok, err := repository.CollectionExistsAndAccessible(r.Context(), h.db, collectionID, userIDFromRequest(r))
 	if err != nil || !ok {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return false
@@ -68,7 +68,7 @@ func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	collections, err := h.collections.ListChildren(r.Context(), id)
+	collections, err := repository.CollectionGetChildCollections(r.Context(), h.db, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
@@ -87,7 +87,7 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 
 	// Fetch collection metadata (also enforces access)
-	col, err := h.collections.GetByIDForUser(r.Context(), id, userID)
+	col, err := repository.CollectionGetForUser(r.Context(), h.db, id, userID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
@@ -104,10 +104,10 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 
 	if col.Type == "video:movie" || col.Type == "video:home_movie" {
 		// Video collections use a dedicated query with JOIN to video_metadata and video_bookmarks.
-		items, err = h.media.ListVideoItemsByCollection(r.Context(), id, userID, col.Type, pageSize+1, offset)
+		items, err = repository.MediaItemVideosByCollection(r.Context(), h.db, id, userID, col.Type, pageSize+1, offset)
 	} else {
 		// Fetch one extra row to determine whether there's a next page.
-		items, err = h.media.ListByCollectionPaginated(r.Context(), id, userID, pageSize+1, offset)
+		items, err = repository.MediaItemsByCollectionPaginated(r.Context(), h.db, id, userID, pageSize+1, offset)
 	}
 
 	if err != nil {
@@ -192,9 +192,15 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 	rawStartDate := r.URL.Query().Get("start_date")
 	// These three are mutually exclusive. This logic is goofy but works well enough.
 	exclusiveCount := 0
-	if rawCursor != "" { exclusiveCount++ }
-	if rawStart != "" { exclusiveCount++ }
-	if rawStartDate != "" { exclusiveCount++ }
+	if rawCursor != "" {
+		exclusiveCount++
+	}
+	if rawStart != "" {
+		exclusiveCount++
+	}
+	if rawStartDate != "" {
+		exclusiveCount++
+	}
 	if exclusiveCount > 1 {
 		writeError(w, http.StatusBadRequest, "cursor, start, and start_date are mutually exclusive")
 		return
@@ -218,7 +224,7 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid start")
 			return
 		}
-		pos, err := h.collections.GetSlideshowItemPosition(r.Context(), startID)
+		pos, err := repository.SlideshowItemPosition(r.Context(), h.db, startID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "db error")
 			return
@@ -229,7 +235,7 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 		}
 		// Validate the start item belongs to this collection (or a descendant if recursive)
 		if recursive {
-			isDesc, err := h.collections.IsDescendantCollection(r.Context(), id, pos.CollectionID)
+			isDesc, err := repository.CollectionIsDescendantOf(r.Context(), h.db, id, pos.CollectionID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "db error")
 				return
@@ -268,7 +274,7 @@ func (h *collectionsHandler) slideshow(w http.ResponseWriter, r *http.Request) {
 		queryAscending = !ascending
 	}
 
-	rows, err := h.collections.GetSlideshowItems(r.Context(), repository.SlideshowQuery{
+	rows, err := repository.SlideshowItems(r.Context(), h.db, repository.SlideshowQuery{
 		CollectionID:  id,
 		PageSize:      pageSize,
 		Ascending:     queryAscending,
@@ -351,7 +357,7 @@ func (h *collectionsHandler) slideshowMetadata(w http.ResponseWriter, r *http.Re
 	recursiveParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("recursive")))
 	recursive := recursiveParam != "false"
 
-	counts, err := h.collections.GetSlideshowMetadata(r.Context(), id, recursive)
+	counts, err := repository.SlideshowMetadata(r.Context(), h.db, id, recursive)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")
 		return

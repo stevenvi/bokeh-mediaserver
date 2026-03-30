@@ -29,18 +29,15 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		}
 		itemID := *job.RelatedID
 
-		mediaRepo := repository.NewMediaItemRepository(db)
-		jobRepo := repository.NewJobRepository(db)
-
 		// Fetch the media item
-		relativePath, mimeType, fileHash, err := mediaRepo.GetForProcessing(ctx, itemID)
+		relativePath, mimeType, fileHash, err := repository.MediaItemForProcessing(ctx, db, itemID)
 		if err != nil {
 			return fmt.Errorf("fetch media item %d: %w", itemID, err)
 		}
 
 		fsPath := filepath.Join(mediaPath, relativePath)
 
-		_ = jobRepo.UpdateProgress(ctx, job.ID, fmt.Sprintf("processing %s", fsPath))
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, fmt.Sprintf("processing %s", fsPath))
 
 		// Route to the appropriate processor based on media type.
 		if strings.HasPrefix(mimeType, "audio/") {
@@ -50,18 +47,14 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		} else if strings.HasPrefix(mimeType, "video/") {
 			return processVideoFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath, transcodeBitrateKbps)
 		} else {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "skipping unsupported media type")
-			_ = jobRepo.Delete(ctx, job.ID)
+			slog.Info("skipping unsupported media type", "mimeType", mimeType)
+			_ = repository.JobDelete(ctx, db, job.ID)
 			return nil
 		}
 	}
 }
 
 func processImageFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, mediaPath, dataPath string) error {
-	jobRepo := repository.NewJobRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
-	photoMetadata := repository.NewPhotoMetadataRepository(db)
-
 	// Extract EXIF
 	et, err := worker.exiftool()
 	if err != nil {
@@ -76,7 +69,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 
 	// Update title from exiftool composite Title if available; fall back to filename already set at scan time.
 	if title := utils.ExifStr(exifData, "Title"); title != nil && *title != "" {
-		if err := mediaRepo.UpdateTitle(ctx, itemID, *title); err != nil {
+		if err := repository.MediaItemUpdateTitle(ctx, db, itemID, *title); err != nil {
 			slog.Warn("update title from exif", "item_id", itemID, "err", err)
 		}
 	}
@@ -112,7 +105,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 		widthPx, heightPx = heightPx, widthPx
 	}
 
-	err = photoMetadata.UpsertPhotoMetadata(ctx, itemID,
+	err = repository.PhotoUpsert(ctx, db, itemID,
 		widthPx, heightPx,
 		createdAt(fsPath, exifData),
 		utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
@@ -136,13 +129,13 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	dziExists := imaging.DZIExists(dataPath, fileHash)
 
 	if !variantsExist {
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating variants")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "generating variants")
 		if err := imaging.GenerateAllVariants(fsPath, dataPath, fileHash); err != nil {
 			return fmt.Errorf("generate variants: %w", err)
 		}
 	}
 	if !dziExists {
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "generating DZI tiles")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "generating DZI tiles")
 		if err := imaging.GenerateDZI(fsPath, dataPath, fileHash); err != nil {
 			return fmt.Errorf("generate DZI: %w", err)
 		}
@@ -161,7 +154,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	} else {
 		placeholder = &p
 	}
-	if err := photoMetadata.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
+	if err := repository.PhotoUpdateVariants(ctx, db, itemID, placeholder); err != nil {
 		return fmt.Errorf("update variants_generated_at: %w", err)
 	}
 
@@ -169,7 +162,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// have one yet. This ensures new collections get a cover as soon as
 	// their first item is processed rather than waiting for the weekly cycle.
 	// TODO: Making this extra call to the db is inefficient, we can know the collection id at this stage
-	if collID, err := mediaRepo.GetCollectionID(ctx, itemID); err == nil {
+	if collID, err := repository.MediaItemCollectionID(ctx, db, itemID); err == nil {
 		if !imaging.CollectionCoverExists(dataPath, collID) {
 			if err := maintenance.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
 				slog.Warn("auto-generate collection cover", "collection_id", collID, "err", err)
@@ -178,20 +171,14 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	slog.Debug("finished processing media item", "item_id", itemID)
-	_ = jobRepo.Delete(ctx, job.ID)
+	_ = repository.JobDelete(ctx, db, job.ID)
 	return nil
 }
 
 // processAudioFile handles audio media: extracts tags via exiftool, upserts artist,
 // album, and audio_metadata, and extracts album art.
 func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, mediaPath, dataPath string) error {
-	albumRepo := repository.NewAlbumRepository(db)
-	artistRepo := repository.NewArtistRepository(db)
-	audioMetaRepo := repository.NewAudioMetadataRepository(db)
-	jobRepo := repository.NewJobRepository(db)
-	mediaRepo := repository.NewMediaItemRepository(db)
-
-	_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting audio tags")
+	_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting audio tags")
 
 	et, err := worker.exiftool()
 	if err != nil {
@@ -239,7 +226,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Update media item title from tag
-	if err := mediaRepo.UpdateTitle(ctx, itemID, effectiveTitle); err != nil {
+	if err := repository.MediaItemUpdateTitle(ctx, db, itemID, effectiveTitle); err != nil {
 		slog.Warn("update title from audio tag", "item_id", itemID, "err", err)
 	}
 
@@ -273,7 +260,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Upsert track artist (always non-empty due to fallback)
-	artistID, err := artistRepo.Upsert(ctx, effectiveArtist)
+	artistID, err := repository.ArtistUpsert(ctx, db, effectiveArtist)
 	if err != nil {
 		slog.Warn("upsert artist", "name", effectiveArtist, "err", err)
 	}
@@ -284,7 +271,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 		if effectiveAlbumArtist == effectiveArtist {
 			albumArtistID = &artistID
 		} else {
-			id, err := artistRepo.Upsert(ctx, effectiveAlbumArtist)
+			id, err := repository.ArtistUpsert(ctx, db, effectiveAlbumArtist)
 			if err != nil {
 				slog.Warn("upsert album artist", "name", effectiveAlbumArtist, "err", err)
 			} else {
@@ -294,7 +281,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Resolve root collection for album scoping
-	rootCollectionID, err := mediaRepo.GetRootCollectionID(ctx, itemID)
+	rootCollectionID, err := repository.MediaItemRootCollectionID(ctx, db, itemID)
 	if err != nil {
 		slog.Warn("could not resolve root collection", "item_id", itemID, "err", err)
 	}
@@ -308,7 +295,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	if rootCollectionID != 0 {
 		effectiveAlbumArtistID := albumArtistID
 		if isCompilation {
-			variousID, err := artistRepo.Upsert(ctx, "Various Artists")
+			variousID, err := repository.ArtistUpsert(ctx, db, "Various Artists")
 			if err != nil {
 				slog.Warn("upsert Various Artists", "err", err)
 			} else {
@@ -317,7 +304,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 		} else if effectiveAlbumArtistID == nil {
 			effectiveAlbumArtistID = &artistID
 		}
-		id, err := albumRepo.UpsertAudioAlbum(ctx, effectiveAlbum, effectiveAlbumArtistID, year, genre, rootCollectionID, isCompilation)
+		id, err := repository.AlbumUpsert(ctx, db, effectiveAlbum, effectiveAlbumArtistID, year, genre, rootCollectionID, isCompilation)
 		if err != nil {
 			slog.Warn("upsert album", "name", effectiveAlbum, "err", err)
 		} else {
@@ -332,7 +319,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Upsert audio metadata
-	if err := audioMetaRepo.UpsertAudioMetadata(ctx, itemID,
+	if err := repository.AudioTrackUpsert(ctx, db, itemID,
 		artistIDPtr, albumArtistID, albumID,
 		title, trackNumber, discNumber,
 		durationSeconds, genre, year,
@@ -345,7 +332,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// Extract album art if not already present
 	if hasPicture && albumID != nil {
 		if !imaging.AlbumCoverExists(dataPath, *albumID) {
-			_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting album art")
+			_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting album art")
 			if err := extractAlbumArtForAlbum(fsPath, dataPath, *albumID); err != nil {
 				slog.Warn("extract album art", "path", fsPath, "err", err)
 			}
@@ -353,7 +340,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	slog.Debug("finished processing audio file", "item_id", itemID)
-	_ = jobRepo.Delete(ctx, job.ID)
+	_ = repository.JobDelete(ctx, db, job.ID)
 	return nil
 }
 
@@ -373,4 +360,3 @@ func extractAlbumArtForAlbum(fsPath, dataPath string, albumID int64) error {
 
 	return imaging.GenerateAlbumCoverFromBytes(imageBytes, dataPath, albumID)
 }
-

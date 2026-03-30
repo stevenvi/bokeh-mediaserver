@@ -8,16 +8,8 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-type AudioMetadataRepository struct {
-	db utils.DBTX
-}
-
-func NewAudioMetadataRepository(db utils.DBTX) *AudioMetadataRepository {
-	return &AudioMetadataRepository{db: db}
-}
-
-// UpsertAudioMetadata inserts or updates audio metadata for a media item.
-func (r *AudioMetadataRepository) UpsertAudioMetadata(ctx context.Context, itemID int64,
+// AudioTrackUpsert inserts or updates audio metadata for a media item.
+func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	artistID, albumArtistID, albumID *int64,
 	title *string,
 	trackNumber, discNumber *int16,
@@ -27,7 +19,7 @@ func (r *AudioMetadataRepository) UpsertAudioMetadata(ctx context.Context, itemI
 	replayGainDB *float64,
 	hasEmbeddedArt bool,
 ) error {
-	_, err := r.db.Exec(ctx,
+	_, err := db.Exec(ctx,
 		`INSERT INTO audio_metadata
 		     (media_item_id, artist_id, album_artist_id, album_id, title,
 		      track_number, disc_number, duration_seconds,
@@ -53,10 +45,10 @@ func (r *AudioMetadataRepository) UpsertAudioMetadata(ctx context.Context, itemI
 	return err
 }
 
-// ListTracksByAlbum returns all tracks for an album ordered by disc and track number.
+// AudioTracksByAlbum returns all tracks for an album ordered by disc and track number.
 // Access is verified against the album's root_collection_id.
-func (r *AudioMetadataRepository) ListTracksByAlbum(ctx context.Context, albumID, userID int64) ([]models.TrackView, error) {
-	rows, err := r.db.Query(ctx,
+func AudioTracksByAlbum(ctx context.Context, db utils.DBTX, albumID, userID int64) ([]models.TrackView, error) {
+	rows, err := db.Query(ctx,
 		`SELECT m.id, m.title, am.track_number, am.disc_number,
 		        am.duration_seconds, a.name, m.mime_type
 		 FROM audio_metadata am

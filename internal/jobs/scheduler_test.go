@@ -13,57 +13,55 @@ import (
 
 func TestScheduler_TriggerScans(t *testing.T) {
 	t.Run("creates_scan_jobs_for_enabled_collections", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		jobRepo := repository.NewJobRepository(tx)
 
 		// Create two top-level enabled collections
-		c1 := testutil.InsertCollection(t, tx, "Photos", "image:photo", "photos")
-		c2 := testutil.InsertCollection(t, tx, "Movies", "video:movie", "movies")
+		c1 := testutil.InsertCollection(t, db, "Photos", "image:photo", "photos")
+		c2 := testutil.InsertCollection(t, db, "Movies", "video:movie", "movies")
 
 		// Create a disabled collection — should be skipped
-		testutil.MustExec(t, tx,
+		testutil.MustExec(t, db,
 			`INSERT INTO collections (name, type, relative_path, is_enabled) VALUES ('Disabled', 'image:photo', 'disabled', false)`)
 
 		// Create scheduler and trigger scans
-		s := jobs.NewScheduler(tx)
+		s := jobs.NewScheduler(db)
 		s.TriggerScans(ctx)
 
 		// Verify scan jobs were created for enabled collections
-		active1, err := jobRepo.IsActive(ctx, "library_scan", c1)
+		active1, err := repository.JobIsActive(ctx, db, "library_scan", c1)
 		require.NoError(t, err)
 		assert.True(t, active1, "should have created scan job for collection 1")
 
-		active2, err := jobRepo.IsActive(ctx, "library_scan", c2)
+		active2, err := repository.JobIsActive(ctx, db, "library_scan", c2)
 		require.NoError(t, err)
 		assert.True(t, active2, "should have created scan job for collection 2")
 	})
 
 	t.Run("skips_collections_with_active_scans", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		jobRepo := repository.NewJobRepository(tx)
 
-		c1 := testutil.InsertCollection(t, tx, "Photos", "image:photo", "photos")
+		c1 := testutil.InsertCollection(t, db, "Photos", "image:photo", "photos")
 
 		// Create an already-active scan
 		relatedType := "collection"
-		_, err := jobRepo.Create(ctx, "library_scan", &c1, &relatedType)
+		_, err := repository.JobCreate(ctx, db, "library_scan", &c1, &relatedType)
 		require.NoError(t, err)
 
 		// Count jobs before trigger
 		var countBefore int
-		err = tx.QueryRow(ctx,
+		err = db.QueryRow(ctx,
 			`SELECT COUNT(*) FROM jobs WHERE type = 'library_scan' AND related_id = $1`, c1,
 		).Scan(&countBefore)
 		require.NoError(t, err)
 
-		s := jobs.NewScheduler(tx)
+		s := jobs.NewScheduler(db)
 		s.TriggerScans(ctx)
 
 		// Count should not increase
 		var countAfter int
-		err = tx.QueryRow(ctx,
+		err = db.QueryRow(ctx,
 			`SELECT COUNT(*) FROM jobs WHERE type = 'library_scan' AND related_id = $1`, c1,
 		).Scan(&countAfter)
 		require.NoError(t, err)
@@ -109,19 +107,18 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 	})
 
 	t.Run("skips_if_already_active", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		jobRepo := repository.NewJobRepository(tx)
 
 		// Create an active integrity check
-		_, err := jobRepo.Create(ctx, "integrity_check", nil, nil)
+		_, err := repository.JobCreate(ctx, db, "integrity_check", nil, nil)
 		require.NoError(t, err)
 
-		s := jobs.NewScheduler(tx)
+		s := jobs.NewScheduler(db)
 		s.TriggerIntegrityCheck(ctx)
 
 		var count int
-		err = tx.QueryRow(ctx,
+		err = db.QueryRow(ctx,
 			`SELECT COUNT(*) FROM jobs WHERE type = 'integrity_check'`,
 		).Scan(&count)
 		require.NoError(t, err)

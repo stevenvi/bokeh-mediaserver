@@ -22,10 +22,7 @@ const orphanBatchSize = 256
 // The full hash is reconstructed by concatenating the three directory name components.
 func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-		jobRepo := repository.NewJobRepository(db)
-		mediaRepo := repository.NewMediaItemRepository(db)
-
-		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting orphan cleanup")
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting orphan cleanup")
 
 		var cleaned, checked int64
 
@@ -52,7 +49,7 @@ func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBT
 				hashes[i] = e.hash
 			}
 
-			existing, err := mediaRepo.FindHashesExisting(ctx, hashes)
+			existing, err := repository.MediaItemFindExistingHashes(ctx, db, hashes)
 			if err != nil {
 				return fmt.Errorf("batch hash lookup: %w", err)
 			}
@@ -122,7 +119,7 @@ func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBT
 		}
 
 		summary := fmt.Sprintf("orphan cleanup complete: %d checked, %d removed", checked, cleaned)
-		_ = jobRepo.UpdateProgress(ctx, job.ID, summary)
+		_ = repository.JobUpdateProgress(ctx, db, job.ID, summary)
 		slog.Info(summary)
 		return nil
 	}

@@ -24,10 +24,9 @@ type handlerEntry struct {
 // Dispatcher polls the database for queued jobs and routes them to the
 // appropriate worker pool based on their registered handler.
 type Dispatcher struct {
-	handlerDB utils.DBTX // passed to job handlers
-	jobs      *repository.JobRepository
-	handlers  map[string]handlerEntry
-	mu        sync.RWMutex
+	db       utils.DBTX
+	handlers map[string]handlerEntry
+	mu       sync.RWMutex
 
 	mainPool       *Pool
 	processingPool *Pool
@@ -49,8 +48,7 @@ func (d *Dispatcher) Resume() { d.paused.Store(false) }
 // mainPool handles scan/maintenance jobs; processingPool handles media processing.
 func NewDispatcher(db utils.DBTX, mainPool, processingPool *Pool) *Dispatcher {
 	return &Dispatcher{
-		handlerDB:      db,
-		jobs:           repository.NewJobRepository(db),
+		db:             db,
 		handlers:       make(map[string]handlerEntry),
 		mainPool:       mainPool,
 		processingPool: processingPool,
@@ -138,7 +136,7 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 			return
 		}
 
-		job, err := d.jobs.ClaimNext(ctx, jobTypes)
+		job, err := repository.JobClaimNext(ctx, d.db, jobTypes)
 		if err != nil {
 			slog.Error("claim next job", "err", err)
 			return
@@ -150,7 +148,7 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 		entry, ok := d.handlers[job.Type]
 		if !ok {
 			slog.Error("no handler registered for job type", "type", job.Type)
-			_ = d.jobs.MarkFailed(ctx, job.ID, "no handler registered for job type: "+job.Type)
+			_ = repository.JobMarkFailed(ctx, d.db, job.ID, "no handler registered for job type: "+job.Type)
 			continue
 		}
 
@@ -159,11 +157,11 @@ func (d *Dispatcher) claimAndDispatch(ctx context.Context, jobTypes []string, po
 		capturedJob := job
 		capturedHandler := entry.handler
 		pool.Submit(func() {
-			if err := capturedHandler(ctx, d.handlerDB, capturedJob); err != nil {
+			if err := capturedHandler(ctx, d.db, capturedJob); err != nil {
 				slog.Error("job failed", "job_id", capturedJob.ID, "type", capturedJob.Type, "err", err)
-				_ = d.jobs.MarkFailed(ctx, capturedJob.ID, err.Error())
+				_ = repository.JobMarkFailed(ctx, d.db, capturedJob.ID, err.Error())
 			} else {
-				_ = d.jobs.MarkDone(ctx, capturedJob.ID)
+				_ = repository.JobMarkDone(ctx, d.db, capturedJob.ID)
 			}
 		})
 	}

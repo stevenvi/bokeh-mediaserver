@@ -37,15 +37,14 @@ func TestCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, testPool)
 			ctx := context.Background()
-			repo := repository.NewJobRepository(tx)
 
-			id, err := repo.Create(ctx, tt.jobType, tt.relatedID, tt.relatedType)
+			id, err := repository.JobCreate(ctx, db, tt.jobType, tt.relatedID, tt.relatedType)
 			require.NoError(t, err)
 			assert.Greater(t, id, int64(0))
 
-			job, err := repo.GetByID(ctx, id)
+			job, err := repository.JobGet(ctx, db, id)
 			require.NoError(t, err)
 			assert.Equal(t, tt.jobType, job.Type)
 			assert.Equal(t, "queued", job.Status)
@@ -59,14 +58,13 @@ func TestCreate(t *testing.T) {
 
 func TestClaimNextJob(t *testing.T) {
 	t.Run("claims_queued_job", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		repo := repository.NewJobRepository(tx)
 
-		id, err := repo.Create(ctx, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
-		job, err := repo.ClaimNext(ctx, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
 		require.NoError(t, err)
 		require.NotNil(t, job)
 		assert.Equal(t, id, job.ID)
@@ -75,53 +73,49 @@ func TestClaimNextJob(t *testing.T) {
 	})
 
 	t.Run("returns_nil_when_empty", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		repo := repository.NewJobRepository(tx)
 
-		job, err := repo.ClaimNext(ctx, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
 		require.NoError(t, err)
 		assert.Nil(t, job)
 	})
 
 	t.Run("skips_running_jobs", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		repo := repository.NewJobRepository(tx)
 
-		id, err := repo.Create(ctx, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
-		require.NoError(t, repo.MarkRunning(ctx, id))
+		require.NoError(t, repository.JobMarkRunning(ctx, db, id))
 
-		job, err := repo.ClaimNext(ctx, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
 		require.NoError(t, err)
 		assert.Nil(t, job, "should not claim already-running job")
 	})
 
 	t.Run("filters_by_type", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		repo := repository.NewJobRepository(tx)
 
-		_, err := repo.Create(ctx, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		_, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
-		job, err := repo.ClaimNext(ctx, []string{"process_media"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"process_media"})
 		require.NoError(t, err)
 		assert.Nil(t, job, "should not claim job of wrong type")
 	})
 
 	t.Run("claims_oldest_first", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
-		repo := repository.NewJobRepository(tx)
 
-		id1, err := repo.Create(ctx, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id1, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
-		_, err = repo.Create(ctx, "library_scan", testutil.Int64Ptr(2), testutil.StrPtr("collection"))
+		_, err = repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(2), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
-		job, err := repo.ClaimNext(ctx, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
 		require.NoError(t, err)
 		require.NotNil(t, job)
 		assert.Equal(t, id1, job.ID, "should claim oldest queued job first")
@@ -129,17 +123,16 @@ func TestClaimNextJob(t *testing.T) {
 }
 
 func TestUpdateProgress(t *testing.T) {
-	tx := testutil.NewTx(t, testPool)
+	db := testutil.NewTx(t, testPool)
 	ctx := context.Background()
-	repo := repository.NewJobRepository(tx)
 
-	id, err := repo.Create(ctx, "library_scan", nil, nil)
+	id, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
 	require.NoError(t, err)
 
-	require.NoError(t, repo.UpdateProgress(ctx, id, "step 1"))
-	require.NoError(t, repo.UpdateProgress(ctx, id, "step 2"))
+	require.NoError(t, repository.JobUpdateProgress(ctx, db, id, "step 1"))
+	require.NoError(t, repository.JobUpdateProgress(ctx, db, id, "step 2"))
 
-	job, err := repo.GetByID(ctx, id)
+	job, err := repository.JobGet(ctx, db, id)
 	require.NoError(t, err)
 	require.NotNil(t, job.Log)
 	assert.Equal(t, "step 1\nstep 2\n", *job.Log)
@@ -159,23 +152,22 @@ func TestMarkStateTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, testPool)
 			ctx := context.Background()
-			repo := repository.NewJobRepository(tx)
 
-			id, err := repo.Create(ctx, "library_scan", nil, nil)
+			id, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
 			require.NoError(t, err)
 
 			switch tt.action {
 			case "running":
-				require.NoError(t, repo.MarkRunning(ctx, id))
+				require.NoError(t, repository.JobMarkRunning(ctx, db, id))
 			case "done":
-				require.NoError(t, repo.MarkDone(ctx, id))
+				require.NoError(t, repository.JobMarkDone(ctx, db, id))
 			case "failed":
-				require.NoError(t, repo.MarkFailed(ctx, id, "something broke"))
+				require.NoError(t, repository.JobMarkFailed(ctx, db, id, "something broke"))
 			}
 
-			job, err := repo.GetByID(ctx, id)
+			job, err := repository.JobGet(ctx, db, id)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedStatus, job.Status)
 
@@ -204,24 +196,23 @@ func TestIsActive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, testPool)
 			ctx := context.Background()
-			repo := repository.NewJobRepository(tx)
 
 			relatedID := int64(999)
-			id, err := repo.Create(ctx, "library_scan", &relatedID, testutil.StrPtr("collection"))
+			id, err := repository.JobCreate(ctx, db, "library_scan", &relatedID, testutil.StrPtr("collection"))
 			require.NoError(t, err)
 
 			switch tt.status {
 			case "running":
-				require.NoError(t, repo.MarkRunning(ctx, id))
+				require.NoError(t, repository.JobMarkRunning(ctx, db, id))
 			case "done":
-				require.NoError(t, repo.MarkDone(ctx, id))
+				require.NoError(t, repository.JobMarkDone(ctx, db, id))
 			case "failed":
-				require.NoError(t, repo.MarkFailed(ctx, id, "err"))
+				require.NoError(t, repository.JobMarkFailed(ctx, db, id, "err"))
 			}
 
-			active, err := repo.IsActive(ctx, "library_scan", relatedID)
+			active, err := repository.JobIsActive(ctx, db, "library_scan", relatedID)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, active)
 		})
@@ -229,39 +220,38 @@ func TestIsActive(t *testing.T) {
 }
 
 func TestRecoverStuckJobs(t *testing.T) {
-	tx := testutil.NewTx(t, testPool)
+	db := testutil.NewTx(t, testPool)
 	ctx := context.Background()
-	repo := repository.NewJobRepository(tx)
 
 	// Create two jobs and mark them running (simulating a crash)
-	id1, err := repo.Create(ctx, "library_scan", nil, nil)
+	id1, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
 	require.NoError(t, err)
-	require.NoError(t, repo.MarkRunning(ctx, id1))
+	require.NoError(t, repository.JobMarkRunning(ctx, db, id1))
 
-	id2, err := repo.Create(ctx, "process_media", nil, nil)
+	id2, err := repository.JobCreate(ctx, db, "process_media", nil, nil)
 	require.NoError(t, err)
-	require.NoError(t, repo.MarkRunning(ctx, id2))
+	require.NoError(t, repository.JobMarkRunning(ctx, db, id2))
 
 	// Also create a done job that should NOT be affected
-	id3, err := repo.Create(ctx, "library_scan", nil, nil)
+	id3, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
 	require.NoError(t, err)
-	require.NoError(t, repo.MarkDone(ctx, id3))
+	require.NoError(t, repository.JobMarkDone(ctx, db, id3))
 
 	// Recover
-	require.NoError(t, repo.RecoverStuck(ctx))
+	require.NoError(t, repository.JobsResetStuck(ctx, db))
 
 	// Verify running jobs are now queued
-	j1, err := repo.GetByID(ctx, id1)
+	j1, err := repository.JobGet(ctx, db, id1)
 	require.NoError(t, err)
 	assert.Equal(t, "queued", j1.Status)
 	assert.Nil(t, j1.StartedAt)
 
-	j2, err := repo.GetByID(ctx, id2)
+	j2, err := repository.JobGet(ctx, db, id2)
 	require.NoError(t, err)
 	assert.Equal(t, "queued", j2.Status)
 
 	// Done job should still be done
-	j3, err := repo.GetByID(ctx, id3)
+	j3, err := repository.JobGet(ctx, db, id3)
 	require.NoError(t, err)
 	assert.Equal(t, "done", j3.Status)
 }

@@ -8,29 +8,8 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-type PhotoMetadataRepository struct {
-	db utils.DBTX
-}
-
-func NewPhotoMetadataRepository(db utils.DBTX) *PhotoMetadataRepository {
-	return &PhotoMetadataRepository{db: db}
-}
-
-// CountPendingVariants returns the number of photo_metadata rows awaiting variant generation.
-func (r *PhotoMetadataRepository) CountPendingVariants(ctx context.Context) (int, error) {
-	var count int
-	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM photo_metadata
-		 WHERE variants_generated_at IS NULL
-		 AND media_item_id IN (
-		     SELECT id FROM media_items WHERE missing_since IS NULL AND hidden_at IS NULL
-		 )`,
-	).Scan(&count)
-	return count, err
-}
-
-// UpsertPhotoMetadata inserts or updates photo metadata for a media item.
-func (r *PhotoMetadataRepository) UpsertPhotoMetadata(ctx context.Context, itemID int64,
+// PhotoUpsert inserts or updates photo metadata for a media item.
+func PhotoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	widthPx, heightPx *int,
 	createdAt *time.Time,
 	cameraMake, cameraModel, lensModel, shutterSpeed *string,
@@ -40,7 +19,7 @@ func (r *PhotoMetadataRepository) UpsertPhotoMetadata(ctx context.Context, itemI
 	colorSpace, description *string,
 	exifRaw json.RawMessage,
 ) error {
-	_, err := r.db.Exec(ctx,
+	_, err := db.Exec(ctx,
 		`INSERT INTO photo_metadata
 		     (media_item_id, width_px, height_px, created_at,
 		      camera_make, camera_model, lens_model,
@@ -74,9 +53,22 @@ func (r *PhotoMetadataRepository) UpsertPhotoMetadata(ctx context.Context, itemI
 	return err
 }
 
-// UpdatePhotoVariants marks variants as generated and stores the placeholder.
-func (r *PhotoMetadataRepository) UpdatePhotoVariants(ctx context.Context, itemID int64, placeholder *string) error {
-	_, err := r.db.Exec(ctx,
+// PhotoCountPendingVariants returns the number of photo_metadata rows awaiting variant generation.
+func PhotoCountPendingVariants(ctx context.Context, db utils.DBTX) (int, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM photo_metadata
+		 WHERE variants_generated_at IS NULL
+		 AND media_item_id IN (
+		     SELECT id FROM media_items WHERE missing_since IS NULL AND hidden_at IS NULL
+		 )`,
+	).Scan(&count)
+	return count, err
+}
+
+// PhotoUpdateVariants marks variants as generated and stores the placeholder.
+func PhotoUpdateVariants(ctx context.Context, db utils.DBTX, itemID int64, placeholder *string) error {
+	_, err := db.Exec(ctx,
 		`UPDATE photo_metadata
 		 SET placeholder = $2, variants_generated_at = now()
 		 WHERE media_item_id = $1`,
@@ -85,23 +77,10 @@ func (r *PhotoMetadataRepository) UpdatePhotoVariants(ctx context.Context, itemI
 	return err
 }
 
-// GetExifRaw returns the raw EXIF JSON for a media item.
-func (r *PhotoMetadataRepository) GetExifRaw(ctx context.Context, itemID int64, userID int64) ([]byte, error) {
-	var raw []byte
-	err := r.db.QueryRow(ctx,
-		`SELECT pm.exif_raw
-		 FROM photo_metadata pm
-		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL
-		 JOIN collections c ON c.id = m.collection_id
-		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $2
-		 WHERE pm.media_item_id = $1`, itemID, userID).Scan(&raw)
-	return raw, err
-}
-
-// ClearVariantsGenerated sets variants_generated_at to NULL for all items in a
+// PhotoClearVariantsGenerated sets variants_generated_at to NULL for all items in a
 // collection and its sub-collections, so they are re-queued for processing.
-func (r *PhotoMetadataRepository) ClearVariantsGenerated(ctx context.Context, collectionID int64) error {
-	_, err := r.db.Exec(ctx,
+func PhotoClearVariantsGenerated(ctx context.Context, db utils.DBTX, collectionID int64) error {
+	_, err := db.Exec(ctx,
 		`WITH RECURSIVE tree AS (
 			SELECT id FROM collections WHERE id = $1
 			UNION ALL
@@ -114,4 +93,17 @@ func (r *PhotoMetadataRepository) ClearVariantsGenerated(ctx context.Context, co
 		collectionID,
 	)
 	return err
+}
+
+// PhotoExifRaw returns the raw EXIF JSON for a media item.
+func PhotoExifRaw(ctx context.Context, db utils.DBTX, itemID int64, userID int64) ([]byte, error) {
+	var raw []byte
+	err := db.QueryRow(ctx,
+		`SELECT pm.exif_raw
+		 FROM photo_metadata pm
+		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL
+		 JOIN collections c ON c.id = m.collection_id
+		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $2
+		 WHERE pm.media_item_id = $1`, itemID, userID).Scan(&raw)
+	return raw, err
 }
