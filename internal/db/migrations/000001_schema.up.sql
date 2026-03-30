@@ -84,8 +84,6 @@ CREATE TABLE collections (
 CREATE INDEX idx_collections_parent ON collections(parent_collection_id);
 CREATE INDEX idx_collections_root   ON collections(root_collection_id);
 CREATE INDEX idx_collections_enabled ON collections(id) WHERE is_enabled = true;
-CREATE UNIQUE INDEX idx_collections_relative_path ON collections(relative_path)
-    WHERE relative_path IS NOT NULL;
 
 CREATE TABLE collection_access (
     user_id                     bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -118,7 +116,7 @@ CREATE TABLE media_items (
 CREATE INDEX idx_media_items_collection ON media_items(collection_id);
 CREATE INDEX idx_media_items_collection_active ON media_items(collection_id)
     WHERE missing_since IS NULL AND hidden_at IS NULL;
-CREATE UNIQUE INDEX idx_media_items_relative_path ON media_items(relative_path);
+CREATE UNIQUE INDEX idx_media_items_relative_path ON media_items(relative_path, collection_id);
 CREATE INDEX idx_media_items_indexed_at ON media_items(indexed_at);
 CREATE INDEX idx_media_items_search     ON media_items USING GIN(search_vector);
 

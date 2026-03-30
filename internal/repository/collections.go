@@ -19,16 +19,6 @@ func NewCollectionRepository(db utils.DBTX) *CollectionRepository {
 	return &CollectionRepository{db: db}
 }
 
-// ExistsByRelativePath returns true if any collection already uses the given relative_path.
-func (r *CollectionRepository) ExistsByRelativePath(ctx context.Context, relativePath string) (bool, error) {
-	var exists bool
-	err := r.db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM collections WHERE relative_path = $1)`,
-		relativePath,
-	).Scan(&exists)
-	return exists, err
-}
-
 // Create inserts a new top-level collection and returns its ID.
 // root_collection_id must equal the new row's own id, which isn't known until after
 // the insert. We pre-fetch the next sequence value so we can supply both id and
@@ -224,10 +214,6 @@ func (r *CollectionRepository) UpsertSubCollection(ctx context.Context, parentID
 		     $3,
 		     (SELECT type FROM collections WHERE id = $2),
 		     $4)
-		 ON CONFLICT (relative_path) WHERE relative_path IS NOT NULL
-		     DO UPDATE SET name                 = EXCLUDED.name,
-		                   parent_collection_id = EXCLUDED.parent_collection_id,
-		                   root_collection_id   = EXCLUDED.root_collection_id
 		 RETURNING id`,
 		parentID, rootCollectionID, name, relativePath,
 	).Scan(&id)

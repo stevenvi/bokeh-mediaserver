@@ -145,7 +145,7 @@ func (r *MediaItemRepository) Upsert(ctx context.Context, collectionID int64, ti
 		upserted AS (
 			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
 			VALUES ($1, $2, $3, $4, $5, $6)
-			ON CONFLICT (relative_path) DO UPDATE SET
+			ON CONFLICT (relative_path, collection_id) DO UPDATE SET
 				indexed_at      = now(),
 				missing_since   = NULL,
 				collection_id   = EXCLUDED.collection_id,

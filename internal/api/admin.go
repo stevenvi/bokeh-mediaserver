@@ -19,6 +19,7 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type adminHandler struct {
@@ -62,15 +63,6 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	} else if !info.IsDir() {
 		writeError(w, http.StatusBadRequest, "path is not a directory: "+body.RelativePath)
-		return
-	}
-
-	// Verify no other collection already uses this path.
-	if exists, err := h.collections.ExistsByRelativePath(r.Context(), body.RelativePath); err != nil {
-		writeError(w, http.StatusInternalServerError, "db error")
-		return
-	} else if exists {
-		writeError(w, http.StatusConflict, "a collection with that path already exists")
 		return
 	}
 
