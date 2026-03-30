@@ -27,8 +27,9 @@ var homemovieFilenameRe = regexp.MustCompile(`^(\d{4})\.(\d{2})(?:\.(\d{2})(?:-(
 // applies home movie filename fallback, upserts video_metadata, generates
 // cover art or thumbnail, and queues a transcode job if needed.
 func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, dataPath string, transcodeBitrateKbps int) error {
-	mediaRepo := repository.NewMediaItemRepository(db)
 	jobRepo := repository.NewJobRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
+	videoMetadata := repository.NewVideoMetadataRepository(db)
 
 	_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting video metadata")
 
@@ -126,7 +127,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// --- Step 3: upsert video_metadata ---
-	if err := mediaRepo.UpsertVideoMetadata(ctx, itemID,
+	if err := videoMetadata.UpsertVideoMetadata(ctx, itemID,
 		durationSeconds, width, height, bitrateKbps,
 		videoCodec, audioCodec,
 		finalDate, endDate, author,
@@ -142,7 +143,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Priority: embedded metadata art > keyframe fallback. Manual covers are never overwritten.
-	notManual, err := mediaRepo.IsVideoManualCover(ctx, itemID)
+	notManual, err := videoMetadata.IsVideoManualCover(ctx, itemID)
 	if err == nil && notManual {
 		if len(coverArtBytes) > 0 {
 			_ = jobRepo.UpdateProgress(ctx, job.ID, "generating cover art")
@@ -164,7 +165,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// --- Step 6: queue transcode if needed ---
 	if bitrateKbps != nil && *bitrateKbps > transcodeBitrateKbps && transcodeBitrateKbps > 0 {
 		// Only queue if not already transcoded
-		needsTranscode, err := mediaRepo.VideoNeedsTranscode(ctx, itemID)
+		needsTranscode, err := videoMetadata.VideoNeedsTranscode(ctx, itemID)
 		if err != nil {
 			slog.Warn("check transcode status", "item_id", itemID, "err", err)
 		} else if needsTranscode {

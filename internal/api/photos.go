@@ -19,9 +19,10 @@ func userIDFromRequest(r *http.Request) int64 {
 }
 
 type photosHandler struct {
-	media     *repository.MediaItemRepository
-	dataPath  string
-	mediaPath string
+	media          *repository.MediaItemRepository
+	photoMetadata  *repository.PhotoMetadataRepository
+	dataPath       string
+	mediaPath      string
 }
 
 // GET /api/v1/media/:id
@@ -47,7 +48,7 @@ func (h *photosHandler) getExif(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := h.media.GetExifRaw(r.Context(), id, userIDFromRequest(r))
+	raw, err := h.photoMetadata.GetExifRaw(r.Context(), id, userIDFromRequest(r))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "EXIF data not found")
 		return

@@ -16,11 +16,12 @@ import (
 )
 
 type videoHandler struct {
-	media      *repository.MediaItemRepository
-	dataPath   string
-	mediaPath  string
-	cfg        *config.Config
-	dispatcher *jobs.Dispatcher
+	media          *repository.MediaItemRepository
+	videoMetadata  *repository.VideoMetadataRepository
+	dataPath       string
+	mediaPath      string
+	cfg            *config.Config
+	dispatcher     *jobs.Dispatcher
 }
 
 // isLocalRequest returns true if the request originates from an RFC 1918 or
@@ -190,7 +191,7 @@ func (h *videoHandler) liveManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta, err := h.media.GetVideoMetadataWithBookmark(r.Context(), id, userID)
+	meta, err := h.videoMetadata.GetVideoMetadataWithBookmark(r.Context(), id, userID)
 	if err != nil {
 		// metadata may not exist yet; treat bitrate as unknown
 		meta = nil
@@ -355,7 +356,7 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.media.SetVideoManualCover(r.Context(), id, true); err != nil {
+	if err := h.videoMetadata.SetVideoManualCover(r.Context(), id, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update video metadata")
 		return
 	}

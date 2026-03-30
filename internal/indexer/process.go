@@ -58,8 +58,9 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 }
 
 func processImageFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, mediaPath, dataPath string) error {
-	mediaRepo := repository.NewMediaItemRepository(db)
 	jobRepo := repository.NewJobRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
+	photoMetadata := repository.NewPhotoMetadataRepository(db)
 
 	// Extract EXIF
 	et, err := worker.exiftool()
@@ -111,7 +112,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 		widthPx, heightPx = heightPx, widthPx
 	}
 
-	err = mediaRepo.UpsertPhotoMetadata(ctx, itemID,
+	err = photoMetadata.UpsertPhotoMetadata(ctx, itemID,
 		widthPx, heightPx,
 		createdAt(fsPath, exifData),
 		utils.ExifStr(exifData, "Make"), utils.ExifStr(exifData, "Model"), utils.ExifStr(exifData, "LensModel"),
@@ -160,7 +161,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	} else {
 		placeholder = &p
 	}
-	if err := mediaRepo.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
+	if err := photoMetadata.UpdatePhotoVariants(ctx, itemID, placeholder); err != nil {
 		return fmt.Errorf("update variants_generated_at: %w", err)
 	}
 
@@ -184,10 +185,11 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 // processAudioFile handles audio media: extracts tags via exiftool, upserts artist,
 // album, and audio_metadata, and extracts album art.
 func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, mediaPath, dataPath string) error {
-	mediaRepo := repository.NewMediaItemRepository(db)
-	artistRepo := repository.NewArtistRepository(db)
 	albumRepo := repository.NewAlbumRepository(db)
+	artistRepo := repository.NewArtistRepository(db)
+	audioMetaRepo := repository.NewAudioMetadataRepository(db)
 	jobRepo := repository.NewJobRepository(db)
+	mediaRepo := repository.NewMediaItemRepository(db)
 
 	_ = jobRepo.UpdateProgress(ctx, job.ID, "extracting audio tags")
 
@@ -330,7 +332,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 
 	// Upsert audio metadata
-	if err := mediaRepo.UpsertAudioMetadata(ctx, itemID,
+	if err := audioMetaRepo.UpsertAudioMetadata(ctx, itemID,
 		artistIDPtr, albumArtistID, albumID,
 		title, trackNumber, discNumber,
 		durationSeconds, genre, year,

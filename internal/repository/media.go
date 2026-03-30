@@ -2,7 +2,7 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -203,88 +203,6 @@ func (r *MediaItemRepository) FindHashesExisting(ctx context.Context, hashes []s
 	return existing, nil
 }
 
-// CountPendingVariants returns the number of photo_metadata rows awaiting variant generation.
-func (r *MediaItemRepository) CountPendingVariants(ctx context.Context) (int, error) {
-	var count int
-	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM photo_metadata
-		 WHERE variants_generated_at IS NULL
-		 AND media_item_id IN (
-		     SELECT id FROM media_items WHERE missing_since IS NULL AND hidden_at IS NULL
-		 )`,
-	).Scan(&count)
-	return count, err
-}
-
-// UpsertPhotoMetadata inserts or updates photo metadata for a media item.
-func (r *MediaItemRepository) UpsertPhotoMetadata(ctx context.Context, itemID int64,
-	widthPx, heightPx *int,
-	createdAt *time.Time,
-	cameraMake, cameraModel, lensModel, shutterSpeed *string,
-	aperture *float64,
-	iso *int,
-	focalLengthMM, focalLength35mmEquiv *float64,
-	colorSpace, description *string,
-	exifRaw json.RawMessage,
-) error {
-	_, err := r.db.Exec(ctx,
-		`INSERT INTO photo_metadata
-		     (media_item_id, width_px, height_px, created_at,
-		      camera_make, camera_model, lens_model,
-		      shutter_speed, aperture, iso,
-		      focal_length_mm, focal_length_35mm_equiv,
-		      color_space, description, exif_raw)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-		 ON CONFLICT (media_item_id) DO UPDATE SET
-		     width_px                = EXCLUDED.width_px,
-		     height_px               = EXCLUDED.height_px,
-		     created_at              = EXCLUDED.created_at,
-		     camera_make             = EXCLUDED.camera_make,
-		     camera_model            = EXCLUDED.camera_model,
-		     lens_model              = EXCLUDED.lens_model,
-		     shutter_speed           = EXCLUDED.shutter_speed,
-		     aperture                = EXCLUDED.aperture,
-		     iso                     = EXCLUDED.iso,
-		     focal_length_mm         = EXCLUDED.focal_length_mm,
-		     focal_length_35mm_equiv = EXCLUDED.focal_length_35mm_equiv,
-		     color_space             = EXCLUDED.color_space,
-		     description             = EXCLUDED.description,
-		     exif_raw                = EXCLUDED.exif_raw,
-		     variants_generated_at   = NULL`,
-		itemID,
-		widthPx, heightPx, createdAt,
-		cameraMake, cameraModel, lensModel,
-		shutterSpeed, aperture, iso,
-		focalLengthMM, focalLength35mmEquiv,
-		colorSpace, description, exifRaw,
-	)
-	return err
-}
-
-// UpdatePhotoVariants marks variants as generated and stores the placeholder.
-func (r *MediaItemRepository) UpdatePhotoVariants(ctx context.Context, itemID int64, placeholder *string) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE photo_metadata
-		 SET placeholder = $2, variants_generated_at = now()
-		 WHERE media_item_id = $1`,
-		itemID, placeholder,
-	)
-	return err
-}
-
-// GetExifRaw returns the raw EXIF JSON for a media item.
-func (r *MediaItemRepository) GetExifRaw(ctx context.Context, itemID int64, userID int64) ([]byte, error) {
-	var raw []byte
-	err := r.db.QueryRow(ctx,
-		`SELECT pm.exif_raw
-		 FROM photo_metadata pm
-		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL
-		 JOIN collections c ON c.id = m.collection_id
-		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $2
-		 WHERE pm.media_item_id = $1`, itemID, userID).Scan(&raw)
-	return raw, err
-}
-
 // StaleItem represents a media item that has been missing long enough to prune.
 type StaleItem struct {
 	ID   int64
@@ -323,24 +241,6 @@ func (r *MediaItemRepository) ListHashesByCollection(ctx context.Context, collec
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
-}
-
-// ClearVariantsGenerated sets variants_generated_at to NULL for all items in a
-// collection and its sub-collections, so they are re-queued for processing.
-func (r *MediaItemRepository) ClearVariantsGenerated(ctx context.Context, collectionID int64) error {
-	_, err := r.db.Exec(ctx,
-		`WITH RECURSIVE tree AS (
-			SELECT id FROM collections WHERE id = $1
-			UNION ALL
-			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
-		)
-		UPDATE photo_metadata SET variants_generated_at = NULL, placeholder = NULL
-		WHERE media_item_id IN (
-			SELECT mi.id FROM media_items mi JOIN tree t ON mi.collection_id = t.id
-		)`,
-		collectionID,
-	)
-	return err
 }
 
 // GetRandomItemHashWithVariants picks a random item with generated variants,
@@ -416,69 +316,6 @@ func (r *MediaItemRepository) GetRootCollectionID(ctx context.Context, itemID in
 	return rootID, err
 }
 
-// UpsertAudioMetadata inserts or updates audio metadata for a media item.
-func (r *MediaItemRepository) UpsertAudioMetadata(ctx context.Context, itemID int64,
-	artistID, albumArtistID, albumID *int64,
-	title *string,
-	trackNumber, discNumber *int16,
-	durationSeconds *float64,
-	genre *string,
-	year *int16,
-	replayGainDB *float64,
-	hasEmbeddedArt bool,
-) error {
-	_, err := r.db.Exec(ctx,
-		`INSERT INTO audio_metadata
-		     (media_item_id, artist_id, album_artist_id, album_id, title,
-		      track_number, disc_number, duration_seconds,
-		      genre, year, replay_gain_db, has_embedded_art, processed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
-		 ON CONFLICT (media_item_id) DO UPDATE SET
-		     artist_id        = EXCLUDED.artist_id,
-		     album_artist_id  = EXCLUDED.album_artist_id,
-		     album_id         = EXCLUDED.album_id,
-		     title            = EXCLUDED.title,
-		     track_number     = EXCLUDED.track_number,
-		     disc_number      = EXCLUDED.disc_number,
-		     duration_seconds = EXCLUDED.duration_seconds,
-		     genre            = EXCLUDED.genre,
-		     year             = EXCLUDED.year,
-		     replay_gain_db   = EXCLUDED.replay_gain_db,
-		     has_embedded_art = EXCLUDED.has_embedded_art,
-		     processed_at     = now()`,
-		itemID, artistID, albumArtistID, albumID, title,
-		trackNumber, discNumber, durationSeconds,
-		genre, year, replayGainDB, hasEmbeddedArt,
-	)
-	return err
-}
-
-// ListTracksByAlbum returns all tracks for an album ordered by disc and track number.
-// Access is verified against the album's root_collection_id.
-func (r *MediaItemRepository) ListTracksByAlbum(ctx context.Context, albumID, userID int64) ([]models.TrackView, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT m.id, m.title, am.track_number, am.disc_number,
-		        am.duration_seconds, a.name, m.mime_type
-		 FROM audio_metadata am
-		 JOIN media_items m ON m.id = am.media_item_id
-		 LEFT JOIN artists a ON a.id = am.artist_id
-		 JOIN audio_albums al ON al.id = am.album_id
-		 WHERE am.album_id = $1
-		   AND m.missing_since IS NULL AND m.hidden_at IS NULL
-		   AND EXISTS (
-		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = al.root_collection_id
-		         AND ca.user_id = $2
-		   )
-		 ORDER BY am.disc_number ASC NULLS LAST, am.track_number ASC NULLS LAST, m.title ASC`,
-		albumID, userID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.TrackView])
-}
-
 // GetAudioStreamInfo returns fields needed to stream an audio file, with access check.
 func (r *MediaItemRepository) GetAudioStreamInfo(ctx context.Context, itemID int64, userID int64) (relativePath, mimeType string, err error) {
 	err = r.db.QueryRow(ctx,
@@ -510,38 +347,6 @@ func (r *MediaItemRepository) GetRootCollectionType(ctx context.Context, itemID 
 	return colType, err
 }
 
-// UpsertVideoMetadata inserts or updates video metadata for a media item.
-// Does NOT reset transcoded_at on re-process — transcoding is expensive and
-// must be explicitly re-triggered by clearing the field.
-func (r *MediaItemRepository) UpsertVideoMetadata(ctx context.Context, itemID int64,
-	durationSeconds *int,
-	width, height *int,
-	bitrateKbps *int,
-	videoCodec, audioCodec *string,
-	date, endDate *time.Time,
-	author *string,
-) error {
-	_, err := r.db.Exec(ctx,
-		`INSERT INTO video_metadata
-		    (media_item_id, duration_seconds, width, height, bitrate_kbps,
-		     video_codec, audio_codec, date, end_date, author)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		 ON CONFLICT (media_item_id) DO UPDATE SET
-		    duration_seconds = EXCLUDED.duration_seconds,
-		    width             = EXCLUDED.width,
-		    height            = EXCLUDED.height,
-		    bitrate_kbps      = EXCLUDED.bitrate_kbps,
-		    video_codec       = EXCLUDED.video_codec,
-		    audio_codec       = EXCLUDED.audio_codec,
-		    date              = EXCLUDED.date,
-		    end_date          = EXCLUDED.end_date,
-		    author            = EXCLUDED.author`,
-		itemID, durationSeconds, width, height, bitrateKbps,
-		videoCodec, audioCodec, date, endDate, author,
-	)
-	return err
-}
-
 // GetVideoStreamInfo returns fields needed to stream a video file, with access check.
 // Returns relativePath, mimeType, and file_hash.
 func (r *MediaItemRepository) GetVideoStreamInfo(ctx context.Context, itemID int64, userID int64) (relativePath, mimeType, hash string, err error) {
@@ -557,32 +362,6 @@ func (r *MediaItemRepository) GetVideoStreamInfo(ctx context.Context, itemID int
 		itemID, userID,
 	).Scan(&relativePath, &mimeType, &hash)
 	return
-}
-
-// GetVideoMetadataWithBookmark fetches video_metadata for an item, with the
-// requesting user's bookmark position populated if one exists.
-func (r *MediaItemRepository) GetVideoMetadataWithBookmark(ctx context.Context, itemID int64, userID int64) (*models.VideoMetadata, error) {
-	var m models.VideoMetadata
-	err := r.db.QueryRow(ctx,
-		`SELECT vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
-		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-		        vm.date, vm.end_date, vm.author, vm.manual_cover,
-		        vb.position_seconds
-		 FROM video_metadata vm
-		 LEFT JOIN video_bookmarks vb
-		     ON vb.media_item_id = vm.media_item_id AND vb.user_id = $2
-		 WHERE vm.media_item_id = $1`,
-		itemID, userID,
-	).Scan(
-		&m.DurationSeconds, &m.Width, &m.Height, &m.BitrateKbps,
-		&m.VideoCodec, &m.AudioCodec, &m.TranscodedAt,
-		&m.Date, &m.EndDate, &m.Author, &m.ManualCover,
-		&m.BookmarkSeconds,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
 }
 
 // UpsertVideoBookmark inserts or updates a user's playback position for a video.
@@ -613,92 +392,6 @@ type VideoIntegrityItem struct {
 	FileHash       string
 	TranscodedAt   *time.Time
 	CollectionType string
-}
-
-// ListVideoItemsForIntegrity returns all non-missing video items with their
-// file hash, transcoded_at timestamp, and root collection type.
-func (r *MediaItemRepository) ListVideoItemsForIntegrity(ctx context.Context) ([]VideoIntegrityItem, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT vm.media_item_id, mi.file_hash, vm.transcoded_at, c.type AS collection_type
-		 FROM video_metadata vm
-		 JOIN media_items mi ON mi.id = vm.media_item_id
-		 JOIN collections c ON c.id = mi.collection_id
-		 WHERE mi.missing_since IS NULL`,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[VideoIntegrityItem])
-}
-
-// ClearTranscodedAt sets transcoded_at to NULL for a video item, allowing it
-// to be re-transcoded.
-func (r *MediaItemRepository) ClearTranscodedAt(ctx context.Context, itemID int64) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE video_metadata SET transcoded_at = NULL WHERE media_item_id = $1`,
-		itemID,
-	)
-	return err
-}
-
-// IsVideoManualCover returns true if manual_cover is false for the item,
-// meaning auto-generated cover art is appropriate. Returns false (not manual)
-// if no row exists yet (first processing run).
-func (r *MediaItemRepository) IsVideoManualCover(ctx context.Context, itemID int64) (bool, error) {
-	var manualCover bool
-	err := r.db.QueryRow(ctx,
-		`SELECT manual_cover FROM video_metadata WHERE media_item_id = $1`,
-		itemID,
-	).Scan(&manualCover)
-	if err != nil {
-		// Row may not exist yet (first run); treat as not manual
-		return false, nil
-	}
-	return !manualCover, nil
-}
-
-// VideoNeedsTranscode returns true if the item has not yet been transcoded
-// (transcoded_at IS NULL in video_metadata).
-func (r *MediaItemRepository) VideoNeedsTranscode(ctx context.Context, itemID int64) (bool, error) {
-	var count int
-	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM video_metadata
-		 WHERE media_item_id = $1 AND transcoded_at IS NULL`,
-		itemID,
-	).Scan(&count)
-	return count > 0, err
-}
-
-// GetVideoMetaForTranscode returns the bitrate and transcoded_at fields for a
-// media item's video_metadata. Used by the transcoder to decide whether to proceed.
-func (r *MediaItemRepository) GetVideoMetaForTranscode(ctx context.Context, itemID int64) (*models.VideoMetadata, error) {
-	var m models.VideoMetadata
-	err := r.db.QueryRow(ctx,
-		`SELECT bitrate_kbps, transcoded_at FROM video_metadata WHERE media_item_id = $1`,
-		itemID,
-	).Scan(&m.BitrateKbps, &m.TranscodedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
-// SetTranscodedAt records the time a transcode completed for a media item.
-func (r *MediaItemRepository) SetTranscodedAt(ctx context.Context, itemID int64, t time.Time) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE video_metadata SET transcoded_at = $2 WHERE media_item_id = $1`,
-		itemID, t,
-	)
-	return err
-}
-
-// SetVideoManualCover sets the manual_cover flag on a video_metadata row.
-func (r *MediaItemRepository) SetVideoManualCover(ctx context.Context, itemID int64, manual bool) error {
-	_, err := r.db.Exec(ctx,
-		`UPDATE video_metadata SET manual_cover = $2 WHERE media_item_id = $1`,
-		itemID, manual,
-	)
-	return err
 }
 
 // ListVideoItemsByCollection returns media items in a video collection.
@@ -776,4 +469,194 @@ func (r *MediaItemRepository) ListVideoItemsByCollection(ctx context.Context, co
 		item.Video = &vm
 		return item, err
 	})
+}
+
+// SlideshowQuery holds parameters for a slideshow page fetch.
+type SlideshowQuery struct {
+	CollectionID int64
+	PageSize     int // the repository adds +1 internally
+	Ascending    bool
+	Recursive    bool
+
+	// Cursor fields
+	HasCursor     bool
+	CursorTime    *time.Time
+	CursorID      int64
+	IncludeCursor bool // include the item the cursor points to in results (inclusive/exclusive)
+}
+
+// GetSlideshowItems returns a page of photo items via keyset pagination.
+// When Recursive is true, items from all descendant collections are included.
+// The caller receives pageSize+1 rows and must trim to detect whether a next page exists.
+func (r *CollectionRepository) GetSlideshowItems(ctx context.Context, q SlideshowQuery) ([]models.SlideshowItem, error) {
+	args := []any{q.CollectionID, q.PageSize + 1}
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	// Build cursor clause
+	var cursorClause string
+	if q.HasCursor {
+		gt, lt := ">", "<"
+		if q.IncludeCursor {
+			gt, lt = ">=", "<="
+		}
+		if q.Ascending {
+			if q.CursorTime != nil {
+				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(
+					`AND (pm.created_at > %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
+					ts, ts, gt, id)
+			} else {
+				id := addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, gt, id)
+			}
+		} else {
+			if q.CursorTime != nil {
+				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(
+					`AND (pm.created_at < %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
+					ts, ts, lt, id)
+			} else {
+				id := addArg(q.CursorID)
+				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, lt, id)
+			}
+		}
+	}
+
+	dir := "ASC"
+	if !q.Ascending {
+		dir = "DESC"
+	}
+
+	// Build collection filter: recursive CTE or direct match
+	var cte, collectionFilter string
+	if q.Recursive {
+		cte = `WITH RECURSIVE collection_tree AS (
+		    SELECT id FROM collections WHERE id = $1
+		    UNION ALL
+		    SELECT c.id FROM collections c
+		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
+		)`
+		collectionFilter = "mi.collection_id = ANY(SELECT id FROM collection_tree)"
+	} else {
+		cte = ""
+		collectionFilter = "mi.collection_id = $1"
+	}
+
+	query := fmt.Sprintf(`
+		%s
+		SELECT
+		    mi.id,
+		    mi.title,
+		    mi.mime_type,
+		    pm.created_at,
+		    pm.placeholder,
+		    pm.width_px,
+		    pm.height_px
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE %s
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL
+		  %s
+		ORDER BY pm.created_at %s NULLS LAST, mi.id %s
+		LIMIT $2`,
+		cte, collectionFilter, cursorClause, dir, dir,
+	)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowItem])
+}
+
+// SlideshowItemPosition holds the sort-key fields needed to construct a cursor for a given item.
+type SlideshowItemPosition struct {
+	ID           int64
+	CollectionID int64
+	CreatedAt    *time.Time
+}
+
+// GetSlideshowItemPosition returns the sort-key fields for a media item, used to construct
+// a cursor when the client specifies a start item. Returns nil if the item does not exist
+// or is hidden/missing.
+func (r *CollectionRepository) GetSlideshowItemPosition(ctx context.Context, itemID int64) (*SlideshowItemPosition, error) {
+	var pos SlideshowItemPosition
+	err := r.db.QueryRow(ctx, `
+		SELECT mi.id, mi.collection_id, pm.created_at
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE mi.id = $1
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL`,
+		itemID,
+	).Scan(&pos.ID, &pos.CollectionID, &pos.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &pos, nil
+}
+
+// GetSlideshowMetadata returns per-month item counts for the slideshow scrollbar.
+// Items with NULL created_at are excluded.
+func (r *CollectionRepository) GetSlideshowMetadata(ctx context.Context, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
+	var cte, collectionFilter string
+	if recursive {
+		cte = `WITH RECURSIVE collection_tree AS (
+		    SELECT id FROM collections WHERE id = $1
+		    UNION ALL
+		    SELECT c.id FROM collections c
+		    INNER JOIN collection_tree ct ON c.parent_collection_id = ct.id
+		)`
+		collectionFilter = "mi.collection_id = ANY(SELECT id FROM collection_tree)"
+	} else {
+		cte = ""
+		collectionFilter = "mi.collection_id = $1"
+	}
+
+	query := fmt.Sprintf(`
+		%s
+		SELECT
+		    EXTRACT(YEAR FROM pm.created_at)::int  AS year,
+		    EXTRACT(MONTH FROM pm.created_at)::int AS month,
+		    COUNT(*)::int                           AS count
+		FROM media_items mi
+		JOIN photo_metadata pm ON pm.media_item_id = mi.id
+		WHERE %s
+		  AND mi.missing_since IS NULL
+		  AND mi.hidden_at IS NULL
+		  AND pm.created_at IS NOT NULL
+		GROUP BY 1, 2
+		ORDER BY 1, 2`,
+		cte, collectionFilter,
+	)
+
+	rows, err := r.db.Query(ctx, query, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowMonthCount])
+}
+
+// MarkMissingSince marks items in a collection that haven't been indexed since `before`.
+// Returns number of rows affected.
+func (r *CollectionRepository) MarkMissingSince(ctx context.Context, collectionID int64, before time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE media_items
+		 SET missing_since = now()
+		 WHERE collection_id = $1
+		   AND missing_since IS NULL
+		   AND indexed_at < $2`,
+		collectionID, before,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }

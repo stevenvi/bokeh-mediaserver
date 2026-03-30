@@ -66,7 +66,7 @@ func run() error {
 	slog.Info("running startup recovery")
 	configRepo := repository.NewServerConfigRepository(db_pool)
 	jobRepo := repository.NewJobRepository(db_pool)
-	mediaRepo := repository.NewMediaItemRepository(db_pool)
+	photoMetadata := repository.NewPhotoMetadataRepository(db_pool)
 
 	// Load transcode bitrate from server_config
 	if kbps, err := configRepo.LoadTranscodeBitrate(ctx); err != nil {
@@ -78,7 +78,7 @@ func run() error {
 	if err := jobRepo.RecoverStuck(ctx); err != nil {
 		return fmt.Errorf("recovery: %w", err)
 	}
-	if count, err := mediaRepo.CountPendingVariants(ctx); err != nil {
+	if count, err := photoMetadata.CountPendingVariants(ctx); err != nil {
 		return fmt.Errorf("count incomplete variants: %w", err)
 	} else if count > 0 {
 		slog.Warn("photos pending variant generation — will process on next scan",

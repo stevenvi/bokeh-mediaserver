@@ -20,6 +20,7 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		jobRepo := repository.NewJobRepository(db)
 		mediaRepo := repository.NewMediaItemRepository(db)
+		videoMetadataRepo := repository.NewVideoMetadataRepository(db)
 
 		_ = jobRepo.UpdateProgress(ctx, job.ID, "starting integrity check")
 
@@ -30,7 +31,7 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 		}
 
 		// check video derivatives (re-queue transcode/process_media for broken outputs)
-		requeued, err := checkVideoDerivatives(ctx, mediaRepo, jobRepo, dataPath, job.ID)
+		requeued, err := checkVideoDerivatives(ctx, videoMetadataRepo, jobRepo, dataPath, job.ID)
 		if err != nil {
 			slog.Warn("check video derivatives failed", "err", err)
 		}
@@ -44,10 +45,10 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 
 // checkVideoDerivatives iterates video_metadata rows and re-queues jobs when
 // the expected output files are missing from disk.
-func checkVideoDerivatives(ctx context.Context, mediaRepo *repository.MediaItemRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {
+func checkVideoDerivatives(ctx context.Context, videoMetadataRepo *repository.VideoMetadataRepository, jobRepo *repository.JobRepository, dataPath string, jobID int64) (int64, error) {
 	_ = jobRepo.UpdateProgress(ctx, jobID, "checking video derivatives")
 
-	items, err := mediaRepo.ListVideoItemsForIntegrity(ctx)
+	items, err := videoMetadataRepo.ListVideoItemsForIntegrity(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("query video_metadata: %w", err)
 	}
@@ -65,7 +66,7 @@ func checkVideoDerivatives(ctx context.Context, mediaRepo *repository.MediaItemR
 			manifestPath := imaging.VideoHLSManifest(dataPath, item.FileHash)
 			if _, statErr := os.Stat(manifestPath); os.IsNotExist(statErr) {
 				// Clear transcoded_at so the transcoder will run again
-				if err := mediaRepo.ClearTranscodedAt(ctx, item.ItemID); err != nil {
+				if err := videoMetadataRepo.ClearTranscodedAt(ctx, item.ItemID); err != nil {
 					slog.Warn("clear transcoded_at", "item_id", item.ItemID, "err", err)
 					continue
 				}

@@ -38,24 +38,28 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 
 	albumRepo := repository.NewAlbumRepository(db)
 	artistRepo := repository.NewArtistRepository(db)
+	audioMetadataRepo := repository.NewAudioMetadataRepository(db)
 	collRepo := repository.NewCollectionRepository(db)
 	deviceRepo := repository.NewDeviceRepository(db)
 	jobRepo := repository.NewJobRepository(db)
 	mediaRepo := repository.NewMediaItemRepository(db)
+	photoMetadataRepo := repository.NewPhotoMetadataRepository(db)
 	userRepo := repository.NewUserRepository(db)
+	videoMetadataRepo := repository.NewVideoMetadataRepository(db)
 
 	authPlugins := authpkg.DefaultPlugins()
 
 	authHandler := newAuthHandler(db, userRepo, deviceRepo, guard, rateLimiter, jwtSecret, authPlugins, production)
 	collections := &collectionsHandler{collections: collRepo, media: mediaRepo}
-	music := &musicHandler{artists: artistRepo, albums: albumRepo, media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
-	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
-	video := &videoHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
+	music := &musicHandler{artists: artistRepo, albums: albumRepo, audioMetadata: audioMetadataRepo, media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath}
+	photos := &photosHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, photoMetadata: photoMetadataRepo}
+	video := &videoHandler{media: mediaRepo, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher, videoMetadata: videoMetadataRepo}
 	admin := &adminHandler{
 		db: db, users: userRepo, devices: deviceRepo, guard: guard,
 		collections: collRepo, media: mediaRepo, jobs: jobRepo, pool: pool,
 		authPlugins: authPlugins, authHandler: authHandler,
 		mediaPath: mediaPath, dataPath: dataPath,
+		photoMetadata: photoMetadataRepo,
 	}
 
 	// ── Public ────────────────────────────────────────────────────────────────

@@ -23,18 +23,20 @@ import (
 )
 
 type adminHandler struct {
-	db          *pgxpool.Pool // kept for Begin() in setCollectionAccess
-	users       *repository.UserRepository
-	devices     *repository.DeviceRepository
-	guard       *DeviceGuard
-	collections *repository.CollectionRepository
-	media       *repository.MediaItemRepository
-	jobs        *repository.JobRepository
-	pool        *jobs.Pool
-	authPlugins map[string]auth.Plugin
-	authHandler *authHandler
-	mediaPath   string
-	dataPath    string
+	db             *pgxpool.Pool // kept for Begin() in setCollectionAccess
+	collections    *repository.CollectionRepository
+	devices        *repository.DeviceRepository
+	jobs           *repository.JobRepository
+	media          *repository.MediaItemRepository
+	photoMetadata  *repository.PhotoMetadataRepository
+	users          *repository.UserRepository
+
+	guard          *DeviceGuard
+	pool           *jobs.Pool
+	authPlugins    map[string]auth.Plugin
+	authHandler    *authHandler
+	mediaPath      string
+	dataPath       string
 }
 
 // POST /api/v1/admin/collections
@@ -208,7 +210,7 @@ func (h *adminHandler) deleteDerivatives(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Clear variants_generated_at so the integrity check knows to re-queue
-	if err := h.media.ClearVariantsGenerated(r.Context(), collectionID); err != nil {
+	if err := h.photoMetadata.ClearVariantsGenerated(r.Context(), collectionID); err != nil {
 		slog.Warn("clear variants_generated_at", "collection_id", collectionID, "err", err)
 	}
 

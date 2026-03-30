@@ -13,11 +13,12 @@ import (
 )
 
 type musicHandler struct {
-	artists   *repository.ArtistRepository
-	albums    *repository.AlbumRepository
-	media     *repository.MediaItemRepository
-	dataPath  string
-	mediaPath string
+	albums         *repository.AlbumRepository
+	artists        *repository.ArtistRepository
+	audioMetadata  *repository.AudioMetadataRepository
+	media          *repository.MediaItemRepository
+	dataPath       string
+	mediaPath      string
 }
 
 // GET /api/v1/collections/{collectionId}/artists
@@ -89,7 +90,7 @@ func (h *musicHandler) listAlbumTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tracks, err := h.media.ListTracksByAlbum(r.Context(), albumID, userID)
+	tracks, err := h.audioMetadata.ListTracksByAlbum(r.Context(), albumID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list tracks")
 		return

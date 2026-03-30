@@ -73,11 +73,12 @@ func HandleTranscode(cfg *config.Config) func(ctx context.Context, db utils.DBTX
 		}
 		itemID := *job.RelatedID
 
-		mediaRepo := repository.NewMediaItemRepository(db)
 		jobRepo := repository.NewJobRepository(db)
+		mediaRepo := repository.NewMediaItemRepository(db)
+		videoMetadata := repository.NewVideoMetadataRepository(db)
 
 		// Fetch video metadata to check if transcode is still needed
-		meta, err := mediaRepo.GetVideoMetaForTranscode(ctx, itemID)
+		meta, err := videoMetadata.GetVideoMetaForTranscode(ctx, itemID)
 		if err != nil {
 			return fmt.Errorf("fetch video_metadata for item %d: %w", itemID, err)
 		}
@@ -160,7 +161,7 @@ func HandleTranscode(cfg *config.Config) func(ctx context.Context, db utils.DBTX
 		}
 
 		// Mark transcoded_at
-		if err := mediaRepo.SetTranscodedAt(ctx, itemID, time.Now()); err != nil {
+		if err := videoMetadata.SetTranscodedAt(ctx, itemID, time.Now()); err != nil {
 			slog.Warn("set transcoded_at", "item_id", itemID, "err", err)
 		}
 
