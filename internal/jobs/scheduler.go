@@ -34,8 +34,9 @@ var scheduledJobs = []scheduledJob{
 // appropriate times. Schedules are re-read from the DB periodically to pick
 // up admin changes without requiring a restart.
 type Scheduler struct {
-	jobs        *repository.JobRepository
 	collections *repository.CollectionRepository
+	configs     *repository.ServerConfigRepository
+	jobs        *repository.JobRepository
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 }
@@ -43,8 +44,9 @@ type Scheduler struct {
 // NewScheduler creates a new scheduler.
 func NewScheduler(db utils.DBTX) *Scheduler {
 	return &Scheduler{
-		jobs:        repository.NewJobRepository(db),
 		collections: repository.NewCollectionRepository(db),
+		configs:     repository.NewServerConfigRepository(db),
+		jobs:        repository.NewJobRepository(db),
 	}
 }
 
@@ -75,7 +77,7 @@ func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
 		cfg[sj.configKey] = sj.defaultSchedule
 	}
 
-	overrides, err := s.jobs.LoadSchedules(ctx)
+	overrides, err := s.configs.LoadSchedules(ctx)
 	if err != nil {
 		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
 		return cfg

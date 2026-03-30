@@ -64,11 +64,12 @@ func run() error {
 
 	// ── Startup recovery ──────────────────────────────────────────────────────
 	slog.Info("running startup recovery")
+	configRepo := repository.NewServerConfigRepository(db_pool)
 	jobRepo := repository.NewJobRepository(db_pool)
 	mediaRepo := repository.NewMediaItemRepository(db_pool)
 
 	// Load transcode bitrate from server_config
-	if kbps, err := jobRepo.LoadTranscodeBitrate(ctx); err != nil {
+	if kbps, err := configRepo.LoadTranscodeBitrate(ctx); err != nil {
 		slog.Warn("could not load transcode_bitrate_kbps; using default", "err", err)
 	} else {
 		cfg.TranscodeBitrateKbps = kbps
