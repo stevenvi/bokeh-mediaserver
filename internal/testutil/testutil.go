@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/db"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -130,9 +131,9 @@ func findRepoRoot() string {
 }
 
 // InsertCollection is a test helper that creates a collection and returns its ID.
-func InsertCollection(t *testing.T, db utils.DBTX, name, colType, relativePath string) int64 {
+func InsertCollection(t *testing.T, db utils.DBTX, name string, colType constants.CollectionType, relativePath string) int64 {
 	t.Helper()
-	id, err := repository.CollectionCreate(context.Background(), db, name, colType, relativePath)
+	id, err := repository.CollectionCreate(context.Background(), db, name, colType.String(), relativePath)
 	require.NoError(t, err)
 	return id
 }

@@ -16,10 +16,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/auth"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 type adminHandler struct {
@@ -680,25 +680,25 @@ func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			type_guess := "video:movie"
+			type_guess := constants.CollectionTypeMovie
 			for _, entry2 := range entries2 {
 				if entry2.Type().IsRegular() {
-					mimeType, ok := utils.SupportedExtensions[filepath.Ext(entry2.Name())]
+					mimeType, ok := constants.SupportedExtensions[filepath.Ext(entry2.Name())]
 					if ok {
-						switch {
-						case strings.HasPrefix(mimeType, "image"):
-							type_guess = "image:photo"
+						if strings.HasPrefix(mimeType, "image") {
+							type_guess = constants.CollectionTypePhoto
 							break
-						case strings.HasPrefix(mimeType, "audio"):
-							type_guess = "audio:music"
+						} else if strings.HasPrefix(mimeType, "audio") {
+							type_guess = constants.CollectionTypeMusic
 							break
-						default:
-							type_guess = "video:movie"
+						} else if strings.HasPrefix(mimeType, "video") {
+							type_guess = constants.CollectionTypeMovie
+							break
 						}
 					}
 				}
 			}
-			names = append(names, DirectoryEntry{Name: entry.Name(), Type: type_guess})
+			names = append(names, DirectoryEntry{Name: entry.Name(), Type: type_guess.String()})
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
@@ -17,8 +18,8 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		ctx := context.Background()
 
 		// Create two top-level enabled collections
-		c1 := testutil.InsertCollection(t, db, "Photos", "image:photo", "photos")
-		c2 := testutil.InsertCollection(t, db, "Movies", "video:movie", "movies")
+		c1 := testutil.InsertCollection(t, db, "Photos", constants.CollectionTypePhoto, "photos")
+		c2 := testutil.InsertCollection(t, db, "Movies", constants.CollectionTypeMovie, "movies")
 
 		// Create a disabled collection — should be skipped
 		testutil.MustExec(t, db,
@@ -42,7 +43,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		c1 := testutil.InsertCollection(t, db, "Photos", "image:photo", "photos")
+		c1 := testutil.InsertCollection(t, db, "Photos", constants.CollectionTypePhoto, "photos")
 
 		// Create an already-active scan
 		relatedType := "collection"
@@ -72,7 +73,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		parent := testutil.InsertCollection(t, tx, "Photos", "image:photo", "photos")
+		parent := testutil.InsertCollection(t, tx, "Photos", constants.CollectionTypePhoto, "photos")
 
 		// Create child collection
 		testutil.MustExec(t, tx,

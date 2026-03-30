@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/blake2b"
 
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -68,7 +69,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		}
 
 		ext := strings.ToLower(filepath.Ext(path))
-		mimeType, ok := utils.SupportedExtensions[ext]
+		mimeType, ok := constants.SupportedExtensions[ext]
 		if !ok {
 			return nil
 		}

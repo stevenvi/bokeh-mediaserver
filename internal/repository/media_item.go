@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
@@ -310,9 +311,8 @@ func MediaItemRootCollectionID(ctx context.Context, db utils.DBTX, itemID int64)
 
 // MediaItemRootCollectionType returns the type of the root collection that contains the
 // given media item (e.g. "video:movie", "video:home_movie").
-func MediaItemRootCollectionType(ctx context.Context, db utils.DBTX, itemID int64) (string, error) {
-	var colType string
-	err := db.QueryRow(ctx,
+func MediaItemRootCollectionType(ctx context.Context, db utils.DBTX, itemID int64) (colType constants.CollectionType, err error) {
+	err = db.QueryRow(ctx,
 		`SELECT rc.type
 		 FROM media_items mi
 		 JOIN collections c  ON c.id  = mi.collection_id
@@ -320,7 +320,7 @@ func MediaItemRootCollectionType(ctx context.Context, db utils.DBTX, itemID int6
 		 WHERE mi.id = $1`,
 		itemID,
 	).Scan(&colType)
-	return colType, err
+	return
 }
 
 // MediaItemGetAudioStreamInfo returns fields needed to stream an audio file, with access check.
@@ -368,11 +368,11 @@ type VideoIntegrityItem struct {
 // For video:movie collections it recurses into sub-collections (ordered by title).
 // For video:home_movie collections it returns only the direct collection (ordered by relative_path).
 // BookmarkSeconds is populated per-user.
-func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, collectionType string, limit, offset int) ([]models.MediaItemView, error) {
+func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, collectionType constants.CollectionType, limit, offset int) ([]models.MediaItemView, error) {
 	var rows pgx.Rows
 	var err error
 
-	if collectionType == "video:movie" {
+	if collectionType == constants.CollectionTypeMovie {
 		// Recursive CTE to include all descendant collections
 		rows, err = db.Query(ctx,
 			`WITH RECURSIVE descendants AS (

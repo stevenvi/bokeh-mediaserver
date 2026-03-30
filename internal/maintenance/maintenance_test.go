@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
@@ -67,7 +68,7 @@ func TestOrphanCleanup(t *testing.T) {
 		dataPath := t.TempDir()
 
 		// Create a real media item (InsertMediaItem uses stubHash as file_hash)
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		testutil.InsertMediaItem(t, tx, collID, "photo", "fake/path.jpg", "image/jpeg")
 
 		// Create derived files at the stub hash path
@@ -101,7 +102,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		dataPath := t.TempDir()
 
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		itemID := testutil.InsertMediaItem(t, tx, collID, "photo", "fake/stale.jpg", "image/jpeg")
 
 		// Mark item as missing for >90 days (current pruning threshold)
@@ -142,7 +143,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		dataPath := t.TempDir()
 
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		itemID := testutil.InsertMediaItem(t, tx, collID, "photo", "fake/recent.jpg", "image/jpeg")
 
 		// Mark item as missing for only 5 days
@@ -173,7 +174,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		dataPath := t.TempDir()
 
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		itemID := testutil.InsertMediaItem(t, tx, collID, "photo", "fake/novariants.jpg", "image/jpeg")
 
 		// Create photo_metadata with NULL variants_generated_at
@@ -208,7 +209,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		dataPath := t.TempDir()
 
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		itemID := testutil.InsertMediaItem(t, tx, collID, "photo", "fake/active.jpg", "image/jpeg")
 
 		testutil.MustExec(t, tx,

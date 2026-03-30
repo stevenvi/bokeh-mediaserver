@@ -72,7 +72,7 @@ CREATE TABLE collections (
                                         'video:movie',
                                         'video:home_movie',
                                         'audio:music',
-                                        'audio:radio',
+                                        'audio:show',
                                         'image:photo'
                                     )),
     relative_path               text,

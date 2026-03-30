@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -102,7 +103,7 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 
 	var items []models.MediaItemView
 
-	if col.Type == "video:movie" || col.Type == "video:home_movie" {
+	if col.Type == constants.CollectionTypeMovie || col.Type == constants.CollectionTypeHomeMovie {
 		// Video collections use a dedicated query with JOIN to video_metadata and video_bookmarks.
 		items, err = repository.MediaItemVideosByCollection(r.Context(), h.db, id, userID, col.Type, pageSize+1, offset)
 	} else {

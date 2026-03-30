@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/config"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -347,7 +348,7 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 
 	collType, _ := repository.MediaItemRootCollectionType(r.Context(), h.db, id)
 	widthRatio, heightRatio := 4, 3
-	if collType == "video:movie" {
+	if collType == constants.CollectionTypeMovie {
 		widthRatio, heightRatio = 2, 3
 	}
 

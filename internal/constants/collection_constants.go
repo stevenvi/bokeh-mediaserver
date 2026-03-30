@@ -1,4 +1,4 @@
-package utils
+package constants
 
 var SupportedExtensions = map[string]string{
 	// Common image formats
@@ -64,4 +64,16 @@ var SupportedExtensions = map[string]string{
 	".mp4": "video/mp4",
 	".mov": "video/quicktime",
 	".mkv": "video/x-matroska",
+}
+
+type CollectionType string
+const (
+    CollectionTypeMovie     CollectionType = "video:movie"
+    CollectionTypeHomeMovie CollectionType = "video:home_movie"
+    CollectionTypeMusic     CollectionType = "audio:music"
+    CollectionTypeAudioShow CollectionType = "audio:show"
+    CollectionTypePhoto     CollectionType = "image:photo"
+)
+func (s CollectionType) String() string {
+    return string(s) 
 }

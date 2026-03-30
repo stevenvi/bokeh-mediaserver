@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
@@ -47,7 +48,7 @@ func TestRunScan(t *testing.T) {
 		copyTestImage(t, testdataDir, "photo_no_exif.png", collectionDir)
 
 		// Create collection in DB — relative_path must match the relative path from mediaPath
-		collID := testutil.InsertCollection(t, tx, "Test Photos", "image:photo", collectionRoot)
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
 
 		dataPath := t.TempDir()
 
@@ -82,7 +83,7 @@ func TestRunScan(t *testing.T) {
 		require.NoError(t, os.MkdirAll(collectionDir, 0o755))
 		copyTestImage(t, testdataDir, "photo_with_exif.jpg", collectionDir)
 
-		collID := testutil.InsertCollection(t, tx, "Test Photos", "image:photo", collectionRoot)
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
 		dataPath := t.TempDir()
 
 		// First scan
@@ -115,7 +116,7 @@ func TestRunScan(t *testing.T) {
 		require.NoError(t, os.MkdirAll(collectionDir, 0o755))
 		copyTestImage(t, testdataDir, "photo_with_exif.jpg", collectionDir)
 
-		collID := testutil.InsertCollection(t, tx, "Test Photos", "image:photo", collectionRoot)
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
 		dataPath := t.TempDir()
 
 		// First scan
@@ -156,7 +157,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		copyFile(t, filepath.Join(testdataDir, "photo_with_exif.jpg"), imgPath)
 
 		// Create collection and media_item using relative path
-		collID := testutil.InsertCollection(t, tx, "Test", "image:photo", "test")
+		collID := testutil.InsertCollection(t, tx, "Test", constants.CollectionTypePhoto, "test")
 		itemID := testutil.InsertMediaItem(t, tx, collID, "photo", imgRelPath, "image/jpeg")
 
 		// Create a process_media job (already in running state, as the dispatcher would set it)

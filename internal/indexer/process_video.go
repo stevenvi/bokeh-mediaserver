@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -99,7 +100,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	}
 	finalDate = exifDate
 
-	if collType == "video:home_movie" {
+	if collType == constants.CollectionTypeHomeMovie {
 		basename := strings.TrimSuffix(filepath.Base(fsPath), filepath.Ext(fsPath))
 		parsed := parseHomemovieFilename(basename)
 		if parsed != nil {
@@ -134,7 +135,7 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// --- Step 4: cover art ---
 	// Crop ratio: movie posters are 2:3 (portrait); home movies use 4:3 (TV/landscape ratio).
 	coverWidthRatio, coverHeightRatio := 4, 3
-	if collType == "video:movie" {
+	if collType == constants.CollectionTypeMovie {
 		coverWidthRatio, coverHeightRatio = 2, 3
 	}
 

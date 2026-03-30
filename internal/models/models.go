@@ -3,6 +3,8 @@ package models
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 )
 
 type Collection struct {
@@ -75,17 +77,17 @@ type User struct {
 
 // CollectionSummary is a lightweight view of a collection for user-facing lists.
 type CollectionSummary struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID   int64                    `json:"id"`
+	Name string                   `json:"name"`
+	Type constants.CollectionType `json:"type"`
 }
 
 // CollectionView is the user-facing detail view of a single collection.
 type CollectionView struct {
-	ID                 int64  `json:"id"`
-	ParentCollectionID *int64 `json:"parent_collection_id,omitempty"`
-	Name               string `json:"name"`
-	Type               string `json:"type"`
+	ID                 int64                    `json:"id"`
+	ParentCollectionID *int64                   `json:"parent_collection_id,omitempty"`
+	Name               string                   `json:"name"`
+	Type               constants.CollectionType `json:"type"`
 }
 
 // VideoMetadata stores technical and descriptive data for a video media item.
