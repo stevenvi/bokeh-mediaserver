@@ -19,10 +19,10 @@ import (
 
 type videoHandler struct {
 	db         utils.DBTX
-	dataPath   string
-	mediaPath  string
 	cfg        *config.Config
 	dispatcher *jobs.Dispatcher
+	dataPath   string
+	mediaPath  string
 }
 
 // isLocalRequest returns true if the request originates from an RFC 1918 or

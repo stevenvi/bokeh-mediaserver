@@ -57,6 +57,7 @@ func AlbumSetManualCover(ctx context.Context, db utils.DBTX, id int64, manual bo
 
 // AlbumGetRandomNonCompilationIDByArtist returns a random non-compilation album ID
 // for the given artist. Returns pgx.ErrNoRows if none exist.
+// TODO: This should be limited to albums in the same collection, but it looks like we don't have that data at the moment...
 func AlbumGetRandomNonCompilationIDByArtist(ctx context.Context, db utils.DBTX, artistID int64) (int64, error) {
 	var id int64
 	err := db.QueryRow(ctx,

@@ -16,8 +16,8 @@ Builds images, starts the full stack, runs all tests, tears everything down.
 Exit code reflects pass/fail.
 
     cd server/integration_tests
-    docker compose -f docker-compose.integration.yml up --build --abort-on-container-exit
-    docker compose -f docker-compose.integration.yml down -v
+    docker compose -f docker-compose.yml up --build --abort-on-container-exit
+    docker compose -f docker-compose.yml down -v
 
 ### Development iteration
 

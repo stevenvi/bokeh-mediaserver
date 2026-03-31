@@ -198,14 +198,14 @@ func MediaItemFindExistingHashes(ctx context.Context, db utils.DBTX, hashes []st
 
 // StaleMediaItem represents a media item that has been missing long enough to prune.
 type StaleMediaItem struct {
-	ID   int64
 	Hash string
+	ID   int64
 }
 
 // MediaItemsStale returns items missing for more than 90 days.
 func MediaItemsStale(ctx context.Context, db utils.DBTX) ([]StaleMediaItem, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, file_hash FROM media_items
+		`SELECT file_hash, id FROM media_items
 		 WHERE missing_since IS NOT NULL
 		   AND missing_since < now() - interval '90 days'`,
 	)
@@ -358,10 +358,10 @@ func MediaItemGetVideoStreamInfo(ctx context.Context, db utils.DBTX, itemID int6
 
 // VideoIntegrityItem holds the fields needed by the integrity checker for a single video item.
 type VideoIntegrityItem struct {
-	ItemID         int64
-	FileHash       string
-	TranscodedAt   *time.Time
-	CollectionType string
+	TranscodedAt   *time.Time `json:"transcoded_at"`
+	FileHash       string     `json:"file_hash"`
+	CollectionType string     `json:"collection_type"`
+	ItemID         int64      `json:"media_item_id"`
 }
 
 // MediaItemVideosByCollection returns media items in a video collection.
@@ -443,15 +443,13 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 
 // SlideshowQuery holds parameters for a slideshow page fetch.
 type SlideshowQuery struct {
-	CollectionID int64
-	PageSize     int // the repository adds +1 internally
-	Ascending    bool
-	Recursive    bool
-
-	// Cursor fields
-	HasCursor     bool
 	CursorTime    *time.Time
+	CollectionID  int64
+	PageSize      int // the repository adds +1 internally
 	CursorID      int64
+	Ascending     bool
+	Recursive     bool
+	HasCursor     bool
 	IncludeCursor bool // include the item the cursor points to in results (inclusive/exclusive)
 }
 
@@ -518,13 +516,13 @@ func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]mod
 	query := fmt.Sprintf(`
 		%s
 		SELECT
-		    mi.id,
-		    mi.title,
-		    mi.mime_type,
 		    pm.created_at,
 		    pm.placeholder,
 		    pm.width_px,
-		    pm.height_px
+		    pm.height_px,
+		    mi.title,
+		    mi.mime_type,
+		    mi.id
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
 		WHERE %s
@@ -545,9 +543,9 @@ func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]mod
 
 // SlideshowItemPositionObj holds the sort-key fields needed to construct a cursor for a given item.
 type SlideshowItemPositionObj struct {
+	CreatedAt    *time.Time
 	ID           int64
 	CollectionID int64
-	CreatedAt    *time.Time
 }
 
 // SlideshowItemPosition returns the sort-key fields for a media item, used to construct

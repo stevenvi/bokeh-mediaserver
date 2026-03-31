@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestCreate(t *testing.T) {
-	tests := []struct {
+	tests := []struct { //nolint:govet
 		name        string
 		jobType     string
 		relatedID   *int64

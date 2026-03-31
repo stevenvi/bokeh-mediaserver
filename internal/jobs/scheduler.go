@@ -17,17 +17,17 @@ const scheduleReloadInterval = 1 * time.Hour // re-read from DB hourly
 // scheduledJob defines a recurring job type and its schedule configuration.
 // If trigger is nil, the default behavior is triggerByType using jobType.
 type scheduledJob struct {
+	trigger         func(s *Scheduler, ctx context.Context) // nil = use triggerByType
 	configKey       string                                  // column name in server_config
 	defaultSchedule string                                  // fallback cron expression
 	jobType         string                                  // jobs.type value
-	trigger         func(s *Scheduler, ctx context.Context) // nil = use triggerByType
 }
 
 var scheduledJobs = []scheduledJob{
-	{"scan_schedule", "0 3 * * *", "library_scan", (*Scheduler).TriggerScans},
-	{"integrity_schedule", "0 4 * * 0", "integrity_check", nil},
-	{"device_cleanup_schedule", "0 2 1 * *", "device_cleanup", nil},
-	{"cover_cycle_schedule", "0 5 * * 1", "cover_cycle", nil},
+	{(*Scheduler).TriggerScans, "scan_schedule", "0 3 * * *", "library_scan"},
+	{nil, "integrity_schedule", "0 4 * * 0", "integrity_check"},
+	{nil, "device_cleanup_schedule", "0 2 1 * *", "device_cleanup"},
+	{nil, "cover_cycle_schedule", "0 5 * * 1", "cover_cycle"},
 }
 
 // Scheduler reads cron schedules from server_config and creates jobs at the
@@ -89,8 +89,8 @@ func (s *Scheduler) run(ctx context.Context) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 	type activeSchedule struct {
-		job      scheduledJob
 		schedule cron.Schedule
+		job      scheduledJob
 	}
 
 	var schedules []activeSchedule
@@ -126,7 +126,7 @@ func (s *Scheduler) run(ctx context.Context) {
 		}
 
 		// Find earliest next trigger across all jobs.
-		type pending struct {
+		type pending struct { //nolint:govet
 			activeSchedule
 			nextTime time.Time
 		}

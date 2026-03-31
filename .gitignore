@@ -2,3 +2,7 @@
 *.swp
 .env
 __debug*
+.vscode
+coverage.html
+coverage.out
+server

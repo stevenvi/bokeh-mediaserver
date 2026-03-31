@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
@@ -13,7 +14,7 @@ import (
 // the insert. We pre-fetch the next sequence value so we can supply both id and
 // root_collection_id in a single statement, using OVERRIDING SYSTEM VALUE to bypass
 // the GENERATED ALWAYS constraint.
-func CollectionCreate(ctx context.Context, db utils.DBTX, name, colType, relativePath string) (int64, error) {
+func CollectionCreate(ctx context.Context, db utils.DBTX, name string, colType constants.CollectionType, relativePath string) (int64, error) {
 	var id int64
 	err := db.QueryRow(ctx,
 		`WITH nid AS (
@@ -110,19 +111,23 @@ func CollectionGetRelativePath(ctx context.Context, db utils.DBTX, id int64) (st
 // CollectionsTopLevel returns all top-level collections (admin view).
 func CollectionsTopLevel(ctx context.Context, db utils.DBTX) ([]models.Collection, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, name, type, relative_path,
-		        is_enabled, manual_cover, last_scanned_at, created_at
+		`SELECT 
+			created_at,
+			parent_collection_id,
+			relative_path,
+			last_scanned_at, 
+			missing_since,
+			name,
+			type, 
+			id, 
+			is_enabled, 
+			manual_cover
 		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Collection, error) {
-		var c models.Collection
-		err := row.Scan(&c.ID, &c.Name, &c.Type, &c.RelativePath,
-			&c.IsEnabled, &c.ManualCover, &c.LastScannedAt, &c.CreatedAt)
-		return c, err
-	})
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.Collection])
 }
 
 // CollectionsTopLevelEnabled returns IDs of all enabled top-level collections.
@@ -138,9 +143,9 @@ func CollectionsTopLevelEnabled(ctx context.Context, db utils.DBTX) ([]int64, er
 }
 
 // CollectionsListAccessibleByUser returns enabled top-level collections the user has access to.
-func CollectionsListAccessibleByUser(ctx context.Context, db utils.DBTX, userID int64) ([]models.CollectionSummary, error) {
+func CollectionsListAccessibleByUser(ctx context.Context, db utils.DBTX, userID int64) ([]models.CollectionView, error) {
 	rows, err := db.Query(ctx,
-		`SELECT c.id, c.name, c.type
+		`SELECT c.parent_collection_id, c.name, c.type, c.id
 		 FROM collections c
 		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $1
 		 WHERE c.parent_collection_id IS NULL AND c.is_enabled = true
@@ -150,13 +155,13 @@ func CollectionsListAccessibleByUser(ctx context.Context, db utils.DBTX, userID 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionSummary])
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionView])
 }
 
 // CollectionGetChildCollections returns direct enabled children of a collection.
-func CollectionGetChildCollections(ctx context.Context, db utils.DBTX, parentID int64) ([]models.Collection, error) {
+func CollectionGetChildCollections(ctx context.Context, db utils.DBTX, parentID int64) ([]models.CollectionView, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, parent_collection_id, name, type
+		`SELECT parent_collection_id, name, type, id
 		 FROM collections
 		 WHERE parent_collection_id = $1 AND is_enabled = true
 		 ORDER BY name`,
@@ -165,11 +170,7 @@ func CollectionGetChildCollections(ctx context.Context, db utils.DBTX, parentID 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Collection, error) {
-		var c models.Collection
-		err := row.Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type)
-		return c, err
-	})
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionView])
 }
 
 // CollectionExistsAndAccessible checks both that a collection exists+enabled and that the user

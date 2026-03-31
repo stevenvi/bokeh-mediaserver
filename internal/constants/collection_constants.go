@@ -67,13 +67,15 @@ var SupportedExtensions = map[string]string{
 }
 
 type CollectionType string
+
 const (
-    CollectionTypeMovie     CollectionType = "video:movie"
-    CollectionTypeHomeMovie CollectionType = "video:home_movie"
-    CollectionTypeMusic     CollectionType = "audio:music"
-    CollectionTypeAudioShow CollectionType = "audio:show"
-    CollectionTypePhoto     CollectionType = "image:photo"
+	CollectionTypeMovie     CollectionType = "video:movie"
+	CollectionTypeHomeMovie CollectionType = "video:home_movie"
+	CollectionTypeMusic     CollectionType = "audio:music"
+	CollectionTypeAudioShow CollectionType = "audio:show"
+	CollectionTypePhoto     CollectionType = "image:photo"
 )
+
 func (s CollectionType) String() string {
-    return string(s) 
+	return string(s)
 }

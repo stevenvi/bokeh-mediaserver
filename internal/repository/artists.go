@@ -39,6 +39,7 @@ func ArtistGet(ctx context.Context, db utils.DBTX, id int64) (*models.Artist, er
 // ArtistsInCollection returns artists who own at least one album in the given root
 // collection. "Various Artists" appears here when compilation albums exist.
 // Results are ordered by sort_name.
+// TODO: Is this efficient? Investigate that.
 func ArtistsInCollection(ctx context.Context, db utils.DBTX, collectionID int64, limit, offset int, search string) ([]models.ArtistSummary, int, error) {
 	baseQuery := `
 		WITH artist_ids AS (
@@ -75,7 +76,7 @@ func ArtistsInCollection(ctx context.Context, db utils.DBTX, collectionID int64,
 
 	// Get page
 	listQuery := baseQuery + `
-		SELECT a.id, a.name, a.sort_name
+		SELECT a.name, a.sort_name, a.id
 		FROM artist_ids s
 		JOIN artists a ON a.id = s.aid
 		WHERE s.aid IS NOT NULL` + listSearchClause + `
@@ -99,9 +100,9 @@ func ArtistsInCollection(ctx context.Context, db utils.DBTX, collectionID int64,
 func ArtistGetAlbums(ctx context.Context, db utils.DBTX, artistID, collectionID int64) ([]models.AlbumSummary, error) {
 	rows, err := db.Query(ctx,
 		`SELECT
-			al.id,
-			al.name,
 			al.year,
+			al.name,
+			al.id,
 			COUNT(am.media_item_id),
 			COALESCE(SUM(am.duration_seconds), 0)
 		FROM audio_albums al

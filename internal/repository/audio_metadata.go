@@ -49,8 +49,14 @@ func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 // Access is verified against the album's root_collection_id.
 func AudioTracksByAlbum(ctx context.Context, db utils.DBTX, albumID, userID int64) ([]models.TrackView, error) {
 	rows, err := db.Query(ctx,
-		`SELECT m.id, m.title, am.track_number, am.disc_number,
-		        am.duration_seconds, a.name, m.mime_type
+		`SELECT 
+			am.track_number, 
+			am.disc_number,
+			am.duration_seconds, 
+			a.name, 
+			m.title, 
+			m.mime_type,
+			m.id
 		 FROM audio_metadata am
 		 JOIN media_items m ON m.id = am.media_item_id
 		 LEFT JOIN artists a ON a.id = am.artist_id

@@ -39,7 +39,7 @@ func Setup() (*pgxpool.Pool, func()) {
 	}
 
 	root := findRepoRoot()
-	composePath := filepath.Join(root, "docker-compose.test.yml")
+	composePath := filepath.Join(root, "docker-compose.unit-test.yml")
 
 	// Start postgres-test if not already running
 	if !isTestDBRunning(composePath) {
@@ -133,7 +133,7 @@ func findRepoRoot() string {
 // InsertCollection is a test helper that creates a collection and returns its ID.
 func InsertCollection(t *testing.T, db utils.DBTX, name string, colType constants.CollectionType, relativePath string) int64 {
 	t.Helper()
-	id, err := repository.CollectionCreate(context.Background(), db, name, colType.String(), relativePath)
+	id, err := repository.CollectionCreate(context.Background(), db, name, colType, relativePath)
 	require.NoError(t, err)
 	return id
 }

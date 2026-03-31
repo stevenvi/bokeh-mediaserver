@@ -21,10 +21,10 @@ import (
 // pull from the queue simultaneously. The queue itself grows as needed.
 type Pool struct {
 	work        chan func()
-	wg          sync.WaitGroup
-	once        sync.Once
 	closeCh     chan struct{}
+	wg          sync.WaitGroup
 	workerCount int
+	once        sync.Once
 	activeCount atomic.Int32
 }
 

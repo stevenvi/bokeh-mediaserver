@@ -29,8 +29,8 @@ type variantSpec struct {
 // checked by VariantsExist — if it exists, all variants completed.
 var variants = []variantSpec{
 	{name: VariantPreview, size: 1920, quality: 75},
-	{name: VariantSmall,   size: 1280, quality: 70},
-	{name: VariantThumb,   size: 400,  quality: 60},
+	{name: VariantSmall, size: 1280, quality: 70},
+	{name: VariantThumb, size: 400, quality: 60},
 }
 
 // Startup initialises the govips library. Must be called once at server start
@@ -39,7 +39,11 @@ var variants = []variantSpec{
 //	imaging.Startup()
 //	defer imaging.Shutdown()
 func Startup() {
-	vips.Startup(nil)
+	err := vips.Startup(nil)
+	if err != nil {
+		slog.Error("starting vips", "error", err)
+	}
+
 }
 
 func Shutdown() {
@@ -366,7 +370,9 @@ func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
 // Tiles are encoded as AVIF at quality 85.
 // Output: {tilesDir}/image.dzi + {tilesDir}/image_files/
 // NOTE: govips does not support dzsave, so we shell out to the CLI.
-//       It's janky but is sufficient and is only called once per photo.
+//
+//	It's janky but is sufficient and is only called once per photo.
+//
 // TODO: Implement this into govips and remove the CLI dependency.
 func GenerateDZI(srcPath string, dataPath string, hash string) error {
 	tilesDir := TilesPath(dataPath, hash)

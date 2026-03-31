@@ -24,17 +24,14 @@ type handlerEntry struct {
 // Dispatcher polls the database for queued jobs and routes them to the
 // appropriate worker pool based on their registered handler.
 type Dispatcher struct {
-	db       utils.DBTX
-	handlers map[string]handlerEntry
-	mu       sync.RWMutex
-
+	db             utils.DBTX
+	handlers       map[string]handlerEntry
 	mainPool       *Pool
 	processingPool *Pool
-
-	paused atomic.Bool
-
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
+	paused         atomic.Bool
 }
 
 // Pause prevents new jobs from being claimed on the next poll cycle.

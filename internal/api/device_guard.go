@@ -14,9 +14,9 @@ import (
 // Banned entries persist until explicitly unbanned.
 // TODO: An attacker could use this to cause memory overflow by spamming attempts from random IPs. Should use a bounded LRU cache.
 type DeviceGuard struct {
-	mutex   sync.RWMutex
 	revoked map[int64]time.Time // device_id → access token expiry time
 	banned  map[int64]struct{}  // device_id → permanently blocked until unbanned
+	mutex   sync.RWMutex
 }
 
 // NewDeviceGuard creates a new DeviceGuard.

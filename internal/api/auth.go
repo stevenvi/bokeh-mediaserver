@@ -98,9 +98,9 @@ func (h *authHandler) listProviders(w http.ResponseWriter, r *http.Request) {
 func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Provider    string          `json:"provider"`
-		Credentials json.RawMessage `json:"credentials"`
 		DeviceUUID  string          `json:"device_uuid"`
 		DeviceName  string          `json:"device_name"`
+		Credentials json.RawMessage `json:"credentials"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -230,7 +230,7 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/auth/refresh
 func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	// Try cookie first, fall back to JSON body for each field.
-	var refreshToken, deviceUUID = "", ""
+	var refreshToken = ""
 
 	if cookie, err := r.Cookie("refresh_token"); err == nil {
 		refreshToken = cookie.Value
@@ -245,7 +245,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deviceUUID = body.DeviceUUID
+	deviceUUID := body.DeviceUUID
 	if refreshToken == "" {
 		refreshToken = body.RefreshToken
 	}
@@ -509,12 +509,4 @@ func (h *authHandler) writeDeviceList(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	writeJSON(w, http.StatusOK, devices)
-}
-
-// nullableString returns nil for empty strings (maps to SQL NULL).
-func nullableString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }

@@ -1,0 +1,25 @@
+linters:
+  enable:
+    - gofmt          # formatting
+    - goimports      # import ordering
+    - govet          # go vet checks
+    - staticcheck    # static analysis (replaces megacheck)
+    - errcheck       # ensures errors are handled
+    - ineffassign    # detects ineffectual assignments
+    - unused         # finds unused code
+    - gosimple       # simplification suggestions
+
+linters-settings:
+  gofmt:
+    simplify: true
+  govet:
+    enable-all: true
+
+issues:
+  max-same-issues: 0
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - errcheck   # relax error checking in test files
+  exclude:
+    - "shadow: declaration of \"err\" shadows declaration"  # allow reusing err

@@ -133,8 +133,8 @@ func (h *collectionsHandler) listItems(w http.ResponseWriter, r *http.Request) {
 
 // slideshowCursor encodes the position for keyset pagination in a slideshow.
 type slideshowCursor struct {
-	Direction string     `json:"d"` // "f" (forward) or "b" (backward)
 	CreatedAt *time.Time `json:"t,omitempty"`
+	Direction string     `json:"d"` // "f" (forward) or "b" (backward)
 	ID        int64      `json:"i"`
 }
 

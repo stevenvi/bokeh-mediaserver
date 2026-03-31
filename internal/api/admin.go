@@ -35,16 +35,15 @@ type adminHandler struct {
 // POST /api/v1/admin/collections
 func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name         string `json:"name"`
-		Type         string `json:"type"`
-		RelativePath string `json:"relative_path"`
+		Name         string                   `json:"name"`
+		Type         constants.CollectionType `json:"type"`
+		RelativePath string                   `json:"relative_path"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 
 	body.Name = strings.TrimSpace(body.Name)
-	body.Type = strings.TrimSpace(body.Type)
 	body.RelativePath = strings.TrimSpace(body.RelativePath)
 	if body.Name == "" || body.Type == "" || body.RelativePath == "" {
 		writeError(w, http.StatusBadRequest, "name, type, and relative_path are required")
@@ -314,8 +313,8 @@ func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type userSummary struct {
-		ID   int64  `json:"id"`
 		Name string `json:"name"`
+		ID   int64  `json:"id"`
 	}
 	out := make([]userSummary, len(users))
 	for i, u := range users {
@@ -328,10 +327,10 @@ func (h *adminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name            string          `json:"name"`
-		IsAdmin         bool            `json:"is_admin"`
-		LocalAccessOnly bool            `json:"local_access_only"`
 		AuthProvider    string          `json:"auth_provider"`
 		Credentials     json.RawMessage `json:"credentials"`
+		IsAdmin         bool            `json:"is_admin"`
+		LocalAccessOnly bool            `json:"local_access_only"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -578,7 +577,7 @@ func (h *adminHandler) setCollectionAccess(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer tx.Rollback(r.Context()) //nolint:errcheck
 
 	if err := repository.UserDeleteAllCollectionAccess(r.Context(), tx, userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "db error")

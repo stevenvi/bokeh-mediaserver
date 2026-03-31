@@ -71,7 +71,11 @@ func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID 
 // file hash, transcoded_at timestamp, and root collection type.
 func VideosForIntegrityCheck(ctx context.Context, db utils.DBTX) ([]VideoIntegrityItem, error) {
 	rows, err := db.Query(ctx,
-		`SELECT vm.media_item_id, mi.file_hash, vm.transcoded_at, c.type AS collection_type
+		`SELECT 
+			vm.transcoded_at, 
+			mi.file_hash, 
+			c.type AS collection_type,
+			vm.media_item_id
 		 FROM video_metadata vm
 		 JOIN media_items mi ON mi.id = vm.media_item_id
 		 JOIN collections c ON c.id = mi.collection_id

@@ -15,13 +15,13 @@ type Config struct {
 	MediaPath             string // Base path for the media library
 	Port                  string // Port to listen on
 	JWTSecret             string // Secret for signing JWTs
-	WorkerCount           int    // Number of worker goroutines to use
-	ProcessingWorkerCount int    // Number of worker goroutines for media processing (EXIF, variants)
 	LogLevel              string // Log level (debug, info, warn, error)
 	LogPath               string // Path to output log files to (empty for stdout)
 	ClientOrigin          string // Allowed CORS origin for the web client (e.g. http://localhost:5173); empty disables CORS
-	Production            bool   // Enables Secure flag on auth cookies; set DEPLOY_ENV=production
+	WorkerCount           int    // Number of worker goroutines to use
+	ProcessingWorkerCount int    // Number of worker goroutines for media processing (EXIF, variants)
 	TranscodeBitrateKbps  int    // Target bitrate for video transcodes in kbps; loaded from server_config at startup
+	Production            bool   // Enables Secure flag on auth cookies; set DEPLOY_ENV=production
 }
 
 func Load() (*Config, error) {

@@ -41,9 +41,9 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 
 		// Route to the appropriate processor based on media type.
 		if strings.HasPrefix(mimeType, "audio/") {
-			return processAudioFile(ctx, worker, db, job, itemID, fsPath, mediaPath, dataPath)
+			return processAudioFile(ctx, worker, db, job, itemID, fsPath, dataPath)
 		} else if strings.HasPrefix(mimeType, "image/") {
-			return processImageFile(ctx, worker, db, job, itemID, fsPath, fileHash, mediaPath, dataPath)
+			return processImageFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath)
 		} else if strings.HasPrefix(mimeType, "video/") {
 			return processVideoFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath, transcodeBitrateKbps)
 		} else {
@@ -54,7 +54,7 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 	}
 }
 
-func processImageFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, mediaPath, dataPath string) error {
+func processImageFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, dataPath string) error {
 	// Extract EXIF
 	et, err := worker.exiftool()
 	if err != nil {
@@ -177,7 +177,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 
 // processAudioFile handles audio media: extracts tags via exiftool, upserts artist,
 // album, and audio_metadata, and extracts album art.
-func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, mediaPath, dataPath string) error {
+func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, dataPath string) error {
 	_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting audio tags")
 
 	et, err := worker.exiftool()

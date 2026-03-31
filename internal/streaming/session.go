@@ -8,8 +8,8 @@
 // A monitor goroutine (started from main.go) resumes the dispatcher once all
 // sessions have been idle for SessionIdleTimeout.
 //
-// WARNING: I am concerned there are still potential thrashing races in here 
-// involving seeking in a stream if multiple disjoint regions of a video are 
+// WARNING: I am concerned there are still potential thrashing races in here
+// involving seeking in a stream if multiple disjoint regions of a video are
 // being requested simultaneously.
 //
 // TODO: There is a functional bug in this implementation: we treat all idle
@@ -37,7 +37,7 @@
 // could also be done implicitly via the bookmark endpoint that should already
 // be used, that may be an even better approach.
 //
-// Obviously a malicious authenticated user could still game this to DoS your 
+// Obviously a malicious authenticated user could still game this to DoS your
 // server, but you shouldn't be letting untrusted users into your system.
 package streaming
 
@@ -79,23 +79,23 @@ const (
 
 // Session holds the state for one active on-the-fly HLS encode.
 type Session struct {
-	itemID            int64
-	fsPath            string
-	tempDir           string
-	cmd               *exec.Cmd
-	isRemux           bool
-	segments          segmentSet // segments fully written to disk
-	currentSegment    int        // segment ffmpeg is currently writing
-	lastActivity      time.Time
-	mu                sync.Mutex
-	watcher           *fsnotify.Watcher
-	manifestReady     chan struct{}  // closed by watchSegments when manifest.m3u8 is created
-	manifestOnce      sync.Once
-	segmentAdded      chan struct{}  // closed and replaced each time a segment is marked available
+	lastActivity   time.Time
+	watcher        *fsnotify.Watcher
+	cmd            *exec.Cmd
+	manifestReady  chan struct{} // closed by watchSegments when manifest.m3u8 is created
+	segmentAdded   chan struct{} // closed and replaced each time a segment is marked available
+	tempDir        string
+	fsPath         string
+	segments       segmentSet // segments fully written to disk
+	currentSegment int        // segment ffmpeg is currently writing
+	itemID         int64
+	manifestOnce   sync.Once
+	mu             sync.Mutex
+	isRemux        bool
 }
 
 var (
-	sessions   = map[int64]*Session{}  // maps item id to session
+	sessions   = map[int64]*Session{} // maps item id to session
 	sessionsMu sync.Mutex
 )
 
@@ -301,7 +301,7 @@ func (s *Session) seekTo(targetSeg int) error {
 
 	s.mu.Lock()
 	s.cmd = cmd
-	s.currentSegment = firstMissing	 // set this now to prevent races between this instant and any other segment requests before ffmpeg starts up
+	s.currentSegment = firstMissing // set this now to prevent races between this instant and any other segment requests before ffmpeg starts up
 	s.mu.Unlock()
 
 	go s.waitAndLog()
@@ -460,7 +460,7 @@ func (s *Session) proactiveGapFill(nextSeg int) {
 	}
 
 	lookaheadOK1 := s.segments.contains(nextSeg, 1)
-	lookaheadOK2 := s.segments.contains(nextSeg + 1, 1)
+	lookaheadOK2 := s.segments.contains(nextSeg+1, 1)
 
 	threshold := TranscodeSeekRestartThreshold
 	if isRemux {

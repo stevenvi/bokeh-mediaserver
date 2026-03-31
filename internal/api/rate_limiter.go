@@ -6,18 +6,18 @@ import (
 )
 
 const (
-	maxAttempts    = 5
-	attemptWindow  = time.Minute
-	lockDuration   = 30 * time.Minute
+	maxAttempts   = 5
+	attemptWindow = time.Minute
+	lockDuration  = 30 * time.Minute
 )
 
 // loginRateLimiter tracks failed login attempts per IP and temporarily locks
 // IPs that exceed the threshold.
 // TODO: An attacker could use this to cause memory overflow by spamming attempts with random IPs. Should use a sensible LRU cache.
 type loginRateLimiter struct {
-	mutex    sync.Mutex
 	attempts map[string][]time.Time
 	locked   map[string]time.Time
+	mutex    sync.Mutex
 }
 
 func newLoginRateLimiter() *loginRateLimiter {

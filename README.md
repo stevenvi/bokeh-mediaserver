@@ -4,7 +4,9 @@ Personal media server focused on photo viewing. Built in Go.
 
 ## Quick start (development)
 
-**Requirements:** Go 1.26+, Docker, libvips (`apt install libvips-dev` / `brew install vips`)
+**Requirements:** Go 1.26+, Docker, libvips (`apt install libvips-dev` / `brew install vips`), make
+
+Run `make setup` after cloning to set up your repo for contributing to this project.
 
 ```bash
 # 1. Start PostgreSQL

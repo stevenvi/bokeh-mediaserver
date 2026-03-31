@@ -152,7 +152,13 @@ func DeviceEvictLRU(ctx context.Context, db utils.DBTX, userID int64) (int64, er
 // DevicesGetForUser returns all devices for a user (including banned), ordered by last_seen_at desc.
 func DevicesGetForUser(ctx context.Context, db utils.DBTX, userID int64) ([]models.DeviceView, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id, device_name, banned_at, last_seen_at, created_at, access_history
+		`SELECT 
+			last_seen_at, 
+			created_at, 
+			banned_at, 
+			device_name, 
+			access_history,
+			id
 		 FROM devices
 		 WHERE user_id = $1
 		 ORDER BY last_seen_at DESC`,
