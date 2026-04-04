@@ -31,7 +31,7 @@ import (
 // If force=true, all media items will be marked for review even if checksums are unchanged.
 // This really is only useful for debugging purposes, to force reparsing metadata.
 func RunScan(ctx context.Context, db utils.DBTX,
-	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string, force bool, dispatcher *jobs.Dispatcher) error {
+	jobID, collectionID int64, collectionType, relativePath string, mediaPath string, dataPath string, force bool, dispatcher *jobs.Dispatcher) error {
 
 	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
@@ -72,6 +72,13 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		ext := strings.ToLower(filepath.Ext(path))
 		mimeType, ok := constants.SupportedExtensions[ext]
 		if !ok {
+			return nil
+		}
+
+		// Only index files whose MIME category matches the collection type.
+		// e.g. "audio:music" only accepts "audio/*", "image:photo" only "image/*".
+		mimeCategory := strings.SplitN(collectionType, ":", 2)[0]
+		if !strings.HasPrefix(mimeType, mimeCategory+"/") {
 			return nil
 		}
 
@@ -266,11 +273,14 @@ func HandleScanJob(mediaPath, dataPath string, dispatcher *jobs.Dispatcher) func
 
 		force := job.RelatedType != nil && *job.RelatedType == "collection:force"
 
-		relativePath, err := repository.CollectionGetRelativePath(ctx, db, collectionID)
+		collection, err := repository.CollectionGet(ctx, db, collectionID)
 		if err != nil {
 			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
 		}
+		if collection.RelativePath == nil {
+			return fmt.Errorf("collection %d has no relative path", collectionID)
+		}
 
-		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath, force, dispatcher)
+		return RunScan(ctx, db, job.ID, collectionID, collection.Type, *collection.RelativePath, mediaPath, dataPath, force, dispatcher)
 	}
 }

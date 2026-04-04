@@ -54,7 +54,7 @@ func TestRunScan(t *testing.T) {
 		dataPath := t.TempDir()
 
 		jobID := createTestJob(t, tx, "library_scan", &collID)
-		err := indexer.RunScan(ctx, tx, jobID, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{})
+		err := indexer.RunScan(ctx, tx, jobID, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{})
 		require.NoError(t, err)
 
 		// Verify media_items were created
@@ -89,14 +89,14 @@ func TestRunScan(t *testing.T) {
 
 		// First scan
 		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Mark first scan's process jobs as done so they're not counted
 		testutil.MustExec(t, tx, "UPDATE jobs SET status = 'done' WHERE type = 'process_media'")
 
 		// Second scan — file hasn't changed
 		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// No new process_media jobs should have been created
 		var queuedCount int
@@ -122,14 +122,14 @@ func TestRunScan(t *testing.T) {
 
 		// First scan
 		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Delete the file
 		require.NoError(t, os.Remove(filepath.Join(collectionDir, "photo_with_exif.jpg")))
 
 		// Second scan
 		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Verify the item is marked missing
 		var missingCount int
