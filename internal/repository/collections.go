@@ -49,10 +49,10 @@ func CollectionUpsertSubCollection(ctx context.Context, db utils.DBTX, parentID,
 func CollectionGet(ctx context.Context, db utils.DBTX, id int64) (*models.Collection, error) {
 	var c models.Collection
 	err := db.QueryRow(ctx,
-		`SELECT id, parent_collection_id, name, type
+		`SELECT id, parent_collection_id, relative_path, name, type
 		 FROM collections WHERE id = $1 AND is_enabled = true`,
 		id,
-	).Scan(&c.ID, &c.ParentCollectionID, &c.Name, &c.Type)
+	).Scan(&c.ID, &c.ParentCollectionID, &c.RelativePath, &c.Name, &c.Type)
 	if err != nil {
 		return nil, err
 	}

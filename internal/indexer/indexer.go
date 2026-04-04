@@ -93,6 +93,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		}
 		fileSize := stat.Size()
 
+		slog.Debug("enumerating file", "path", path)
 		fileHash, err := computeFileHash(path, fileSize)
 		if err != nil {
 			slog.Warn("hash failed", "path", path, "err", err)
@@ -278,7 +279,7 @@ func HandleScanJob(mediaPath, dataPath string, dispatcher *jobs.Dispatcher) func
 			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
 		}
 		if collection.RelativePath == nil {
-			return fmt.Errorf("collection %d has no relative path", collectionID)
+			return fmt.Errorf("collection %d has no relative path (%s)", collectionID, *collection.RelativePath)
 		}
 
 		return RunScan(ctx, db, job.ID, collectionID, collection.Type, *collection.RelativePath, mediaPath, dataPath, force, dispatcher)
