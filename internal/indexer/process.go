@@ -342,7 +342,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 		}
 	}
 
-	slog.Debug("finished processing audio file", "item_id", itemID)
+	slog.Debug("finished processing audio file", "item_id", itemID, "path", fsPath)
 	_ = repository.JobDelete(ctx, db, job.ID)
 	return nil
 }

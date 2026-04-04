@@ -44,6 +44,11 @@ func Startup() {
 		slog.Error("starting vips", "error", err)
 	}
 
+	// Suppress operational noise (resize decisions, mask sizes, vector paths, etc.).
+	// Only forward warnings and above to slog so real problems surface.
+	vips.LoggingSettings(func(domain string, level vips.LogLevel, msg string) {
+		slog.Warn("vips", "domain", domain, "msg", msg)
+	}, vips.LogLevelWarning)
 }
 
 func Shutdown() {
