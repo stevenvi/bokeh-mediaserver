@@ -14,6 +14,7 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -27,7 +28,7 @@ var homemovieFilenameRe = regexp.MustCompile(`^(\d{4})\.(\d{2})(?:\.(\d{2})(?:-(
 // processVideoFile handles video media: extracts metadata via exiftool,
 // applies home movie filename fallback, upserts video_metadata, generates
 // cover art or thumbnail, and queues a transcode job if needed.
-func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, dataPath string, transcodeBitrateKbps int) error {
+func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DBTX, job *models.Job, itemID int64, fsPath, fileHash, dataPath string, transcodeBitrateKbps int, dispatcher *jobs.Dispatcher) error {
 	_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting video metadata")
 
 	// --- Step 1: exiftool extraction ---
@@ -171,6 +172,8 @@ func processVideoFile(ctx context.Context, worker *processingWorker, db utils.DB
 				relatedType := "media_item"
 				if _, err := repository.JobCreate(ctx, db, "transcode", &itemID, &relatedType); err != nil {
 					slog.Warn("queue transcode job", "item_id", itemID, "err", err)
+				} else {
+					dispatcher.TriggerImmediately()
 				}
 			}
 		}

@@ -28,6 +28,7 @@ type Dispatcher struct {
 	handlers       map[string]handlerEntry
 	mainPool       *Pool
 	processingPool *Pool
+	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
 	mu             sync.RWMutex
@@ -63,12 +64,22 @@ func (d *Dispatcher) Register(jobType string, handler JobHandler, lowPriority bo
 // Start begins the polling loop in a background goroutine.
 func (d *Dispatcher) Start(ctx context.Context) {
 	ctx, d.cancel = context.WithCancel(ctx)
+	d.ctx = ctx
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
 		d.poll(ctx)
 	}()
 	slog.Info("job dispatcher started")
+}
+
+// TriggerImmediately triggers an immediate poll of the job queue. Safe to call from any
+// goroutine. No-op if the dispatcher has not been started.
+func (d *Dispatcher) TriggerImmediately() {
+	if d.ctx == nil {
+		return
+	}
+	go d.pollOnce(d.ctx)
 }
 
 // Stop cancels the polling loop and waits for in-flight jobs to finish.
@@ -81,7 +92,7 @@ func (d *Dispatcher) Stop() {
 }
 
 func (d *Dispatcher) poll(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	// Do an immediate poll on startup to pick up recovered jobs

@@ -191,10 +191,7 @@ func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
 	// Sanitize: prevent directory traversal
 	tilePath = filepath.Clean("/" + tilePath)
 
-	fullPath := filepath.Join(
-		imaging.TilesPath(h.dataPath, hash),
-		tilePath,
-	)
+	fullPath := filepath.Join(imaging.TilesPath(h.dataPath, hash), tilePath)
 
 	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 		writeError(w, http.StatusNotFound, "tile not found")

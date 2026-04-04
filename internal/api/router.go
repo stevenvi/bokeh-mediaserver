@@ -45,7 +45,8 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 	admin := &adminHandler{
 		db: db, guard: guard, pool: pool,
 		authPlugins: authPlugins, authHandler: authHandler,
-		mediaPath: mediaPath, dataPath: dataPath,
+		dispatcher: dispatcher,
+		mediaPath:  mediaPath, dataPath: dataPath,
 	}
 
 	// ── Public ────────────────────────────────────────────────────────────────

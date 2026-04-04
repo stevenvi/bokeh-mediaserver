@@ -103,14 +103,14 @@ func run() error {
 
 	// ── Job dispatcher ────────────────────────────────────────────────────────
 	dispatcher := jobs.NewDispatcher(db, mainPool, processingPool)
-	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath), false)
-	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps), true)
+	dispatcher.Start(ctx)
+	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
+	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps, dispatcher), true)
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
-	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath), false)
+	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath, dispatcher), false)
 	dispatcher.Register("device_cleanup", maintenance.HandleDeviceCleanup(), false)
 	dispatcher.Register("cover_cycle", maintenance.HandleCoverCycle(cfg.DataPath), false)
 	dispatcher.Register("transcode", transcoder.HandleTranscode(cfg), true)
-	dispatcher.Start(ctx)
 
 	// ── Streaming idle sweeper ─────────────────────────────────────────────────
 	streaming.StartIdleSweeper(ctx)
@@ -133,7 +133,7 @@ func run() error {
 	}()
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────
-	scheduler := jobs.NewScheduler(db)
+	scheduler := jobs.NewScheduler(db, dispatcher)
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────

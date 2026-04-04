@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -30,7 +31,7 @@ import (
 // If force=true, all media items will be marked for review even if checksums are unchanged.
 // This really is only useful for debugging purposes, to force reparsing metadata.
 func RunScan(ctx context.Context, db utils.DBTX,
-	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string, force bool) error {
+	jobID, collectionID int64, relativePath string, mediaPath string, dataPath string, force bool, dispatcher *jobs.Dispatcher) error {
 
 	slog.Info("RunScan starting", "job_id", jobID, "collection_id", collectionID)
 
@@ -143,6 +144,10 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		return fmt.Errorf("walk files: %w", err)
 	}
 
+	if queued > 0 {
+		dispatcher.TriggerImmediately()
+	}
+
 	// Phase 3 — mark files not seen this scan as missing
 	markedMissing, err := repository.MediaItemMarkMissingSince(ctx, db, collectionID, jobStart)
 	if err != nil {
@@ -252,7 +257,7 @@ func computeFileHash(path string, size int64) (string, error) {
 // It performs enumeration only — heavy processing is queued as separate process_media jobs.
 // When related_type is "collection:force", process_media is queued for every file
 // regardless of whether the file has changed (useful for re-extracting EXIF metadata).
-func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+func HandleScanJob(mediaPath, dataPath string, dispatcher *jobs.Dispatcher) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		if job.RelatedID == nil {
 			return fmt.Errorf("library_scan job %d has no related_id", job.ID)
@@ -266,6 +271,6 @@ func HandleScanJob(mediaPath, dataPath string) func(ctx context.Context, db util
 			return fmt.Errorf("fetch collection %d: %w", collectionID, err)
 		}
 
-		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath, force)
+		return RunScan(ctx, db, job.ID, collectionID, relativePath, mediaPath, dataPath, force, dispatcher)
 	}
 }

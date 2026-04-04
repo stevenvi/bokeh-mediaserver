@@ -76,10 +76,10 @@ func (pw *ProcessingWorkers) get() *processingWorker {
 
 // HandleProcessMediaWithWorkers returns a JobHandler that routes process_media
 // jobs through the shared ProcessingWorkers pool for exiftool reuse.
-func HandleProcessMediaWithWorkers(pw *ProcessingWorkers, mediaPath, dataPath string, transcodeBitrateKbps int) jobs.JobHandler {
+func HandleProcessMediaWithWorkers(pw *ProcessingWorkers, mediaPath, dataPath string, transcodeBitrateKbps int, dispatcher *jobs.Dispatcher) jobs.JobHandler {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		worker := pw.get()
-		handler := HandleProcessMedia(worker, mediaPath, dataPath, transcodeBitrateKbps)
+		handler := HandleProcessMedia(worker, mediaPath, dataPath, transcodeBitrateKbps, dispatcher)
 		return handler(ctx, db, job)
 	}
 }

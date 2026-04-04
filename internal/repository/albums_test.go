@@ -79,10 +79,10 @@ func TestAlbumSetManualCover(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypeMusic)
 		albumID := createAlbum(t, db, nil, collID)
-		
+
 		require.NoError(t, repository.AlbumSetManualCover(bg(), db, albumID, true))
 		require.NoError(t, repository.AlbumSetManualCover(bg(), db, albumID, false))
-		
+
 		album, err := repository.AlbumGet(bg(), db, albumID)
 		require.NoError(t, err)
 		assert.False(t, album.ManualCover)

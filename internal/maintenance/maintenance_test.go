@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
@@ -121,7 +122,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath)
+		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -156,7 +157,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath)
+		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -187,7 +188,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath)
+		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -227,7 +228,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath)
+		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)

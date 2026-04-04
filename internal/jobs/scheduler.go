@@ -34,14 +34,17 @@ var scheduledJobs = []scheduledJob{
 // appropriate times. Schedules are re-read from the DB periodically to pick
 // up admin changes without requiring a restart.
 type Scheduler struct {
-	db     utils.DBTX
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	db         utils.DBTX
+	dispatcher *Dispatcher
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
-// NewScheduler creates a new scheduler.
-func NewScheduler(db utils.DBTX) *Scheduler {
-	return &Scheduler{db: db}
+// NewScheduler creates a new scheduler. The dispatcher is used to wake up the job
+// polling after jobs are enqueued so they are picked up immediately rather than
+// waiting for the next poll interval.
+func NewScheduler(db utils.DBTX, dispatcher *Dispatcher) *Scheduler {
+	return &Scheduler{db: db, dispatcher: dispatcher}
 }
 
 // Start begins the scheduler loop.
@@ -193,6 +196,7 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 		}
 		slog.Info("queued scheduled scan", "collection_id", collID, "job_id", jobID)
 	}
+	s.dispatcher.TriggerImmediately()
 }
 
 // TriggerIntegrityCheck triggers a scheduled integrity check.
@@ -229,4 +233,5 @@ func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
 		return
 	}
 	slog.Info("queued scheduled job", "type", jobType, "job_id", jobID)
+	s.dispatcher.TriggerImmediately()
 }

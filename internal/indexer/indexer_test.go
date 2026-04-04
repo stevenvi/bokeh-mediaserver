@@ -10,6 +10,7 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
@@ -53,7 +54,7 @@ func TestRunScan(t *testing.T) {
 		dataPath := t.TempDir()
 
 		jobID := createTestJob(t, tx, "library_scan", &collID)
-		err := indexer.RunScan(ctx, tx, jobID, collID, collectionRoot, mediaPath, dataPath, false)
+		err := indexer.RunScan(ctx, tx, jobID, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{})
 		require.NoError(t, err)
 
 		// Verify media_items were created
@@ -88,14 +89,14 @@ func TestRunScan(t *testing.T) {
 
 		// First scan
 		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Mark first scan's process jobs as done so they're not counted
 		testutil.MustExec(t, tx, "UPDATE jobs SET status = 'done' WHERE type = 'process_media'")
 
 		// Second scan — file hasn't changed
 		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// No new process_media jobs should have been created
 		var queuedCount int
@@ -121,14 +122,14 @@ func TestRunScan(t *testing.T) {
 
 		// First scan
 		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Delete the file
 		require.NoError(t, os.Remove(filepath.Join(collectionDir, "photo_with_exif.jpg")))
 
 		// Second scan
 		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false))
+		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
 
 		// Verify the item is marked missing
 		var missingCount int
@@ -174,7 +175,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000, &jobs.Dispatcher{})
 		job := &models.Job{
 			ID:          jobID,
 			Type:        "process_media",
@@ -231,7 +232,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000, &jobs.Dispatcher{})
 		job := &models.Job{
 			ID:          jobID,
 			Type:        "process_media",
@@ -258,7 +259,7 @@ func TestHandleProcessMedia(t *testing.T) {
 		pw := indexer.NewProcessingWorkers(1)
 		defer pw.CloseAll()
 
-		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000)
+		handler := indexer.HandleProcessMediaWithWorkers(pw, mediaPath, dataPath, 4000, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "process_media", Status: "running"}
 		err = handler(ctx, tx, job)
 		assert.Error(t, err, "should fail without related_id")

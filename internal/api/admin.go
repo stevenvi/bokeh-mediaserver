@@ -28,6 +28,7 @@ type adminHandler struct {
 	pool        *jobs.Pool
 	authPlugins map[string]auth.Plugin
 	authHandler *authHandler
+	dispatcher  *jobs.Dispatcher
 	mediaPath   string
 	dataPath    string
 }
@@ -73,6 +74,7 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		slog.Warn("auto-queue scan for new collection", "collection_id", id, "err", err)
 	} else {
 		slog.Info("auto-queued scan for new collection", "collection_id", id, "job_id", jobID)
+		h.dispatcher.TriggerImmediately()
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "scan_job_id": jobID})
@@ -173,6 +175,7 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID, "force", relatedType == "collection:force")
+	h.dispatcher.TriggerImmediately()
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }
 
@@ -234,6 +237,7 @@ func (h *adminHandler) triggerSimpleJob(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	slog.Info("job queued", "type", jobType, "job_id", jobID)
+	h.dispatcher.TriggerImmediately()
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }
 

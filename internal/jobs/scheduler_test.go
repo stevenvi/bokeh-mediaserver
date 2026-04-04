@@ -26,7 +26,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 			`INSERT INTO collections (name, type, relative_path, is_enabled) VALUES ('Disabled', 'image:photo', 'disabled', false)`)
 
 		// Create scheduler and trigger scans
-		s := jobs.NewScheduler(db)
+		s := jobs.NewScheduler(db, &jobs.Dispatcher{})
 		s.TriggerScans(ctx)
 
 		// Verify scan jobs were created for enabled collections
@@ -57,7 +57,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		).Scan(&countBefore)
 		require.NoError(t, err)
 
-		s := jobs.NewScheduler(db)
+		s := jobs.NewScheduler(db, &jobs.Dispatcher{})
 		s.TriggerScans(ctx)
 
 		// Count should not increase
@@ -80,7 +80,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 			`INSERT INTO collections (parent_collection_id, name, type, relative_path) VALUES ($1, 'Sub', 'image:photo', 'photos/sub')`,
 			parent)
 
-		s := jobs.NewScheduler(tx)
+		s := jobs.NewScheduler(tx, &jobs.Dispatcher{})
 		s.TriggerScans(ctx)
 
 		// Only parent should have a scan job
@@ -96,7 +96,7 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		s := jobs.NewScheduler(tx)
+		s := jobs.NewScheduler(tx, &jobs.Dispatcher{})
 		s.TriggerIntegrityCheck(ctx)
 
 		var count int
@@ -115,7 +115,7 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 		_, err := repository.JobCreate(ctx, db, "integrity_check", nil, nil)
 		require.NoError(t, err)
 
-		s := jobs.NewScheduler(db)
+		s := jobs.NewScheduler(db, &jobs.Dispatcher{})
 		s.TriggerIntegrityCheck(ctx)
 
 		var count int
@@ -162,7 +162,7 @@ func TestScheduler_LoadSchedules(t *testing.T) {
 				`UPDATE server_config SET scan_schedule = $1, integrity_schedule = $2 WHERE id = 1`,
 				tt.scanSchedule, tt.integritySchedule)
 
-			s := jobs.NewScheduler(tx)
+			s := jobs.NewScheduler(tx, &jobs.Dispatcher{})
 			cfg := s.LoadSchedules(ctx)
 
 			assert.Equal(t, tt.wantScan, cfg["scan_schedule"])

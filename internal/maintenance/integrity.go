@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -16,7 +17,7 @@ import (
 // 1. Deletes media items missing for >90 days and cleans up their derived files
 // 2. Re-queues transcode for video items whose HLS manifest was deleted on disk
 // 3. Re-queues process_media for home movie items whose cover is missing
-func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+func HandleIntegrityCheck(dataPath string, dispatcher *jobs.Dispatcher) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting integrity check")
 
@@ -30,6 +31,9 @@ func HandleIntegrityCheck(dataPath string) func(ctx context.Context, db utils.DB
 		requeued, err := checkVideoDerivatives(ctx, db, dataPath, job.ID)
 		if err != nil {
 			slog.Warn("check video derivatives failed", "err", err)
+		}
+		if requeued > 0 {
+			dispatcher.TriggerImmediately()
 		}
 
 		summary := fmt.Sprintf("integrity check complete: %d stale items pruned, %d video jobs re-queued", pruned, requeued)

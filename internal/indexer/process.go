@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -22,7 +23,7 @@ import (
 //
 // The worker parameter provides a persistent exiftool process scoped to the
 // processing pool worker goroutine that runs this handler.
-func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath string, transcodeBitrateKbps int) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath string, transcodeBitrateKbps int, dispatcher *jobs.Dispatcher) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
 		if job.RelatedID == nil {
 			return fmt.Errorf("process_media job %d has no related_id", job.ID)
@@ -45,7 +46,7 @@ func HandleProcessMedia(worker *processingWorker, mediaPath string, dataPath str
 		} else if strings.HasPrefix(mimeType, "image/") {
 			return processImageFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath)
 		} else if strings.HasPrefix(mimeType, "video/") {
-			return processVideoFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath, transcodeBitrateKbps)
+			return processVideoFile(ctx, worker, db, job, itemID, fsPath, fileHash, dataPath, transcodeBitrateKbps, dispatcher)
 		} else {
 			slog.Info("skipping unsupported media type", "mimeType", mimeType)
 			_ = repository.JobDelete(ctx, db, job.ID)
