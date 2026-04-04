@@ -377,7 +377,7 @@ class TestSingleTierCollection:
 
         item_id = item_map["sunflower"].id
         h = PHOTO_ALBUM_1_FILES["sunflower"]["hash"]
-        tiles_base = dzi_tiles_dir(data_path, h)
+        tiles_base = os.path.join(dzi_tiles_dir(data_path, h), "image_files")
 
         # Find the lowest-resolution level (smallest number) and its first tile
         levels = sorted(int(d) for d in os.listdir(tiles_base) if d.isdigit())
@@ -388,7 +388,7 @@ class TestSingleTierCollection:
         tile_name = tiles[0]
 
         r = httpx.get(
-            f"{BASE_URL}/images/{item_id}/tiles/{lowest}/{tile_name}",
+            f"{BASE_URL}/images/{item_id}/tiles/image_files/{lowest}/{tile_name}",
             headers=bearer(admin_token),
         )
         r.raise_for_status()

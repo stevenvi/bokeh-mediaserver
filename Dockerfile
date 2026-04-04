@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvips42 \
     libvips-tools \
     exiftool \
+    ffmpeg \
     ca-certificates \
     wget \
     && rm -rf /var/lib/apt/lists/*
