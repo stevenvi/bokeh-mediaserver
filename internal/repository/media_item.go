@@ -18,7 +18,7 @@ func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, tit
 		WITH prev AS (
 			SELECT id, file_size_bytes, file_hash
 			FROM media_items
-			WHERE relative_path = $3
+			WHERE relative_path = $3 AND collection_id = $1
 		),
 		upserted AS (
 			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
