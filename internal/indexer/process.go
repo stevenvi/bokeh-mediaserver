@@ -293,6 +293,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// albums, use the album artist tag if present, otherwise fall back to the
 	// track artist so the album is attributed to the correct artist.
 	var albumID *int64
+	var albumManualCover bool
 	if rootCollectionID != 0 {
 		effectiveAlbumArtistID := albumArtistID
 		if isCompilation {
@@ -305,11 +306,12 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 		} else if effectiveAlbumArtistID == nil {
 			effectiveAlbumArtistID = &artistID
 		}
-		id, err := repository.AlbumUpsert(ctx, db, effectiveAlbum, effectiveAlbumArtistID, year, genre, rootCollectionID, isCompilation)
+		id, manualCover, err := repository.AlbumUpsert(ctx, db, effectiveAlbum, effectiveAlbumArtistID, year, genre, rootCollectionID, isCompilation)
 		if err != nil {
 			slog.Warn("upsert album", "name", effectiveAlbum, "err", err)
 		} else {
 			albumID = &id
+			albumManualCover = manualCover
 		}
 	}
 
@@ -330,9 +332,9 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 		return fmt.Errorf("upsert audio_metadata: %w", err)
 	}
 
-	// Extract album art if not already present
+	// Extract album art if not already present and not manually overridden
 	if hasPicture && albumID != nil {
-		if !imaging.AlbumCoverExists(dataPath, *albumID) {
+		if !albumManualCover && !imaging.AlbumCoverExists(dataPath, *albumID) {
 			_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting album art")
 			if err := extractAlbumArtForAlbum(fsPath, dataPath, *albumID); err != nil {
 				slog.Warn("extract album art", "path", fsPath, "err", err)

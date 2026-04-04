@@ -20,17 +20,16 @@ func AlbumUpsert(
 	genre *string,
 	rootCollectionID int64,
 	isCompilation bool,
-) (int64, error) {
-	var id int64
-	err := db.QueryRow(ctx,
+) (id int64, manualCover bool, err error) {
+	err = db.QueryRow(ctx,
 		`INSERT INTO audio_albums (name, artist_id, year, genre, root_collection_id, is_compilation)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (name, COALESCE(artist_id, 0), root_collection_id)
 		 DO UPDATE SET name = EXCLUDED.name
-		 RETURNING id`,
+		 RETURNING id, manual_cover`,
 		name, artistID, year, genre, rootCollectionID, isCompilation,
-	).Scan(&id)
-	return id, err
+	).Scan(&id, &manualCover)
+	return
 }
 
 // AlbumGet returns an audio album by ID.

@@ -280,6 +280,78 @@ func (h *musicHandler) deleteArtistImage(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// POST /api/v1/admin/albums/{albumId}/cover
+func (h *musicHandler) uploadAlbumCover(w http.ResponseWriter, r *http.Request) {
+	id, ok := urlIntParam(w, r, "albumId")
+	if !ok {
+		return
+	}
+
+	_, err := repository.AlbumGet(r.Context(), h.db, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "album not found")
+		return
+	}
+
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image file required")
+		return
+	}
+	defer file.Close()
+
+	tmp, err := os.CreateTemp("", "bokeh-album-upload-*.tmp")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create temp file")
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := io.Copy(tmp, file); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read upload")
+		return
+	}
+	tmp.Close()
+
+	if err := imaging.GenerateAlbumCoverFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to process image")
+		return
+	}
+
+	if err := repository.AlbumSetManualCover(r.Context(), h.db, id, true); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update album")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// DELETE /api/v1/admin/albums/{albumId}/cover
+func (h *musicHandler) deleteAlbumCover(w http.ResponseWriter, r *http.Request) {
+	id, ok := urlIntParam(w, r, "albumId")
+	if !ok {
+		return
+	}
+
+	for _, ext := range []string{"avif", "webp"} {
+		path := imaging.AlbumCoverPath(h.dataPath, id, ext)
+		_ = os.Remove(path)
+	}
+
+	if err := repository.AlbumSetManualCover(r.Context(), h.db, id, false); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update album")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func parsePagination(r *http.Request, defaultSize, maxSize int) (page, pageSize int) {
 	page = 1
 	pageSize = defaultSize

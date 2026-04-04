@@ -242,6 +242,15 @@ func AlbumCoverExists(dataPath string, albumID int64) bool {
 	return err == nil
 }
 
+// GenerateAlbumCoverFromUpload loads an arbitrary image file, auto-rotates,
+// center-crops to square, resizes to 400x400, and writes AVIF + WebP covers.
+func GenerateAlbumCoverFromUpload(srcPath string, dataPath string, albumID int64) error {
+	return squareCoverFromFile(srcPath,
+		AlbumCoverPath(dataPath, albumID, "avif"),
+		AlbumCoverPath(dataPath, albumID, "webp"),
+	)
+}
+
 // GenerateAlbumCoverFromBytes takes raw image bytes (e.g. extracted from embedded
 // audio art) and generates an album cover from them.
 func GenerateAlbumCoverFromBytes(imageBytes []byte, dataPath string, albumID int64) error {

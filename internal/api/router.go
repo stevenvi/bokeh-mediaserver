@@ -168,6 +168,10 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 		r.Post("/api/v1/admin/artists/{id}/image", music.uploadArtistImage)
 		r.Delete("/api/v1/admin/artists/{id}/image", music.deleteArtistImage)
 
+		// Album cover management
+		r.Post("/api/v1/admin/albums/{albumId}/cover", music.uploadAlbumCover)
+		r.Delete("/api/v1/admin/albums/{albumId}/cover", music.deleteAlbumCover)
+
 		// Media directory browser
 		r.Get("/api/v1/admin/directories", admin.listDirectories)
 		r.Get("/api/v1/admin/directories/*", admin.listDirectories)
