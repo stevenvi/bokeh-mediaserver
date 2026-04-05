@@ -149,7 +149,7 @@ func createArtist(t *testing.T, db utils.DBTX) int64 {
 func createAlbum(t *testing.T, db utils.DBTX, artistID *int64, rootCollectionID int64) int64 {
 	t.Helper()
 	n := atomic.AddInt64(&albumCounter, 1)
-	id, err := repository.AlbumUpsert(bg(), db,
+	id, _, err := repository.AlbumUpsert(bg(), db,
 		fmt.Sprintf("Test Album %d", n), artistID, nil, nil, rootCollectionID, false,
 	)
 	require.NoError(t, err)

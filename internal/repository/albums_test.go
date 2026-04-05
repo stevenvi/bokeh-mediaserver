@@ -18,7 +18,7 @@ func TestAlbumUpsert(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMusic)
 		artistID := createArtist(t, db)
 
-		id, err := repository.AlbumUpsert(bg(), db, "Drone EP", &artistID, int16Ptr(2004), nil, collID, false)
+		id, _, err := repository.AlbumUpsert(bg(), db, "Drone EP", &artistID, int16Ptr(2004), nil, collID, false)
 		require.NoError(t, err)
 		assert.Greater(t, id, int64(0))
 
@@ -34,9 +34,9 @@ func TestAlbumUpsert(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMusic)
 		artistID := createArtist(t, db)
 
-		id1, err := repository.AlbumUpsert(bg(), db, "Century Child", &artistID, nil, nil, collID, false)
+		id1, _, err := repository.AlbumUpsert(bg(), db, "Century Child", &artistID, nil, nil, collID, false)
 		require.NoError(t, err)
-		id2, err := repository.AlbumUpsert(bg(), db, "Century Child", &artistID, nil, nil, collID, false)
+		id2, _, err := repository.AlbumUpsert(bg(), db, "Century Child", &artistID, nil, nil, collID, false)
 		require.NoError(t, err)
 		assert.Equal(t, id1, id2)
 	})
@@ -119,7 +119,7 @@ func TestAlbumGetRandomNonCompilationIDByArtist(t *testing.T) {
 		artistID := createArtist(t, db)
 
 		// Insert a compilation album for this artist.
-		_, err := repository.AlbumUpsert(bg(), db, "Hits Vol. 1", &artistID, nil, nil, collID, true)
+		_, _, err := repository.AlbumUpsert(bg(), db, "Hits Vol. 1", &artistID, nil, nil, collID, true)
 		require.NoError(t, err)
 
 		_, err = repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID)
