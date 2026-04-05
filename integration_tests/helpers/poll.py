@@ -44,8 +44,9 @@ def wait_for_scan_and_processing(
     timeout: float = 60.0,
 ):
     """
-    Wait for a library_scan job to complete, then wait for all process_media jobs
-    spawned for items in that collection (and its sub-collections) to finish.
+    Wait for a scan job (initial_scan, filesystem_scan, or metadata_scan) to
+    complete, then wait for all process_media jobs spawned for items in that
+    collection (and its sub-collections) to finish.
 
     process_media jobs are deleted on success, so absence from the jobs table
     is the completion signal.
@@ -54,7 +55,7 @@ def wait_for_scan_and_processing(
     """
     deadline = time.monotonic() + timeout
 
-    # Phase 1: wait for library_scan to reach done/failed
+    # Phase 1: wait for the scan job to reach done/failed
     while time.monotonic() < deadline:
         r = httpx.get(
             f"{BASE_URL}/api/v1/admin/jobs/{scan_job_id}", headers=bearer(token)

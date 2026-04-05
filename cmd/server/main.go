@@ -104,7 +104,9 @@ func run() error {
 	// ── Job dispatcher ────────────────────────────────────────────────────────
 	dispatcher := jobs.NewDispatcher(db, mainPool, processingPool)
 	dispatcher.Start(ctx)
-	dispatcher.Register("library_scan", indexer.HandleScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
+	dispatcher.Register("initial_scan", indexer.HandleInitialScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
+	dispatcher.Register("filesystem_scan", indexer.HandleFilesystemScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
+	dispatcher.Register("metadata_scan", indexer.HandleMetadataScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
 	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps, dispatcher), true)
 	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
 	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath, dispatcher), false)

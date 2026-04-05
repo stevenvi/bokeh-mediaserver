@@ -132,6 +132,18 @@ func JobIsActive(ctx context.Context, db utils.DBTX, jobType string, relatedID i
 	return count > 0, err
 }
 
+// JobIsAnyActive returns true if any job matching one of jobTypes is queued or
+// running for the given related ID. Used to enforce per-collection scan concurrency.
+func JobIsAnyActive(ctx context.Context, db utils.DBTX, jobTypes []string, relatedID int64) (bool, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM jobs
+		 WHERE type = ANY($1) AND related_id = $2 AND status IN ('queued', 'running')`,
+		jobTypes, relatedID,
+	).Scan(&count)
+	return count > 0, err
+}
+
 // JobIsActiveByType returns true if any job of the given type is queued or running.
 func JobIsActiveByType(ctx context.Context, db utils.DBTX, jobType string) (bool, error) {
 	var count int

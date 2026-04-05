@@ -30,11 +30,11 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		s.TriggerScans(ctx)
 
 		// Verify scan jobs were created for enabled collections
-		active1, err := repository.JobIsActive(ctx, db, "library_scan", c1)
+		active1, err := repository.JobIsActive(ctx, db, "filesystem_scan", c1)
 		require.NoError(t, err)
 		assert.True(t, active1, "should have created scan job for collection 1")
 
-		active2, err := repository.JobIsActive(ctx, db, "library_scan", c2)
+		active2, err := repository.JobIsActive(ctx, db, "filesystem_scan", c2)
 		require.NoError(t, err)
 		assert.True(t, active2, "should have created scan job for collection 2")
 	})
@@ -46,14 +46,13 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		c1 := testutil.InsertCollection(t, db, "Photos", constants.CollectionTypePhoto, "photos")
 
 		// Create an already-active scan
-		relatedType := "collection"
-		_, err := repository.JobCreate(ctx, db, "library_scan", &c1, &relatedType)
+		_, err := repository.JobCreate(ctx, db, "filesystem_scan", &c1, nil)
 		require.NoError(t, err)
 
 		// Count jobs before trigger
 		var countBefore int
 		err = db.QueryRow(ctx,
-			`SELECT COUNT(*) FROM jobs WHERE type = 'library_scan' AND related_id = $1`, c1,
+			`SELECT COUNT(*) FROM jobs WHERE type = 'filesystem_scan' AND related_id = $1`, c1,
 		).Scan(&countBefore)
 		require.NoError(t, err)
 
@@ -63,7 +62,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 		// Count should not increase
 		var countAfter int
 		err = db.QueryRow(ctx,
-			`SELECT COUNT(*) FROM jobs WHERE type = 'library_scan' AND related_id = $1`, c1,
+			`SELECT COUNT(*) FROM jobs WHERE type = 'filesystem_scan' AND related_id = $1`, c1,
 		).Scan(&countAfter)
 		require.NoError(t, err)
 		assert.Equal(t, countBefore, countAfter, "should not create duplicate scan job")
@@ -85,7 +84,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 
 		// Only parent should have a scan job
 		var count int
-		err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM jobs WHERE type = 'library_scan'`).Scan(&count)
+		err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM jobs WHERE type = 'filesystem_scan'`).Scan(&count)
 		require.NoError(t, err)
 		assert.Equal(t, 1, count, "should only create scan for top-level collection")
 	})

@@ -29,7 +29,7 @@ func TestCreate(t *testing.T) {
 		relatedID   *int64
 		relatedType *string
 	}{
-		{"library_scan", "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection")},
+		{"filesystem_scan", "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection")},
 		{"process_media", "process_media", testutil.Int64Ptr(42), testutil.StrPtr("media_item")},
 		{"orphan_cleanup_no_related", "orphan_cleanup", nil, nil},
 		{"integrity_check", "integrity_check", nil, nil},
@@ -61,10 +61,10 @@ func TestClaimNextJob(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		id, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
-		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
 		require.NoError(t, err)
 		require.NotNil(t, job)
 		assert.Equal(t, id, job.ID)
@@ -76,7 +76,7 @@ func TestClaimNextJob(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
 		require.NoError(t, err)
 		assert.Nil(t, job)
 	})
@@ -85,11 +85,11 @@ func TestClaimNextJob(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		id, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 		require.NoError(t, repository.JobMarkRunning(ctx, db, id))
 
-		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
 		require.NoError(t, err)
 		assert.Nil(t, job, "should not claim already-running job")
 	})
@@ -98,7 +98,7 @@ func TestClaimNextJob(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		_, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		_, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
 		job, err := repository.JobClaimNext(ctx, db, []string{"process_media"})
@@ -110,12 +110,12 @@ func TestClaimNextJob(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
-		id1, err := repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
+		id1, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
 		require.NoError(t, err)
-		_, err = repository.JobCreate(ctx, db, "library_scan", testutil.Int64Ptr(2), testutil.StrPtr("collection"))
+		_, err = repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(2), testutil.StrPtr("collection"))
 		require.NoError(t, err)
 
-		job, err := repository.JobClaimNext(ctx, db, []string{"library_scan"})
+		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
 		require.NoError(t, err)
 		require.NotNil(t, job)
 		assert.Equal(t, id1, job.ID, "should claim oldest queued job first")
@@ -126,7 +126,7 @@ func TestUpdateProgress(t *testing.T) {
 	db := testutil.NewTx(t, testPool)
 	ctx := context.Background()
 
-	id, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
+	id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, repository.JobUpdateProgress(ctx, db, id, "step 1"))
@@ -155,7 +155,7 @@ func TestMarkStateTransitions(t *testing.T) {
 			db := testutil.NewTx(t, testPool)
 			ctx := context.Background()
 
-			id, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
+			id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
 			require.NoError(t, err)
 
 			switch tt.action {
@@ -200,7 +200,7 @@ func TestIsActive(t *testing.T) {
 			ctx := context.Background()
 
 			relatedID := int64(999)
-			id, err := repository.JobCreate(ctx, db, "library_scan", &relatedID, testutil.StrPtr("collection"))
+			id, err := repository.JobCreate(ctx, db, "filesystem_scan", &relatedID, testutil.StrPtr("collection"))
 			require.NoError(t, err)
 
 			switch tt.status {
@@ -212,7 +212,7 @@ func TestIsActive(t *testing.T) {
 				require.NoError(t, repository.JobMarkFailed(ctx, db, id, "err"))
 			}
 
-			active, err := repository.JobIsActive(ctx, db, "library_scan", relatedID)
+			active, err := repository.JobIsActive(ctx, db, "filesystem_scan", relatedID)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, active)
 		})
@@ -224,7 +224,7 @@ func TestRecoverStuckJobs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two jobs and mark them running (simulating a crash)
-	id1, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
+	id1, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, repository.JobMarkRunning(ctx, db, id1))
 
@@ -233,7 +233,7 @@ func TestRecoverStuckJobs(t *testing.T) {
 	require.NoError(t, repository.JobMarkRunning(ctx, db, id2))
 
 	// Also create a done job that should NOT be affected
-	id3, err := repository.JobCreate(ctx, db, "library_scan", nil, nil)
+	id3, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, repository.JobMarkDone(ctx, db, id3))
 

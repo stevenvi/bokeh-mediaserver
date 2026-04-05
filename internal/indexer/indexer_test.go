@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestRunScan(t *testing.T) {
+func TestRunInitialScan(t *testing.T) {
 	testdataDir := findTestdata(t)
 
 	t.Run("enumerates_files_and_queues_processing", func(t *testing.T) {
@@ -53,28 +53,24 @@ func TestRunScan(t *testing.T) {
 
 		dataPath := t.TempDir()
 
-		jobID := createTestJob(t, tx, "library_scan", &collID)
-		err := indexer.RunScan(ctx, tx, jobID, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{})
+		jobID := createTestJob(t, tx, "initial_scan", &collID)
+		err := indexer.RunInitialScan(ctx, tx, jobID, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{})
 		require.NoError(t, err)
 
 		// Verify media_items were created
 		var itemCount int
-		err = tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM media_items WHERE collection_id = $1`, collID,
-		).Scan(&itemCount)
+		err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM media_items WHERE collection_id = $1`, collID).Scan(&itemCount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, itemCount, "should have created 2 media items")
 
 		// Verify process_media jobs were queued
 		var processJobCount int
-		err = tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM jobs WHERE type = 'process_media' AND status = 'queued'`,
-		).Scan(&processJobCount)
+		err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM jobs WHERE type = 'process_media' AND status = 'queued'`).Scan(&processJobCount)
 		require.NoError(t, err)
 		assert.Equal(t, 2, processJobCount, "should have queued 2 process_media jobs")
 	})
 
-	t.Run("unchanged_files_not_requeued", func(t *testing.T) {
+	t.Run("does_not_mark_missing", func(t *testing.T) {
 		tx := testutil.NewTx(t, testPool)
 		ctx := context.Background()
 
@@ -87,24 +83,93 @@ func TestRunScan(t *testing.T) {
 		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
 		dataPath := t.TempDir()
 
-		// First scan
-		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		// First scan to populate
+		jobID1 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
 
-		// Mark first scan's process jobs as done so they're not counted
+		// Delete the file, then re-run an initial scan
+		require.NoError(t, os.Remove(filepath.Join(collectionDir, "photo_with_exif.jpg")))
+
+		jobID2 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+
+		// Initial scan does not mark missing — item should remain non-missing
+		var missingCount int
+		err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM media_items WHERE collection_id = $1 AND missing_since IS NOT NULL`, collID,
+		).Scan(&missingCount)
+		require.NoError(t, err)
+		assert.Equal(t, 0, missingCount, "initial scan should not mark items as missing")
+	})
+}
+
+func TestRunFilesystemScan(t *testing.T) {
+	testdataDir := findTestdata(t)
+
+	t.Run("known_files_not_requeued", func(t *testing.T) {
+		tx := testutil.NewTx(t, testPool)
+		ctx := context.Background()
+
+		mediaPath := t.TempDir()
+		collectionRoot := "test_photos"
+		collectionDir := filepath.Join(mediaPath, collectionRoot)
+		require.NoError(t, os.MkdirAll(collectionDir, 0o755))
+		copyTestImage(t, testdataDir, "photo_with_exif.jpg", collectionDir)
+
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
+		dataPath := t.TempDir()
+
+		// Initial scan populates the DB
+		jobID1 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+
 		testutil.MustExec(t, tx, "UPDATE jobs SET status = 'done' WHERE type = 'process_media'")
 
-		// Second scan — file hasn't changed
-		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		// Filesystem scan — file hasn't changed, no new files added
+		jobID2 := createTestJob(t, tx, "filesystem_scan", &collID)
+		require.NoError(t, indexer.RunFilesystemScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
 
-		// No new process_media jobs should have been created
+		// No new process_media jobs should be created for the existing file
 		var queuedCount int
-		err := tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM jobs WHERE type = 'process_media' AND status = 'queued'`,
-		).Scan(&queuedCount)
+		err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM jobs WHERE type = 'process_media' AND status = 'queued'`).Scan(&queuedCount)
 		require.NoError(t, err)
-		assert.Equal(t, 0, queuedCount, "unchanged files should not be re-queued")
+		assert.Equal(t, 0, queuedCount, "known files should not be re-queued by filesystem scan")
+	})
+
+	t.Run("new_files_added_and_queued", func(t *testing.T) {
+		tx := testutil.NewTx(t, testPool)
+		ctx := context.Background()
+
+		mediaPath := t.TempDir()
+		collectionRoot := "test_photos"
+		collectionDir := filepath.Join(mediaPath, collectionRoot)
+		require.NoError(t, os.MkdirAll(collectionDir, 0o755))
+		copyTestImage(t, testdataDir, "photo_with_exif.jpg", collectionDir)
+
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
+		dataPath := t.TempDir()
+
+		// Initial scan with one file
+		jobID1 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+		testutil.MustExec(t, tx, "UPDATE jobs SET status = 'done' WHERE type = 'process_media'")
+
+		// Add a second file
+		copyTestImage(t, testdataDir, "photo_no_exif.png", collectionDir)
+
+		// Filesystem scan should pick up only the new file
+		jobID2 := createTestJob(t, tx, "filesystem_scan", &collID)
+		require.NoError(t, indexer.RunFilesystemScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+
+		var queuedCount int
+		err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM jobs WHERE type = 'process_media' AND status = 'queued'`).Scan(&queuedCount)
+		require.NoError(t, err)
+		assert.Equal(t, 1, queuedCount, "only the new file should be queued")
+
+		var itemCount int
+		err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM media_items WHERE collection_id = $1`, collID).Scan(&itemCount)
+		require.NoError(t, err)
+		assert.Equal(t, 2, itemCount, "both items should now be in the DB")
 	})
 
 	t.Run("marks_missing_files", func(t *testing.T) {
@@ -120,16 +185,16 @@ func TestRunScan(t *testing.T) {
 		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
 		dataPath := t.TempDir()
 
-		// First scan
-		jobID1 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		// Initial scan
+		jobID1 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
 
 		// Delete the file
 		require.NoError(t, os.Remove(filepath.Join(collectionDir, "photo_with_exif.jpg")))
 
-		// Second scan
-		jobID2 := createTestJob(t, tx, "library_scan", &collID)
-		require.NoError(t, indexer.RunScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, false, &jobs.Dispatcher{}))
+		// Filesystem scan should mark it missing
+		jobID2 := createTestJob(t, tx, "filesystem_scan", &collID)
+		require.NoError(t, indexer.RunFilesystemScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
 
 		// Verify the item is marked missing
 		var missingCount int
@@ -138,6 +203,38 @@ func TestRunScan(t *testing.T) {
 		).Scan(&missingCount)
 		require.NoError(t, err)
 		assert.Equal(t, 1, missingCount, "deleted file should be marked missing")
+	})
+
+	t.Run("restores_reappeared_files", func(t *testing.T) {
+		tx := testutil.NewTx(t, testPool)
+		ctx := context.Background()
+
+		mediaPath := t.TempDir()
+		collectionRoot := "test_photos"
+		collectionDir := filepath.Join(mediaPath, collectionRoot)
+		require.NoError(t, os.MkdirAll(collectionDir, 0o755))
+		copyTestImage(t, testdataDir, "photo_with_exif.jpg", collectionDir)
+
+		collID := testutil.InsertCollection(t, tx, "Test Photos", constants.CollectionTypePhoto, collectionRoot)
+		dataPath := t.TempDir()
+
+		// Initial scan
+		jobID1 := createTestJob(t, tx, "initial_scan", &collID)
+		require.NoError(t, indexer.RunInitialScan(ctx, tx, jobID1, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+
+		// Mark item as missing manually to simulate a previous disappearance
+		testutil.MustExec(t, tx, `UPDATE media_items SET missing_since = now() WHERE collection_id = $1`, collID)
+
+		// File is still present on disk — filesystem scan should clear missing_since
+		jobID2 := createTestJob(t, tx, "filesystem_scan", &collID)
+		require.NoError(t, indexer.RunFilesystemScan(ctx, tx, jobID2, collID, constants.CollectionTypePhoto.String(), collectionRoot, mediaPath, dataPath, &jobs.Dispatcher{}))
+
+		var missingCount int
+		err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM media_items WHERE collection_id = $1 AND missing_since IS NOT NULL`, collID,
+		).Scan(&missingCount)
+		require.NoError(t, err)
+		assert.Equal(t, 0, missingCount, "reappeared file should have missing_since cleared")
 	})
 }
 
@@ -297,8 +394,7 @@ func copyFile(t *testing.T, src, dst string) {
 
 func createTestJob(t *testing.T, db utils.DBTX, jobType string, relatedID *int64) int64 {
 	t.Helper()
-	relatedType := "collection"
-	id, err := repository.JobCreate(context.Background(), db, jobType, relatedID, &relatedType)
+	id, err := repository.JobCreate(context.Background(), db, jobType, relatedID, nil)
 	require.NoError(t, err)
 	return id
 }

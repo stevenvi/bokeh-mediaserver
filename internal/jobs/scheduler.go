@@ -24,7 +24,7 @@ type scheduledJob struct {
 }
 
 var scheduledJobs = []scheduledJob{
-	{(*Scheduler).TriggerScans, "scan_schedule", "0 3 * * *", "library_scan"},
+	{(*Scheduler).TriggerScans, "scan_schedule", "0 3 * * *", "filesystem_scan"},
 	{nil, "integrity_schedule", "0 4 * * 0", "integrity_check"},
 	{nil, "device_cleanup_schedule", "0 2 1 * *", "device_cleanup"},
 	{nil, "cover_cycle_schedule", "0 5 * * 1", "cover_cycle"},
@@ -178,23 +178,23 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 	}
 
 	for _, collID := range collIDs {
-		active, err := repository.JobIsActive(ctx, s.db, "library_scan", collID)
+		// Block if an initial_scan or another filesystem_scan is already active.
+		active, err := repository.JobIsAnyActive(ctx, s.db, []string{"filesystem_scan", "initial_scan"}, collID)
 		if err != nil {
 			slog.Warn("check active scan", "collection_id", collID, "err", err)
 			continue
 		}
 		if active {
-			slog.Info("skipping scheduled scan — already active", "collection_id", collID)
+			slog.Info("skipping scheduled filesystem scan — conflicting scan active", "collection_id", collID)
 			continue
 		}
 
-		relatedType := "collection"
-		jobID, err := repository.JobCreate(ctx, s.db, "library_scan", &collID, &relatedType)
+		jobID, err := repository.JobCreate(ctx, s.db, "filesystem_scan", &collID, nil)
 		if err != nil {
-			slog.Error("create scheduled scan job", "collection_id", collID, "err", err)
+			slog.Error("create scheduled filesystem scan job", "collection_id", collID, "err", err)
 			continue
 		}
-		slog.Info("queued scheduled scan", "collection_id", collID, "job_id", jobID)
+		slog.Info("queued scheduled filesystem scan", "collection_id", collID, "job_id", jobID)
 	}
 	s.dispatcher.TriggerImmediately()
 }

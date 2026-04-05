@@ -219,7 +219,9 @@ CREATE TABLE jobs (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     type                        text NOT NULL
                                     CHECK (type IN (
-                                        'library_scan',
+                                        'initial_scan',
+                                        'filesystem_scan',
+                                        'metadata_scan',
                                         'process_media',
                                         'transcode',
                                         'thumbnail_gen',

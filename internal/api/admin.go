@@ -67,13 +67,12 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Auto-queue a scan for the newly created collection
-	relatedType := "collection"
-	jobID, err := repository.JobCreate(r.Context(), h.db, "library_scan", &id, &relatedType)
+	// Auto-queue an initial scan for the newly created collection.
+	jobID, err := repository.JobCreate(r.Context(), h.db, "initial_scan", &id, nil)
 	if err != nil {
-		slog.Warn("auto-queue scan for new collection", "collection_id", id, "err", err)
+		slog.Warn("auto-queue initial scan for new collection", "collection_id", id, "err", err)
 	} else {
-		slog.Info("auto-queued scan for new collection", "collection_id", id, "job_id", jobID)
+		slog.Info("auto-queued initial scan for new collection", "collection_id", id, "job_id", jobID)
 		h.dispatcher.TriggerImmediately()
 	}
 
@@ -133,7 +132,12 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, collections)
 }
 
-// POST /api/v1/admin/collections/:id/scan
+// POST /api/v1/admin/collections/:id/scan?type=filesystem|metadata
+// Queues a filesystem_scan (default) or metadata_scan for the collection.
+// Concurrency rules (per collection):
+//   - filesystem_scan: blocked if an initial_scan or another filesystem_scan is active.
+//   - metadata_scan:   blocked if an initial_scan or another metadata_scan is active.
+//   - A filesystem_scan and metadata_scan may coexist for the same collection.
 func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 	collectionID, ok := urlIntParam(w, r, "id")
 	if !ok {
@@ -150,31 +154,37 @@ func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent duplicate scans
-	active, err := repository.JobIsActive(r.Context(), h.db, "library_scan", collectionID)
+	// Map the ?type= param to a job type string.
+	var jobType string
+	switch r.URL.Query().Get("type") {
+	case "", "filesystem":
+		jobType = "filesystem_scan"
+	case "metadata":
+		jobType = "metadata_scan"
+	default:
+		writeError(w, http.StatusBadRequest, "invalid scan type: must be 'filesystem' or 'metadata'")
+		return
+	}
+
+	// Prevent duplicate scans of the same type and block while an initial scan runs.
+	blockTypes := []string{jobType, "initial_scan"}
+	active, err := repository.JobIsAnyActive(r.Context(), h.db, blockTypes, collectionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "job check failed")
 		return
 	}
 	if active {
-		writeError(w, http.StatusConflict, "a scan is already queued or running for this collection")
+		writeError(w, http.StatusConflict, "a conflicting scan is already queued or running for this collection")
 		return
 	}
 
-	// Create the job row — the dispatcher picks it up on next poll.
-	// When ?force=true, encode it in related_type so the handler re-processes
-	// all files (EXIF re-extraction) instead of only new/changed ones.
-	relatedType := "collection"
-	if r.URL.Query().Get("force") == "true" {
-		relatedType = "collection:force"
-	}
-	jobID, err := repository.JobCreate(r.Context(), h.db, "library_scan", &collectionID, &relatedType)
+	jobID, err := repository.JobCreate(r.Context(), h.db, jobType, &collectionID, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
-	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID, "force", relatedType == "collection:force")
+	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID, "type", jobType)
 	h.dispatcher.TriggerImmediately()
 	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
 }

@@ -612,6 +612,97 @@ func SlideshowMetadata(ctx context.Context, db utils.DBTX, collectionID int64, r
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowMonthCount])
 }
 
+// ScanItem holds the fields needed to check a media item against the filesystem.
+type ScanItem struct {
+	ID            int64
+	RelativePath  string
+	FileSizeBytes int64
+	FileHash      string
+	IsMissing     bool // true when missing_since IS NOT NULL
+}
+
+// MediaItemPathsByCollection returns a set of all non-missing relative paths
+// for media items in a collection and its sub-collections (recursive).
+// Rows are consumed one at a time to avoid holding an intermediate slice.
+func MediaItemPathsByCollection(ctx context.Context, db utils.DBTX, collectionID int64) (map[string]struct{}, error) {
+	rows, err := db.Query(ctx,
+		`WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+		)
+		SELECT mi.relative_path FROM media_items mi
+		JOIN tree t ON mi.collection_id = t.id
+		WHERE mi.missing_since IS NULL`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	paths := make(map[string]struct{})
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths[p] = struct{}{}
+	}
+	return paths, rows.Err()
+}
+
+// MediaItemsForScan returns all media items (missing and non-missing) in a
+// collection tree with the fields needed for filesystem sync and change detection.
+func MediaItemsForScan(ctx context.Context, db utils.DBTX, collectionID int64) ([]ScanItem, error) {
+	rows, err := db.Query(ctx,
+		`WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+		)
+		SELECT mi.id, mi.relative_path, mi.file_size_bytes, mi.file_hash,
+		       (mi.missing_since IS NOT NULL) AS is_missing
+		FROM media_items mi
+		JOIN tree t ON mi.collection_id = t.id`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[ScanItem])
+}
+
+// MediaItemMarkMissing marks a single item as missing (sets missing_since = now()).
+// No-op if already marked missing.
+func MediaItemMarkMissing(ctx context.Context, db utils.DBTX, itemID int64) error {
+	_, err := db.Exec(ctx,
+		`UPDATE media_items SET missing_since = now() WHERE id = $1 AND missing_since IS NULL`,
+		itemID,
+	)
+	return err
+}
+
+// MediaItemClearMissing restores a previously-missing item (clears missing_since,
+// updates indexed_at to now).
+func MediaItemClearMissing(ctx context.Context, db utils.DBTX, itemID int64) error {
+	_, err := db.Exec(ctx,
+		`UPDATE media_items SET missing_since = NULL, indexed_at = now() WHERE id = $1`,
+		itemID,
+	)
+	return err
+}
+
+// MediaItemUpdateSizeAndHash updates the stored file size and hash for an item
+// and refreshes indexed_at. Used by the metadata scan when a changed file is detected.
+func MediaItemUpdateSizeAndHash(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string) error {
+	_, err := db.Exec(ctx,
+		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3, indexed_at = now() WHERE id = $1`,
+		itemID, fileSize, fileHash,
+	)
+	return err
+}
+
 // MediaItemMarkMissingSince marks items in a collection that haven't been indexed since `before`.
 // Returns number of rows affected.
 func MediaItemMarkMissingSince(ctx context.Context, db utils.DBTX, collectionID int64, before time.Time) (int64, error) {
