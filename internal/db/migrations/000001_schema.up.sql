@@ -86,6 +86,11 @@ CREATE TABLE collections (
 CREATE INDEX idx_collections_parent ON collections(parent_collection_id);
 CREATE INDEX idx_collections_root   ON collections(root_collection_id);
 CREATE INDEX idx_collections_enabled ON collections(id) WHERE is_enabled = true;
+-- Sub-collections are uniquely identified by their path within a library.
+-- Root collections (relative_path IS NULL) are exempt via the partial index condition.
+CREATE UNIQUE INDEX idx_collections_root_path
+    ON collections(root_collection_id, relative_path)
+    WHERE relative_path IS NOT NULL;
 
 CREATE TABLE collection_access (
     user_id                     bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,

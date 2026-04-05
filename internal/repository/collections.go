@@ -31,6 +31,8 @@ func CollectionCreate(ctx context.Context, db utils.DBTX, name string, colType c
 
 // CollectionUpsertSubCollection upserts a sub-collection (directory) during scanning.
 // rootCollectionID is used to inherit the collection type and set root_collection_id.
+// Conflicts on (root_collection_id, relative_path) — the same directory scanned again
+// returns the existing row's ID without modification.
 func CollectionUpsertSubCollection(ctx context.Context, db utils.DBTX, parentID, rootCollectionID int64, name, relativePath string) (int64, error) {
 	var id int64
 	err := db.QueryRow(ctx,
@@ -39,6 +41,8 @@ func CollectionUpsertSubCollection(ctx context.Context, db utils.DBTX, parentID,
 		     $3,
 		     (SELECT type FROM collections WHERE id = $2),
 		     $4)
+		 ON CONFLICT (root_collection_id, relative_path) WHERE relative_path IS NOT NULL
+		 DO UPDATE SET parent_collection_id = EXCLUDED.parent_collection_id
 		 RETURNING id`,
 		parentID, rootCollectionID, name, relativePath,
 	).Scan(&id)
