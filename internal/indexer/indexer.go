@@ -2,7 +2,6 @@ package indexer
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,6 +60,8 @@ func RunScan(ctx context.Context, db utils.DBTX,
 		errCount   int64
 	)
 
+	mimeCategory := strings.SplitN(collectionType, ":", 2)[0]
+
 	err = filepath.WalkDir(collectionPath, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil // skip unreadable entries
@@ -77,8 +78,7 @@ func RunScan(ctx context.Context, db utils.DBTX,
 
 		// Only index files whose MIME category matches the collection type.
 		// e.g. "audio:music" only accepts "audio/*", "image:photo" only "image/*".
-		mimeCategory := strings.SplitN(collectionType, ":", 2)[0]
-		if !strings.HasPrefix(mimeType, mimeCategory+"/") {
+		if !strings.HasPrefix(mimeType, mimeCategory) {
 			return nil
 		}
 
@@ -207,14 +207,15 @@ func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, roo
 }
 
 const (
-	fullHashThreshold = 2 * 1024 * 1024 // 2 MB — files at or below this are fully hashed
-	partialHashBlock  = 1 * 1024 * 1024 // 1 MB — read from start and end for larger files
+	fullHashThreshold = 1024 * 1024  // 1 MB — files at or below this size are fully hashed
+	partialHashFront  = 1024 * 128   // 128 KB in front, hopefully enough to overcome the header
+	partialHashBack   = 1024 * 32    // 32 KB in back, to make sure the tail matches what we expect
 )
 
 // computeFileHash returns a BLAKE2b-256 hex hash of the file's content.
-// Files ≤ 2 MB are fully hashed. Larger files use a partial strategy:
-// hash(first 1 MB ∥ last 1 MB ∥ uint64(size)), which is fast for large
-// video files while remaining practically collision-free.
+// (Relatively) small files are fully hashed. Larger ones use a partial strategy:
+// hash(beginning ∥ end), which is fast for large video files while
+// (hopefully) remaining collision-free.
 // The result is stored on the media_item record and used to address derived data on disk.
 func computeFileHash(path string, size int64) (string, error) {
 	f, err := os.Open(path)
@@ -229,21 +230,23 @@ func computeFileHash(path string, size int64) (string, error) {
 	}
 
 	if size <= fullHashThreshold {
+		// File is small enough to hash the entire thing
 		if _, err := io.Copy(h, f); err != nil {
 			return "", err
 		}
 	} else {
-		buf := make([]byte, partialHashBlock)
-
-		// First 1 MB
+		// File is larger, only hash portions of it
+		// Hash front
+		buf := make([]byte, partialHashFront)
 		n, err := io.ReadFull(f, buf)
 		if err != nil && err != io.ErrUnexpectedEOF {
 			return "", err
 		}
 		h.Write(buf[:n])
 
-		// Last 1 MB
-		if _, err := f.Seek(-partialHashBlock, io.SeekEnd); err != nil {
+		// Hash back
+		buf = make([]byte, partialHashBack)
+		if _, err := f.Seek(-partialHashBack, io.SeekEnd); err != nil {
 			return "", err
 		}
 		n, err = io.ReadFull(f, buf)
@@ -251,11 +254,6 @@ func computeFileHash(path string, size int64) (string, error) {
 			return "", err
 		}
 		h.Write(buf[:n])
-
-		// File size as big-endian uint64 — distinguishes files that differ only in size
-		var sizeBuf [8]byte
-		binary.BigEndian.PutUint64(sizeBuf[:], uint64(size))
-		h.Write(sizeBuf[:])
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
