@@ -20,7 +20,7 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
+	job_definitions "github.com/stevenvi/bokeh-mediaserver/internal/jobs/definitions"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/streaming"
 	"github.com/stevenvi/bokeh-mediaserver/internal/transcoder"
@@ -108,10 +108,10 @@ func run() error {
 	dispatcher.Register("filesystem_scan", indexer.HandleFilesystemScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
 	dispatcher.Register("metadata_scan", indexer.HandleMetadataScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
 	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps, dispatcher), true)
-	dispatcher.Register("orphan_cleanup", maintenance.HandleOrphanCleanup(cfg.DataPath), false)
-	dispatcher.Register("integrity_check", maintenance.HandleIntegrityCheck(cfg.DataPath, dispatcher), false)
-	dispatcher.Register("device_cleanup", maintenance.HandleDeviceCleanup(), false)
-	dispatcher.Register("cover_cycle", maintenance.HandleCoverCycle(cfg.DataPath), false)
+	dispatcher.Register("orphan_cleanup", job_definitions.HandleOrphanCleanup(cfg.DataPath), false)
+	dispatcher.Register("integrity_check", job_definitions.HandleIntegrityCheck(cfg.DataPath, dispatcher), false)
+	dispatcher.Register("device_cleanup", job_definitions.HandleDeviceCleanup(), false)
+	dispatcher.Register("cover_cycle", job_definitions.HandleCoverCycle(cfg.DataPath), false)
 	dispatcher.Register("transcode", transcoder.HandleTranscode(cfg), true)
 
 	// ── Streaming idle sweeper ─────────────────────────────────────────────────

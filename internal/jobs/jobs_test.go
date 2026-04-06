@@ -2,25 +2,14 @@ package jobs_test
 
 import (
 	"context"
-	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	db_test_utils "github.com/stevenvi/bokeh-mediaserver/internal/db/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-var testPool *pgxpool.Pool
-
-func TestMain(m *testing.M) {
-	var cleanup func()
-	testPool, cleanup = testutil.Setup()
-	code := m.Run()
-	cleanup()
-	os.Exit(code)
-}
 
 func TestCreate(t *testing.T) {
 	tests := []struct { //nolint:govet
@@ -37,7 +26,7 @@ func TestCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
 			id, err := repository.JobCreate(ctx, db, tt.jobType, tt.relatedID, tt.relatedType)
@@ -58,7 +47,7 @@ func TestCreate(t *testing.T) {
 
 func TestClaimNextJob(t *testing.T) {
 	t.Run("claims_queued_job", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
@@ -73,7 +62,7 @@ func TestClaimNextJob(t *testing.T) {
 	})
 
 	t.Run("returns_nil_when_empty", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
@@ -82,7 +71,7 @@ func TestClaimNextJob(t *testing.T) {
 	})
 
 	t.Run("skips_running_jobs", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
@@ -95,7 +84,7 @@ func TestClaimNextJob(t *testing.T) {
 	})
 
 	t.Run("filters_by_type", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		_, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
@@ -107,7 +96,7 @@ func TestClaimNextJob(t *testing.T) {
 	})
 
 	t.Run("claims_oldest_first", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		id1, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
@@ -123,7 +112,7 @@ func TestClaimNextJob(t *testing.T) {
 }
 
 func TestUpdateProgress(t *testing.T) {
-	db := testutil.NewTx(t, testPool)
+	db := testutil.NewTx(t, db_test_utils.TestPool)
 	ctx := context.Background()
 
 	id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
@@ -152,7 +141,7 @@ func TestMarkStateTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
 			id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
@@ -196,7 +185,7 @@ func TestIsActive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db := testutil.NewTx(t, testPool)
+			db := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
 			relatedID := int64(999)
@@ -220,7 +209,7 @@ func TestIsActive(t *testing.T) {
 }
 
 func TestRecoverStuckJobs(t *testing.T) {
-	db := testutil.NewTx(t, testPool)
+	db := testutil.NewTx(t, db_test_utils.TestPool)
 	ctx := context.Background()
 
 	// Create two jobs and mark them running (simulating a crash)

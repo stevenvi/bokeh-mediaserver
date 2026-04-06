@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
+	db_test_utils "github.com/stevenvi/bokeh-mediaserver/internal/db/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
@@ -14,7 +15,7 @@ import (
 
 func TestScheduler_TriggerScans(t *testing.T) {
 	t.Run("creates_scan_jobs_for_enabled_collections", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		// Create two top-level enabled collections
@@ -40,7 +41,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 	})
 
 	t.Run("skips_collections_with_active_scans", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		c1 := testutil.InsertCollection(t, db, "Photos", constants.CollectionTypePhoto, "photos")
@@ -69,7 +70,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 	})
 
 	t.Run("skips_child_collections", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		parent := testutil.InsertCollection(t, tx, "Photos", constants.CollectionTypePhoto, "photos")
@@ -92,7 +93,7 @@ func TestScheduler_TriggerScans(t *testing.T) {
 
 func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 	t.Run("creates_integrity_job", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		s := jobs.NewScheduler(tx, &jobs.Dispatcher{})
@@ -107,7 +108,7 @@ func TestScheduler_TriggerIntegrityCheck(t *testing.T) {
 	})
 
 	t.Run("skips_if_already_active", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
+		db := testutil.NewTx(t, db_test_utils.TestPool)
 		ctx := context.Background()
 
 		// Create an active integrity check
@@ -153,7 +154,7 @@ func TestScheduler_LoadSchedules(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := testutil.NewTx(t, testPool)
+			tx := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
 			// Update server_config with test values

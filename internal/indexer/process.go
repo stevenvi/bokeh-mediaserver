@@ -10,7 +10,7 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
+	job_definitions "github.com/stevenvi/bokeh-mediaserver/internal/jobs/definitions"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
@@ -164,7 +164,7 @@ func processImageFile(ctx context.Context, worker *processingWorker, db utils.DB
 	// TODO: Making this extra call to the db is inefficient, we can know the collection id at this stage
 	if collID, err := repository.MediaItemCollectionID(ctx, db, itemID); err == nil {
 		if !imaging.CollectionCoverExists(dataPath, collID) {
-			if err := maintenance.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
+			if err := job_definitions.GenerateCoverForCollection(ctx, db, dataPath, collID); err != nil {
 				slog.Warn("auto-generate collection cover", "collection_id", collID, "err", err)
 			}
 		}

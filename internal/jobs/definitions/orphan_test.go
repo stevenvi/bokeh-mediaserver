@@ -1,4 +1,4 @@
-package maintenance_test
+package definitions_test
 
 import (
 	"context"
@@ -6,26 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
+	db_test_util "github.com/stevenvi/bokeh-mediaserver/internal/db/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/maintenance"
+	job_definitions "github.com/stevenvi/bokeh-mediaserver/internal/jobs/definitions"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var testPool *pgxpool.Pool
-
-func TestMain(m *testing.M) {
-	var cleanup func()
-	testPool, cleanup = testutil.Setup()
-	code := m.Run()
-	cleanup()
-	os.Exit(code)
-}
 
 // stubHash is the file_hash inserted by testutil.InsertMediaItem.
 const stubHash = "abc123"
@@ -35,7 +26,7 @@ const orphanHash = "deadbeef000000000000000000000000000000000000000000000000cafe
 
 func TestOrphanCleanup(t *testing.T) {
 	t.Run("removes_files_for_deleted_items", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -52,7 +43,7 @@ func TestOrphanCleanup(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleOrphanCleanup(dataPath)
+		handler := job_definitions.HandleOrphanCleanup(dataPath)
 		job := &models.Job{ID: jobID, Type: "orphan_cleanup", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -63,7 +54,7 @@ func TestOrphanCleanup(t *testing.T) {
 	})
 
 	t.Run("preserves_files_for_existing_items", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -85,7 +76,7 @@ func TestOrphanCleanup(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleOrphanCleanup(dataPath)
+		handler := job_definitions.HandleOrphanCleanup(dataPath)
 		job := &models.Job{ID: jobID, Type: "orphan_cleanup", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -98,7 +89,7 @@ func TestOrphanCleanup(t *testing.T) {
 
 func TestIntegrityCheck(t *testing.T) {
 	t.Run("prunes_stale_missing_items", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -122,7 +113,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
+		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -139,7 +130,7 @@ func TestIntegrityCheck(t *testing.T) {
 	})
 
 	t.Run("does_not_prune_recently_missing_items", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -157,7 +148,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
+		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -170,7 +161,7 @@ func TestIntegrityCheck(t *testing.T) {
 	})
 
 	t.Run("requeues_items_with_missing_variants", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -188,7 +179,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
+		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)
@@ -205,7 +196,7 @@ func TestIntegrityCheck(t *testing.T) {
 	})
 
 	t.Run("does_not_requeue_if_already_active", func(t *testing.T) {
-		tx := testutil.NewTx(t, testPool)
+		tx := testutil.NewTx(t, db_test_util.TestPool)
 		ctx := context.Background()
 
 		dataPath := t.TempDir()
@@ -228,7 +219,7 @@ func TestIntegrityCheck(t *testing.T) {
 		).Scan(&jobID)
 		require.NoError(t, err)
 
-		handler := maintenance.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
+		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
 		err = handler(ctx, tx, job)
 		require.NoError(t, err)

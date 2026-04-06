@@ -238,7 +238,11 @@ func syncMissingFromDB(ctx context.Context, db utils.DBTX, items []repository.Sc
 func checkChangedByDBWalk(ctx context.Context, db utils.DBTX, items []repository.ScanItem, mediaPath string) (changed, markedMissing, restored int64, err error) {
 	relatedType := "media_item"
 
-	for _, item := range items {
+	for idx, item := range items {
+		if idx % 1000 == 0 {
+			slog.Info("check changed by db walk", "item", idx, "total", len(items))
+		}
+
 		fsPath := filepath.Join(mediaPath, item.RelativePath)
 		stat, statErr := os.Stat(fsPath)
 
@@ -412,6 +416,7 @@ func RunMetadataScan(ctx context.Context, db utils.DBTX, jobID, collectionID int
 	if err != nil {
 		return fmt.Errorf("load items: %w", err)
 	}
+	slog.Info("run metadata scan", "media items", len(items))
 
 	changed, markedMissing, restored, err := checkChangedByDBWalk(ctx, db, items, mediaPath)
 	if err != nil {
@@ -442,6 +447,7 @@ func RunMetadataScan(ctx context.Context, db utils.DBTX, jobID, collectionID int
 // checkAudioMetadata checks albums in a single audio collection for missing art
 // and empty albums, then removes any artists that have no remaining tracks anywhere.
 func checkAudioMetadata(ctx context.Context, db utils.DBTX, collectionID int64, mediaPath, dataPath string) (albumsRemoved, artistsRemoved int64, err error) {
+	slog.Info("check audio metadata")
 	et, err := utils.NewExiftoolProcess()
 	if err != nil {
 		return 0, 0, fmt.Errorf("start exiftool: %w", err)
@@ -453,9 +459,13 @@ func checkAudioMetadata(ctx context.Context, db utils.DBTX, collectionID int64, 
 		return 0, 0, fmt.Errorf("query albums: %w", err)
 	}
 
-	for _, albumID := range albumIDs {
+	for idx, albumID := range albumIDs {
 		if ctx.Err() != nil {
 			break
+		}
+
+		if idx % 1000 == 0 {
+			slog.Info("check audio metadata", "album", idx, "total", len(albumIDs))
 		}
 
 		// If no tracks exist for this album anymore, get rid of it
@@ -491,7 +501,7 @@ func checkAudioMetadata(ctx context.Context, db utils.DBTX, collectionID int64, 
 				imageBytes, err = et.ExtractBinary(fsPath, "CoverArt")
 			}
 			if err != nil || len(imageBytes) == 0 {
-				slog.Debug("could not extract art from track", "album_id", albumID, "path", fsPath)
+				slog.Debug("could not extract art from track", "path", fsPath, "error", err)
 				continue
 			}
 			if err := imaging.GenerateAlbumCoverFromBytes(imageBytes, dataPath, albumID); err != nil {
@@ -507,10 +517,13 @@ func checkAudioMetadata(ctx context.Context, db utils.DBTX, collectionID int64, 
 	if err != nil {
 		return albumsRemoved, 0, fmt.Errorf("query orphaned artists: %w", err)
 	}
+
+	slog.Info("check audio metadata", "orphaned artists", len(orphanIDs))
 	for _, artistID := range orphanIDs {
 		if ctx.Err() != nil {
 			break
 		}
+
 		if err := repository.ArtistDelete(ctx, db, artistID); err != nil {
 			slog.Warn("delete orphaned artist", "artist_id", artistID, "err", err)
 		} else {
