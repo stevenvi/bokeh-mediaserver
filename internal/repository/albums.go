@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
@@ -51,6 +52,34 @@ func AlbumGet(ctx context.Context, db utils.DBTX, id int64) (*models.AudioAlbum,
 func AlbumSetManualCover(ctx context.Context, db utils.DBTX, id int64, manual bool) error {
 	_, err := db.Exec(ctx,
 		`UPDATE audio_albums SET manual_cover = $2 WHERE id = $1`, id, manual)
+	return err
+}
+
+// AlbumIDsInCollection returns all album IDs scoped to the given root collection.
+func AlbumIDsInCollection(ctx context.Context, db utils.DBTX, collectionID int64) ([]int64, error) {
+	rows, err := db.Query(ctx,
+		`SELECT id FROM audio_albums WHERE root_collection_id = $1`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// AlbumTrackCount returns the number of tracks belonging to the given album.
+func AlbumTrackCount(ctx context.Context, db utils.DBTX, albumID int64) (int, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM audio_metadata am WHERE am.album_id = $1`,
+		albumID,
+	).Scan(&count)
+	return count, err
+}
+
+// AlbumDelete removes an album record by ID.
+func AlbumDelete(ctx context.Context, db utils.DBTX, albumID int64) error {
+	_, err := db.Exec(ctx, `DELETE FROM audio_albums WHERE id = $1`, albumID)
 	return err
 }
 

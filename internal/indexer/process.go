@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -336,7 +335,7 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	if hasPicture && albumID != nil {
 		if !albumManualCover && !imaging.AlbumCoverExists(dataPath, *albumID) {
 			_ = repository.JobUpdateProgress(ctx, db, job.ID, "extracting album art")
-			if err := extractAlbumArtForAlbum(fsPath, dataPath, *albumID); err != nil {
+			if err := extractAlbumArtBytes(et, fsPath, dataPath, *albumID); err != nil {
 				slog.Warn("extract album art", "path", fsPath, "err", err)
 			}
 		}
@@ -347,19 +346,17 @@ func processAudioFile(ctx context.Context, worker *processingWorker, db utils.DB
 	return nil
 }
 
-// extractAlbumArtForAlbum uses exiftool to extract embedded picture data from an
-// audio file and generates an album cover from it.
-func extractAlbumArtForAlbum(fsPath, dataPath string, albumID int64) error {
-	cmd := exec.Command("exiftool", "-b", "-Picture", fsPath)
-	imageBytes, err := cmd.Output()
+// extractAlbumArtBytes uses the worker's persistent exiftool process to read
+// embedded art from an audio file (tries Picture then CoverArt) and generates
+// album cover files. Avoids per-call Perl startup overhead.
+func extractAlbumArtBytes(et *utils.ExiftoolProcess, fsPath, dataPath string, albumID int64) error {
+	imageBytes, err := et.ExtractBinary(fsPath, "Picture")
 	if err != nil || len(imageBytes) == 0 {
 		// Try CoverArt tag (used by some formats)
-		cmd = exec.Command("exiftool", "-b", "-CoverArt", fsPath)
-		imageBytes, err = cmd.Output()
+		imageBytes, err = et.ExtractBinary(fsPath, "CoverArt")
 		if err != nil || len(imageBytes) == 0 {
-			return fmt.Errorf("no embedded art found")
+			return fmt.Errorf("no embedded art found in %s", fsPath)
 		}
 	}
-
 	return imaging.GenerateAlbumCoverFromBytes(imageBytes, dataPath, albumID)
 }

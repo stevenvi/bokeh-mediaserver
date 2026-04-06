@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -91,6 +92,51 @@ func (e *ExiftoolProcess) Extract(path string) (map[string]any, error) {
 	}
 
 	return results[0], nil
+}
+
+// ExtractBinary requests a single binary field from the file using the stay-open
+// process. With -json as a common arg, exiftool base64-encodes binary fields in
+// the JSON output. Returns the decoded bytes, or an error if the field is absent.
+func (e *ExiftoolProcess) ExtractBinary(path, field string) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if _, err := fmt.Fprintf(e.stdin, "-b\n-%s\n%s\n-execute\n", field, path); err != nil {
+		return nil, fmt.Errorf("write to exiftool: %w", err)
+	}
+
+	var sb strings.Builder
+	for e.stdout.Scan() {
+		line := e.stdout.Text()
+		if line == "{ready}" {
+			break
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	if err := e.stdout.Err(); err != nil {
+		return nil, fmt.Errorf("read from exiftool: %w", err)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(sb.String()), &results); err != nil {
+		return nil, fmt.Errorf("parse exiftool json: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no exiftool results for %s", path)
+	}
+
+	data, ok := results[0][field]
+	if !ok || data == nil {
+		return nil, fmt.Errorf("field %s not found in %s", field, path)
+	}
+
+	encoded, ok := data.(string)
+	if !ok {
+		return nil, fmt.Errorf("unexpected type for field %s in %s", field, path)
+	}
+
+	return base64.StdEncoding.DecodeString(encoded)
 }
 
 func (e *ExiftoolProcess) Close() {

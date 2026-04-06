@@ -45,6 +45,26 @@ func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	return err
 }
 
+// AlbumTrackRelPathsWithEmbeddedArt returns the relative file paths of active tracks
+// in the given album that have embedded album art, ordered by disc and track number.
+// Used by the integrity check to find a track to extract cover art from.
+func AlbumTrackRelPathsWithEmbeddedArt(ctx context.Context, db utils.DBTX, albumID int64) ([]string, error) {
+	rows, err := db.Query(ctx,
+		`SELECT mi.relative_path
+		 FROM audio_metadata am
+		 JOIN media_items mi ON mi.id = am.media_item_id
+		 WHERE am.album_id = $1
+		   AND am.has_embedded_art = true
+		   AND mi.missing_since IS NULL AND mi.hidden_at IS NULL
+		 ORDER BY am.disc_number ASC NULLS LAST, am.track_number ASC NULLS LAST`,
+		albumID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
 // AudioTracksByAlbum returns all tracks for an album ordered by disc and track number.
 // Access is verified against the album's root_collection_id.
 func AudioTracksByAlbum(ctx context.Context, db utils.DBTX, albumID, userID int64) ([]models.TrackView, error) {

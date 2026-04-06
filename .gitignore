@@ -5,4 +5,4 @@ __debug*
 .vscode
 coverage.html
 coverage.out
-server
+/server

@@ -136,6 +136,32 @@ func ArtistSetManualImage(ctx context.Context, db utils.DBTX, id int64, manual b
 	return err
 }
 
+// ArtistsWithNoTracks returns IDs of artists that have no remaining albums
+// and no track references (as either track artist or album artist). 
+// Safe to call after empty albums have been removed.
+func ArtistsWithNoTracks(ctx context.Context, db utils.DBTX) ([]int64, error) {
+	rows, err := db.Query(ctx,
+		`SELECT a.id FROM artists a
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM audio_albums al WHERE al.artist_id = a.id
+		 )
+		 AND NOT EXISTS (
+		     SELECT 1 FROM audio_metadata am
+		     JOIN media_items mi ON mi.id = am.media_item_id
+		     WHERE (am.artist_id = a.id OR am.album_artist_id = a.id)
+		 )`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// ArtistDelete removes an artist record by ID.
+func ArtistDelete(ctx context.Context, db utils.DBTX, artistID int64) error {
+	_, err := db.Exec(ctx, `DELETE FROM artists WHERE id = $1`, artistID)
+	return err
+}
+
 // ArtistsWithoutManualImage returns IDs of artists that have manual_image = false
 // and have at least one non-compilation album where they are the album artist.
 // Artists who only appear on compilation albums are excluded.

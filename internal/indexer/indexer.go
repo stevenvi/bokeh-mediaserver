@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
+	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -424,7 +425,100 @@ func RunMetadataScan(ctx context.Context, db utils.DBTX, jobID, collectionID int
 	logMsg(fmt.Sprintf("metadata scan complete: %d changed (queued), %d marked missing, %d restored",
 		changed, markedMissing, restored))
 
+	// Audio collection-specific scanning
+	if strings.HasPrefix(collectionType, "audio:") {
+		albumsRemoved, artistsRemoved, err := checkAudioMetadata(ctx, db, collectionID, mediaPath, dataPath)
+		if err != nil {
+			slog.Warn("audio metadata check failed", "collection_id", collectionID, "err", err)
+		} else {
+			logMsg(fmt.Sprintf("audio metadata check complete: %d empty albums removed, %d orphaned artists removed",
+				albumsRemoved, artistsRemoved))
+		}
+	}
+
 	return nil
+}
+
+// checkAudioMetadata checks albums in a single audio collection for missing art
+// and empty albums, then removes any artists that have no remaining tracks anywhere.
+func checkAudioMetadata(ctx context.Context, db utils.DBTX, collectionID int64, mediaPath, dataPath string) (albumsRemoved, artistsRemoved int64, err error) {
+	et, err := utils.NewExiftoolProcess()
+	if err != nil {
+		return 0, 0, fmt.Errorf("start exiftool: %w", err)
+	}
+	defer et.Close()
+
+	albumIDs, err := repository.AlbumIDsInCollection(ctx, db, collectionID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query albums: %w", err)
+	}
+
+	for _, albumID := range albumIDs {
+		if ctx.Err() != nil {
+			break
+		}
+
+		// If no tracks exist for this album anymore, get rid of it
+		count, err := repository.AlbumTrackCount(ctx, db, albumID)
+		if err != nil {
+			slog.Warn("count album tracks", "album_id", albumID, "err", err)
+			continue
+		}
+
+		if count == 0 {
+			if err := repository.AlbumDelete(ctx, db, albumID); err != nil {
+				slog.Warn("delete empty album", "album_id", albumID, "err", err)
+			} else {
+				albumsRemoved++
+			}
+			continue
+		}
+
+		// If the album has no cover, try to find one
+		if imaging.AlbumCoverExists(dataPath, albumID) {
+			continue
+		}
+
+		paths, err := repository.AlbumTrackRelPathsWithEmbeddedArt(ctx, db, albumID)
+		if err != nil {
+			slog.Warn("query tracks with embedded art", "album_id", albumID, "err", err)
+			continue
+		}
+		for _, relPath := range paths {
+			fsPath := filepath.Join(mediaPath, relPath)
+			imageBytes, err := et.ExtractBinary(fsPath, "Picture")
+			if err != nil || len(imageBytes) == 0 {
+				imageBytes, err = et.ExtractBinary(fsPath, "CoverArt")
+			}
+			if err != nil || len(imageBytes) == 0 {
+				slog.Debug("could not extract art from track", "album_id", albumID, "path", fsPath)
+				continue
+			}
+			if err := imaging.GenerateAlbumCoverFromBytes(imageBytes, dataPath, albumID); err != nil {
+				slog.Warn("generate album cover", "album_id", albumID, "path", fsPath, "err", err)
+				continue
+			}
+			break
+		}
+	}
+
+	// Find artists with no tracks left in the collection and remove them
+	orphanIDs, err := repository.ArtistsWithNoTracks(ctx, db)
+	if err != nil {
+		return albumsRemoved, 0, fmt.Errorf("query orphaned artists: %w", err)
+	}
+	for _, artistID := range orphanIDs {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := repository.ArtistDelete(ctx, db, artistID); err != nil {
+			slog.Warn("delete orphaned artist", "artist_id", artistID, "err", err)
+		} else {
+			artistsRemoved++
+		}
+	}
+
+	return albumsRemoved, artistsRemoved, nil
 }
 
 // ── Job handlers ───────────────────────────────────────────────────────────────
