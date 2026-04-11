@@ -72,6 +72,17 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 			focalLength35mm = jobsutils.ExifFloat(exifData, "FocalLenIn35mmFilm")
 		}
 
+		lensInfo := jobsutils.ExifStr(exifData, "Lens")
+		if lensInfo == nil {
+			lensInfo = jobsutils.ExifStr(exifData, "LensModel")
+			if lensInfo == nil {
+				lensInfo = jobsutils.ExifStr(exifData, "LensInfo")
+				if lensInfo == nil {
+					lensInfo = jobsutils.ExifStr(exifData, "LensID")
+				}
+			}
+		}
+
 		widthPx := jobsutils.ExifInt(exifData, "ImageWidth")
 		heightPx := jobsutils.ExifInt(exifData, "ImageHeight")
 		if orient := jobsutils.ExifInt(exifData, "Orientation"); orient != nil && *orient >= 5 && *orient <= 8 {
@@ -81,7 +92,9 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 		err = repository.PhotoUpsert(ctx, db, itemID,
 			widthPx, heightPx,
 			createdAt(fsPath, exifData),
-			jobsutils.ExifStr(exifData, "Make"), jobsutils.ExifStr(exifData, "Model"), jobsutils.ExifStr(exifData, "LensInfo"),
+			jobsutils.ExifStr(exifData, "Make"), 
+			jobsutils.ExifStr(exifData, "Model"), 
+			lensInfo,
 			jobsutils.ExifStr(exifData, "ExposureTime"),
 			jobsutils.ExifFloat(exifData, "FNumber"),
 			isoValue,

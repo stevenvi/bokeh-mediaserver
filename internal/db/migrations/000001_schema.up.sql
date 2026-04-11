@@ -223,7 +223,8 @@ CREATE TABLE jobs (
     started_at                  timestamptz,
     completed_at                timestamptz,
     parent_job_id               bigint REFERENCES jobs(id) ON DELETE CASCADE,
-    current_step                int NOT NULL DEFAULT 0
+    current_step                int NOT NULL DEFAULT 0,
+    subjobs_enqueued            int NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_jobs_parent ON jobs(parent_job_id) WHERE parent_job_id IS NOT NULL;

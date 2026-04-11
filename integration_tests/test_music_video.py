@@ -9,7 +9,7 @@ import httpx
 import pytest
 from conftest import BASE_URL
 from helpers.auth import bearer
-from helpers.poll import wait_for_scan_and_processing
+from helpers.poll import wait_for_job
 from pydantic import BaseModel
 
 
@@ -141,7 +141,7 @@ class TestMusicCollection:
         resp = create_collection(admin_token, "Test Music", "music-collection", "audio:music")
         TestMusicCollection.collection_id = resp.id
         grant_collection_access(admin_token, admin_user_id, resp.id)
-        wait_for_scan_and_processing(admin_token, resp.scan_job_id, resp.id, db_dsn, timeout=60)
+        wait_for_job(admin_token, resp.scan_job_id, timeout=60)
 
     def test_02_one_artist(self, admin_token):
         if not TestMusicCollection.collection_id:
@@ -242,7 +242,7 @@ class TestMovieCollection:
         resp = create_collection(admin_token, "Test Movies", "video-collection", "video:movie")
         TestMovieCollection.collection_id = resp.id
         grant_collection_access(admin_token, admin_user_id, resp.id)
-        wait_for_scan_and_processing(admin_token, resp.scan_job_id, resp.id, db_dsn, timeout=60)
+        wait_for_job(admin_token, resp.scan_job_id, timeout=60)
 
     def test_02_flat_items(self, admin_token):
         if not TestMovieCollection.collection_id:
@@ -292,7 +292,7 @@ class TestHomeMovieCollection:
         resp = create_collection(admin_token, "Test Home Movies", "video-collection", "video:home_movie")
         TestHomeMovieCollection.collection_id = resp.id
         grant_collection_access(admin_token, admin_user_id, resp.id)
-        wait_for_scan_and_processing(admin_token, resp.scan_job_id, resp.id, db_dsn, timeout=60)
+        wait_for_job(admin_token, resp.scan_job_id, timeout=60)
 
     def test_02_subcollections(self, admin_token):
         if not TestHomeMovieCollection.collection_id:

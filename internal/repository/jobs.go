@@ -27,6 +27,22 @@ func JobCreate(ctx context.Context, db utils.DBTX, jobType string, relatedID *in
 	return id, err
 }
 
+// JobCreateSubJob inserts a sub-job and atomically increments the parent's
+// subjobs_enqueued counter in a single statement.
+func JobCreateSubJob(ctx context.Context, db utils.DBTX, jobType string, relatedID *int64, relatedType *string, parentID int64) (int64, error) {
+	var id int64
+	err := db.QueryRow(ctx,
+		`WITH parent_bump AS (
+		     UPDATE jobs SET subjobs_enqueued = subjobs_enqueued + 1 WHERE id = $5
+		 )
+		 INSERT INTO jobs (type, related_id, related_type, parent_job_id)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id`,
+		jobType, relatedID, relatedType, parentID, parentID,
+	).Scan(&id)
+	return id, err
+}
+
 // JobMarkRunning sets a job to running status with the current timestamp.
 func JobMarkRunning(ctx context.Context, db utils.DBTX, jobID int64) error {
 	_, err := db.Exec(ctx,
@@ -97,14 +113,14 @@ func JobGet(ctx context.Context, db utils.DBTX, jobID int64) (*models.Job, error
 		`SELECT id, type, status, related_id, related_type,
 		        log, error_message,
 		        queued_at, started_at, completed_at,
-		        parent_job_id, current_step
+		        parent_job_id, current_step, subjobs_enqueued
 		 FROM jobs WHERE id = $1`,
 		jobID,
 	).Scan(
 		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
 		&j.Log, &j.ErrorMessage,
 		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
-		&j.ParentJobID, &j.CurrentStep,
+		&j.ParentJobID, &j.CurrentStep, &j.SubjobsEnqueued,
 	)
 	if err != nil {
 		return nil, err
@@ -181,7 +197,7 @@ func JobClaimSubJobBatch(ctx context.Context, db utils.DBTX, parentID int64, lim
 		 RETURNING queued_at, related_id, related_type, parent_job_id,
 		           log, error_message,
 		           started_at, completed_at,
-		           type, status, id, current_step`,
+		           type, status, id, current_step, subjobs_enqueued`,
 		parentID, limit,
 	)
 	if err != nil {
@@ -228,7 +244,7 @@ func JobListTopLevel(ctx context.Context, db utils.DBTX, page, limit int, includ
 	const selectCols = `queued_at, related_id, related_type, parent_job_id,
 		        log, error_message,
 		        started_at, completed_at,
-		        type, status, id, current_step`
+		        type, status, id, current_step, subjobs_enqueued`
 
 	var rows pgx.Rows
 	var err error

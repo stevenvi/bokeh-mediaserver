@@ -148,9 +148,10 @@ type jobResponse struct {
 	Status          string    `json:"status"`
 	Step            int       `json:"step"`
 	TotalSteps      int       `json:"total_steps"`
-	SupportsSubJobs bool      `json:"supports_sub_jobs"`
-	SubJobsCompleted int64    `json:"subjobs_completed"`
-	TotalSubJobs    int64     `json:"total_sub_jobs"`
+	SupportsSubJobs  bool      `json:"supports_sub_jobs"`
+	SubJobsCompleted int64     `json:"subjobs_completed"`
+	TotalSubJobs     int64     `json:"total_sub_jobs"`
+	SubjobsEnqueued  int       `json:"subjobs_enqueued"`
 	RelatedID       *int64    `json:"related_id"`
 	RelatedType     *string   `json:"related_type"`
 	RelatedName     *string   `json:"related_name"`
@@ -177,6 +178,7 @@ func (h *adminHandler) enrichJob(r *http.Request, job *models.Job) jobResponse {
 		Step:            job.CurrentStep,
 		TotalSteps:      meta.TotalSteps,
 		SupportsSubJobs: meta.SupportsSubjobs,
+		SubjobsEnqueued: job.SubjobsEnqueued,
 		RelatedID:       job.RelatedID,
 		RelatedType:     job.RelatedType,
 		Log:             job.Log,

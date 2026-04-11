@@ -14,7 +14,7 @@ import httpx
 from conftest import BASE_URL, admin_token, admin_user_id, create_user_local, login_local
 import pytest
 from helpers.auth import bearer
-from helpers.poll import wait_for_scan_and_processing
+from helpers.poll import wait_for_job
 from helpers.filesystem import variant_path, dzi_manifest_path, dzi_tiles_dir
 from pydantic import BaseModel, AwareDatetime
 
@@ -109,11 +109,12 @@ def unhide_item(token: str, item_id: int) -> None:
 
 def trigger_rescan(token: str, collection_id: int) -> int:
     r = httpx.post(
-        f"{BASE_URL}/api/v1/admin/collections/{collection_id}/scan",
+        f"{BASE_URL}/api/v1/admin/jobs",
         headers=bearer(token),
+        json={"type": "collection_scan", "related_id": collection_id, "related_type": "collection"},
     )
     r.raise_for_status()
-    return r.json()["job_id"]
+    return r.json()["id"]
 
 class CreateCollectionResponse(BaseModel):
     id: int
@@ -257,13 +258,7 @@ class TestSingleTierCollection:
         TestSingleTierCollection.scan_job_id = collection.scan_job_id
 
         # Then wait for the scan job to complete
-        wait_for_scan_and_processing(
-            admin_token,
-            TestSingleTierCollection.scan_job_id,
-            TestSingleTierCollection.collection_id,
-            db_dsn,
-            timeout=60,
-        )
+        wait_for_job(admin_token, TestSingleTierCollection.scan_job_id, timeout=60)
 
     def test_02_no_access_until_granted(self, admin_token):
         # Collection exists but admin has no collection_access row yet
@@ -409,7 +404,7 @@ class TestSingleTierCollection:
 
         # Rescanning the collection should not make the hidden item reappear...
         scan_job_id = trigger_rescan(admin_token, TestSingleTierCollection.collection_id)
-        wait_for_scan_and_processing(admin_token, scan_job_id, TestSingleTierCollection.collection_id, db_dsn, timeout=60)
+        wait_for_job(admin_token, scan_job_id, timeout=60)
         collection_items = get_collection_items(admin_token, TestSingleTierCollection.collection_id)
         assert item_id not in [i.id for i in collection_items], "hidden item reappeared after rescan"
         assert len(collection_items) == 2
@@ -457,7 +452,7 @@ class TestMultiTierCollection:
         TestMultiTierCollection.collection_id = r.id
         TestMultiTierCollection.scan_job_id = r.scan_job_id
 
-        wait_for_scan_and_processing(admin_token, TestMultiTierCollection.scan_job_id, TestMultiTierCollection.collection_id, db_dsn, timeout=120)
+        wait_for_job(admin_token, TestMultiTierCollection.scan_job_id, timeout=120)
         grant_collection_access(admin_token, admin_user_id, TestMultiTierCollection.collection_id)
         
         # item list should be as expected

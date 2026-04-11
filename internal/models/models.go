@@ -73,7 +73,8 @@ type Job struct {
 	Type         string     `json:"type"`
 	Status       string     `json:"status"`
 	ID           int64      `json:"id"`
-	CurrentStep  int        `json:"current_step"`
+	CurrentStep      int        `json:"current_step"`
+	SubjobsEnqueued  int        `json:"subjobs_enqueued"`
 }
 
 type User struct {

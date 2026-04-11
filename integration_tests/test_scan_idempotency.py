@@ -8,7 +8,7 @@ import httpx
 import pytest
 from conftest import BASE_URL
 from helpers.auth import bearer
-from helpers.poll import wait_for_scan_and_processing
+from helpers.poll import wait_for_job
 
 
 def create_collection(token: str, name: str, relative_path: str, col_type: str) -> tuple[int, int]:
@@ -24,14 +24,14 @@ def create_collection(token: str, name: str, relative_path: str, col_type: str) 
 
 
 def trigger_scan(token: str, collection_id: int, scan_type: str) -> int:
-    """Queues a scan job and returns the job_id."""
+    """Queues a collection_scan job and returns the job id. scan_type is unused."""
     r = httpx.post(
-        f"{BASE_URL}/api/v1/admin/collections/{collection_id}/scan",
+        f"{BASE_URL}/api/v1/admin/jobs",
         headers=bearer(token),
-        params={"type": scan_type},
+        json={"type": "collection_scan", "related_id": collection_id, "related_type": "collection"},
     )
     r.raise_for_status()
-    return r.json()["job_id"]
+    return r.json()["id"]
 
 
 def count_rows(dsn: str, collection_id: int) -> tuple[int, int]:
@@ -80,7 +80,7 @@ class TestScanIdempotency:
             admin_token, "Idempotency Music", "music-collection", "audio:music"
         )
         TestScanIdempotency.collection_id = collection_id
-        wait_for_scan_and_processing(admin_token, scan_job_id, collection_id, db_dsn, timeout=60)
+        wait_for_job(admin_token, scan_job_id, timeout=60)
 
     def test_02_filesystem_scan_no_duplicates(self, admin_token, db_dsn):
         if not TestScanIdempotency.collection_id:
@@ -92,7 +92,7 @@ class TestScanIdempotency:
         assert cols_before > 0, "expected at least one collection"
 
         job_id = trigger_scan(admin_token, collection_id, "filesystem")
-        wait_for_scan_and_processing(admin_token, job_id, collection_id, db_dsn, timeout=60)
+        wait_for_job(admin_token, job_id, timeout=60)
 
         items_after, cols_after = count_rows(db_dsn, collection_id)
         assert items_after == items_before, (
@@ -111,7 +111,7 @@ class TestScanIdempotency:
         assert items_before > 0, "expected media items after filesystem scan"
 
         job_id = trigger_scan(admin_token, collection_id, "metadata")
-        wait_for_scan_and_processing(admin_token, job_id, collection_id, db_dsn, timeout=60)
+        wait_for_job(admin_token, job_id, timeout=60)
 
         items_after, cols_after = count_rows(db_dsn, collection_id)
         assert items_after == items_before, (

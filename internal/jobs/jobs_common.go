@@ -85,6 +85,7 @@ func (jc *JobContext) SubJobCount() int {
 
 // FlushSubJobs writes buffered sub-jobs to the DB with parent_job_id set.
 // Returns the number of sub-jobs created.
+// TODO: Can this be done in a batch for efficiency??
 func (jc *JobContext) FlushSubJobs(ctx context.Context) (int, error) {
 	jc.mu.Lock()
 	buf := jc.subJobBuf
@@ -92,7 +93,7 @@ func (jc *JobContext) FlushSubJobs(ctx context.Context) (int, error) {
 	jc.mu.Unlock()
 
 	for _, spec := range buf {
-		if _, err := repository.JobCreate(ctx, jc.DB, spec.jobType, spec.relatedID, spec.relatedType, &jc.Job.ID); err != nil {
+		if _, err := repository.JobCreateSubJob(ctx, jc.DB, spec.jobType, spec.relatedID, spec.relatedType, jc.Job.ID); err != nil {
 			slog.Warn("flush sub-job", "type", spec.jobType, "err", err)
 		}
 	}
