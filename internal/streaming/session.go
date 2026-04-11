@@ -56,7 +56,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/transcoder"
 )
 
 const (
@@ -161,7 +160,6 @@ func GetOrCreateSession(itemID int64, bitrateKbps *int, fsPath string, bitrateTh
 
 	// Pause background work while streaming
 	dispatcher.Pause()
-	transcoder.PauseActive()
 
 	go s.watchSegments()
 	go s.waitAndLog()

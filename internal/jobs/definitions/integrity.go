@@ -8,17 +8,21 @@ import (
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
-	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
+// IntegrityCheckMeta describes the integrity_check job type.
+var IntegrityCheckMeta = jobs.JobMeta{
+	Description: "Prune stale items and check for missing files",
+}
+
 // HandleIntegrityCheck returns a job handler that:
 // 1. Deletes media items missing for >90 days and cleans up their derived files
-// 2. Re-queues transcode for video items whose HLS manifest was deleted on disk
-// 3. Re-queues process_media for home movie items whose cover is missing
-func HandleIntegrityCheck(dataPath string, dispatcher *jobs.Dispatcher) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+// 2. Re-queues video_transcode for video items whose HLS manifest was deleted on disk
+func HandleIntegrityCheck(dataPath string, dispatcher *jobs.Dispatcher) jobs.JobHandler {
+	return func(ctx context.Context, jc *jobs.JobContext) error {
+		db, job := jc.DB, jc.Job
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting integrity check")
 
 		// prune stale missing items (missing for >90 days)
@@ -61,7 +65,7 @@ func checkVideoDerivatives(ctx context.Context, db utils.DBTX, dataPath string, 
 			break
 		}
 
-		// Re-queue transcode if transcoded_at is set but the manifest is gone
+		// Re-queue video_transcode if transcoded_at is set but the manifest is gone
 		if item.TranscodedAt != nil {
 			manifestPath := imaging.VideoHLSManifest(dataPath, item.FileHash)
 			if _, statErr := os.Stat(manifestPath); os.IsNotExist(statErr) {
@@ -70,25 +74,10 @@ func checkVideoDerivatives(ctx context.Context, db utils.DBTX, dataPath string, 
 					slog.Warn("clear transcoded_at", "item_id", item.ItemID, "err", err)
 					continue
 				}
-				active, _ := repository.JobIsActive(ctx, db, "transcode", item.ItemID)
+				active, _ := repository.JobIsActive(ctx, db, "video_transcode_item", item.ItemID)
 				if !active {
-					if _, err := repository.JobCreate(ctx, db, "transcode", &item.ItemID, &relatedType); err != nil {
-						slog.Warn("re-queue transcode", "item_id", item.ItemID, "err", err)
-					} else {
-						requeued++
-					}
-				}
-			}
-		}
-
-		// Re-queue process_media for home movies whose cover is missing
-		if item.CollectionType == "video:home_movie" {
-			coverPath := imaging.VariantPath(dataPath, item.FileHash, "cover", "avif")
-			if _, statErr := os.Stat(coverPath); os.IsNotExist(statErr) {
-				active, _ := repository.JobIsActive(ctx, db, "process_media", item.ItemID)
-				if !active {
-					if _, err := repository.JobCreate(ctx, db, "process_media", &item.ItemID, &relatedType); err != nil {
-						slog.Warn("re-queue process_media for cover", "item_id", item.ItemID, "err", err)
+					if _, err := repository.JobCreate(ctx, db, "video_transcode_item", &item.ItemID, &relatedType, nil); err != nil {
+						slog.Warn("re-queue video_transcode_item", "item_id", item.ItemID, "err", err)
 					} else {
 						requeued++
 					}

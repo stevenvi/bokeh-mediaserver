@@ -13,7 +13,7 @@ import (
 )
 
 // NewRouter builds and returns the fully configured Chi router.
-func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher, cfg *config.Config, jwtSecret, mediaPath, dataPath, clientOrigin string, production bool) http.Handler {
+func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher, scheduler *jobs.Scheduler, cfg *config.Config, jwtSecret, mediaPath, dataPath, clientOrigin string, production bool) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Recoverer)
@@ -43,10 +43,14 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	video := &videoHandler{db: db, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
 	admin := &adminHandler{
-		db: db, guard: guard, pool: pool,
-		authPlugins: authPlugins, authHandler: authHandler,
-		dispatcher: dispatcher,
-		mediaPath:  mediaPath, dataPath: dataPath,
+		db:          db,
+		guard:       guard,
+		authPlugins: authPlugins,
+		authHandler: authHandler,
+		dispatcher:  dispatcher,
+		scheduler:   scheduler,
+		mediaPath:   mediaPath,
+		dataPath:    dataPath,
 	}
 
 	// ── Public ────────────────────────────────────────────────────────────────
@@ -100,6 +104,7 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 		r.Get("/images/{id}/tiles/*", photos.serveDZITile)
 		r.Get("/images/collections/{id}/cover", photos.serveCollectionCover)
 		r.Get("/images/artists/{id}/cover", music.serveArtistImage)
+		r.Get("/images/albums/{albumId}/thumb", music.serveAlbumThumbnail)
 		r.Get("/images/albums/{albumId}/cover", music.serveAlbumCover)
 
 		// Music
@@ -143,14 +148,19 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 		r.Get("/api/v1/admin/collections", admin.listCollections)
 		r.Post("/api/v1/admin/collections", admin.createCollection)
 		r.Delete("/api/v1/admin/collections/{id}", admin.deleteCollection)
-		r.Post("/api/v1/admin/collections/{id}/scan", admin.triggerScan)
 		r.Post("/api/v1/admin/collections/{id}/cover", admin.uploadCollectionCover)
 		r.Delete("/api/v1/admin/collections/{id}/derivatives", admin.deleteDerivatives)
 		r.Get("/api/v1/admin/collections/{id}/users", admin.listCollectionUsers)
 		r.Post("/api/v1/admin/collections/{id}/users", admin.grantUsersCollectionAccess)
 
+		r.Get("/api/v1/admin/jobs", admin.listJobs)
+		r.Post("/api/v1/admin/jobs", admin.createJob)
 		r.Get("/api/v1/admin/jobs/{id}", admin.getJob)
 		r.Get("/api/v1/admin/jobs/{id}/events", admin.jobEvents)
+
+		r.Get("/api/v1/admin/schedules", admin.listSchedules)
+		r.Put("/api/v1/admin/schedules/{name}", admin.upsertSchedule)
+		r.Delete("/api/v1/admin/schedules/{name}", admin.deleteSchedule)
 
 		r.Get("/api/v1/admin/users/{userId}/collection_access", admin.getCollectionAccess)
 		r.Patch("/api/v1/admin/users/{userId}/collection_access", admin.grantCollectionAccess)
@@ -175,12 +185,6 @@ func NewRouter(db *pgxpool.Pool, pool *jobs.Pool, guard *DeviceGuard, dispatcher
 		// Media directory browser
 		r.Get("/api/v1/admin/directories", admin.listDirectories)
 		r.Get("/api/v1/admin/directories/*", admin.listDirectories)
-
-		// Maintenance
-		r.Post("/api/v1/admin/maintenance/orphan-cleanup", admin.triggerOrphanCleanup)
-		r.Post("/api/v1/admin/maintenance/integrity-check", admin.triggerIntegrityCheck)
-		r.Post("/api/v1/admin/maintenance/device-cleanup", admin.triggerDeviceCleanup)
-		r.Post("/api/v1/admin/maintenance/cover-cycle", admin.triggerCoverCycle)
 	})
 
 	return r

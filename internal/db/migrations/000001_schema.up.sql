@@ -4,14 +4,9 @@ CREATE TABLE server_config (
     id                          bigint PRIMARY KEY CHECK (id = 1),
     server_name                 text NOT NULL DEFAULT 'My Bokeh Media Server',
     server_url                  text NOT NULL DEFAULT 'http://localhost:3000',
-    worker_count                smallint NOT NULL DEFAULT 2,
     log_path                    text NOT NULL DEFAULT '',
     log_level                   text NOT NULL DEFAULT 'warn'
                                     CHECK (log_level IN ('error','warn','info','debug')),
-    scan_schedule               text DEFAULT '0 3 * * *',
-    integrity_schedule          text DEFAULT '0 4 * * 0',
-    device_cleanup_schedule     text DEFAULT '0 2 1 * *',
-    cover_cycle_schedule        text DEFAULT '0 5 * * 1',
     transcode_bitrate_kbps      int NOT NULL DEFAULT 4000,
     updated_at                  timestamptz NOT NULL DEFAULT now()
 );
@@ -77,7 +72,7 @@ CREATE TABLE collections (
                                     )),
     relative_path               text,
     is_enabled                  boolean NOT NULL DEFAULT true,
-    manual_cover                boolean NOT NULL DEFAULT false,
+    manual_thumbnail            boolean NOT NULL DEFAULT false,
     last_scanned_at             timestamptz,
     missing_since               timestamptz,
     created_at                  timestamptz NOT NULL DEFAULT now()
@@ -160,7 +155,7 @@ CREATE TABLE artists (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name                        text NOT NULL,
     sort_name                   text NOT NULL,
-    manual_image                boolean NOT NULL DEFAULT false,
+    manual_thumbnail            boolean NOT NULL DEFAULT false,
     created_at                  timestamptz NOT NULL DEFAULT now(),
     search_vector               tsvector GENERATED ALWAYS AS (
                                     to_tsvector('simple', name)
@@ -217,30 +212,35 @@ CREATE INDEX idx_audio_meta_album_artist ON audio_metadata(album_artist_id);
 
 CREATE TABLE jobs (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    type                        text NOT NULL
-                                    CHECK (type IN (
-                                        'initial_scan',
-                                        'filesystem_scan',
-                                        'metadata_scan',
-                                        'process_media',
-                                        'transcode',
-                                        'thumbnail_gen',
-                                        'waveform_gen',
-                                        'orphan_cleanup',
-                                        'integrity_check',
-                                        'device_cleanup',
-                                        'cover_cycle'
-                                    )),
+    type                        text NOT NULL,
     status                      text NOT NULL DEFAULT 'queued'
-                                    CHECK (status IN ('queued','running','done','failed')),
+                                    CHECK (status IN ('queued','running','running_sub_jobs','done','failed')),
     related_id                  bigint,
     related_type                text,
     log                         text,
     error_message               text,
     queued_at                   timestamptz NOT NULL DEFAULT now(),
     started_at                  timestamptz,
-    completed_at                timestamptz
+    completed_at                timestamptz,
+    parent_job_id               bigint REFERENCES jobs(id) ON DELETE CASCADE,
+    current_step                int NOT NULL DEFAULT 0
 );
+
+CREATE INDEX idx_jobs_parent ON jobs(parent_job_id) WHERE parent_job_id IS NOT NULL;
+
+CREATE TABLE jobs_schedule (
+    name        text PRIMARY KEY,
+    cron        text NOT NULL,
+    description text,
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO jobs_schedule (name, cron, description) VALUES
+    ('collection_scan',  '0 3 * * *',   'Scan all enabled collections for changes'),
+    ('integrity_check',  '0 4 * * 0',   'Prune stale items'),
+    ('device_cleanup',   '0 2 1 * *',   'Remove inactive device sessions'),
+    ('cover_cycle',      '0 5 * * 1',   'Refresh auto-generated sub-collection and artist thumbnails')
+ON CONFLICT DO NOTHING;
 
 CREATE INDEX idx_jobs_lookup ON jobs(type, related_id, status);
 CREATE INDEX idx_jobs_queued ON jobs(status, queued_at) WHERE status = 'queued';
@@ -258,7 +258,7 @@ CREATE TABLE video_metadata (
     date                        date,       -- release date (movies) or start date (home movies)
     end_date                    date,       -- home movies only
     author                      text,       -- home movies only
-    manual_cover                bool NOT NULL DEFAULT false
+    manual_thumbnail            bool NOT NULL DEFAULT false
 );
 
 CREATE TABLE video_bookmarks (

@@ -11,44 +11,18 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-// JobClaimNext atomically claims the next queued job of one of the given types.
-// Returns nil, nil if no job is available. Uses SKIP LOCKED to avoid contention.
-func JobClaimNext(ctx context.Context, db utils.DBTX, jobTypes []string) (*models.Job, error) {
-	var j models.Job
-	err := db.QueryRow(ctx,
-		`UPDATE jobs SET status = 'running', started_at = now()
-		 WHERE id = (
-		     SELECT id FROM jobs
-		     WHERE status = 'queued' AND type = ANY($1)
-		     ORDER BY queued_at
-		     LIMIT 1
-		     FOR UPDATE SKIP LOCKED
-		 ) RETURNING id, type, status, related_id, related_type,
-		             log, error_message,
-		             queued_at, started_at, completed_at`,
-		jobTypes,
-	).Scan(
-		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
-		&j.Log, &j.ErrorMessage,
-		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &j, nil
-}
+
+// nonTerminalStatuses are the job statuses that indicate a job is still in progress.
+var nonTerminalStatuses = []string{"queued", "running", "running_sub_jobs"}
 
 // JobCreate inserts a new job row and returns its ID.
-func JobCreate(ctx context.Context, db utils.DBTX, jobType string, relatedID *int64, relatedType *string) (int64, error) {
+func JobCreate(ctx context.Context, db utils.DBTX, jobType string, relatedID *int64, relatedType *string, parentJobID *int64) (int64, error) {
 	var id int64
 	err := db.QueryRow(ctx,
-		`INSERT INTO jobs (type, related_id, related_type)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO jobs (type, related_id, related_type, parent_job_id)
+		 VALUES ($1, $2, $3, $4)
 		 RETURNING id`,
-		jobType, relatedID, relatedType,
+		jobType, relatedID, relatedType, parentJobID,
 	).Scan(&id)
 	return id, err
 }
@@ -58,6 +32,24 @@ func JobMarkRunning(ctx context.Context, db utils.DBTX, jobID int64) error {
 	_, err := db.Exec(ctx,
 		`UPDATE jobs SET status = 'running', started_at = now() WHERE id = $1`,
 		jobID,
+	)
+	return err
+}
+
+// JobMarkRunningSubJobs transitions a parent job to running_sub_jobs status.
+func JobMarkRunningSubJobs(ctx context.Context, db utils.DBTX, jobID int64) error {
+	_, err := db.Exec(ctx,
+		`UPDATE jobs SET status = 'running_sub_jobs' WHERE id = $1`,
+		jobID,
+	)
+	return err
+}
+
+// JobUpdateStep sets current_step for a job.
+func JobUpdateStep(ctx context.Context, db utils.DBTX, jobID int64, step int) error {
+	_, err := db.Exec(ctx,
+		`UPDATE jobs SET current_step = $2 WHERE id = $1`,
+		jobID, step,
 	)
 	return err
 }
@@ -75,13 +67,10 @@ func JobUpdateProgress(ctx context.Context, db utils.DBTX, jobID int64, msg stri
 
 // JobMarkDone sets a job to done status.
 func JobMarkDone(ctx context.Context, db utils.DBTX, jobID int64) error {
-	_, err := db.Exec(ctx,
-		`UPDATE jobs
-		 SET status = 'done', completed_at = now()
-		 WHERE id = $1`,
-		jobID,
-	)
-	return err
+	// Remove sub-jobs from db for the sake of cleanliness
+	_, err1 := db.Exec(ctx, `DELETE FROM jobs WHERE parent_job_id = $1`, jobID)
+	_, err2 := db.Exec(ctx, `UPDATE jobs SET status = 'done', completed_at = now() WHERE id = $1`, jobID)
+	return errors.Join(err1, err2)
 }
 
 // JobMarkFailed sets a job to failed status with an error message.
@@ -107,13 +96,15 @@ func JobGet(ctx context.Context, db utils.DBTX, jobID int64) (*models.Job, error
 	err := db.QueryRow(ctx,
 		`SELECT id, type, status, related_id, related_type,
 		        log, error_message,
-		        queued_at, started_at, completed_at
+		        queued_at, started_at, completed_at,
+		        parent_job_id, current_step
 		 FROM jobs WHERE id = $1`,
 		jobID,
 	).Scan(
 		&j.ID, &j.Type, &j.Status, &j.RelatedID, &j.RelatedType,
 		&j.Log, &j.ErrorMessage,
 		&j.QueuedAt, &j.StartedAt, &j.CompletedAt,
+		&j.ParentJobID, &j.CurrentStep,
 	)
 	if err != nil {
 		return nil, err
@@ -126,36 +117,41 @@ func JobIsActive(ctx context.Context, db utils.DBTX, jobType string, relatedID i
 	var count int
 	err := db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM jobs
-		 WHERE type = $1 AND related_id = $2 AND status IN ('queued', 'running')`,
-		jobType, relatedID,
+		 WHERE type = $1 AND related_id = $2 AND status = ANY($3)
+		   AND parent_job_id IS NULL`,
+		jobType, relatedID, nonTerminalStatuses,
 	).Scan(&count)
 	return count > 0, err
 }
 
-// JobIsAnyActive returns true if any job matching one of jobTypes is queued or
-// running for the given related ID. Used to enforce per-collection scan concurrency.
-func JobIsAnyActive(ctx context.Context, db utils.DBTX, jobTypes []string, relatedID int64) (bool, error) {
-	var count int
-	err := db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM jobs
-		 WHERE type = ANY($1) AND related_id = $2 AND status IN ('queued', 'running')`,
-		jobTypes, relatedID,
-	).Scan(&count)
-	return count > 0, err
-}
 
-// JobIsActiveByType returns true if any job of the given type is queued or running.
+// JobIsActiveByType returns true if any top-level job of the given type is queued or running.
 func JobIsActiveByType(ctx context.Context, db utils.DBTX, jobType string) (bool, error) {
 	var count int
 	err := db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM jobs
-		 WHERE type = $1 AND status IN ('queued', 'running')`,
-		jobType,
+		 WHERE type = $1 AND status = ANY($2)
+		   AND parent_job_id IS NULL`,
+		jobType, nonTerminalStatuses,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// JobIsActiveForCollection checks if collection_scan is active for a collection.
+func JobIsActiveForCollection(ctx context.Context, db utils.DBTX, collectionID int64) (bool, error) {
+	var count int
+	err := db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM jobs
+		 WHERE type = 'collection_scan' AND related_id = $1
+		   AND status = ANY($2)
+		   AND parent_job_id IS NULL`,
+		collectionID, nonTerminalStatuses,
 	).Scan(&count)
 	return count > 0, err
 }
 
 // JobsResetStuck resets any jobs left in 'running' state back to 'queued'.
+// Skips jobs in 'running_sub_jobs' state (those are resumable).
 func JobsResetStuck(ctx context.Context, db utils.DBTX) error {
 	tag, err := db.Exec(ctx,
 		`UPDATE jobs SET status = 'queued', started_at = NULL
@@ -169,4 +165,111 @@ func JobsResetStuck(ctx context.Context, db utils.DBTX) error {
 			"count", tag.RowsAffected())
 	}
 	return nil
+}
+
+// JobClaimSubJobBatch claims up to limit queued sub-jobs for a parent.
+func JobClaimSubJobBatch(ctx context.Context, db utils.DBTX, parentID int64, limit int) ([]*models.Job, error) {
+	rows, err := db.Query(ctx,
+		`UPDATE jobs SET status = 'running', started_at = now()
+		 WHERE id IN (
+		     SELECT id FROM jobs
+		     WHERE parent_job_id = $1 AND status = 'queued'
+		     ORDER BY id
+		     LIMIT $2
+		     FOR UPDATE SKIP LOCKED
+		 )
+		 RETURNING queued_at, related_id, related_type, parent_job_id,
+		           log, error_message,
+		           started_at, completed_at,
+		           type, status, id, current_step`,
+		parentID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToAddrOfStructByPos[models.Job])
+}
+
+// JobSubJobCounts returns (completed, total) sub-job counts for a parent.
+func JobSubJobCounts(ctx context.Context, db utils.DBTX, parentID int64) (completed, total int64, err error) {
+	err = db.QueryRow(ctx,
+		`SELECT
+		    COUNT(*) FILTER (WHERE status = 'done') AS completed,
+		    COUNT(*) AS total
+		 FROM jobs WHERE parent_job_id = $1`,
+		parentID,
+	).Scan(&completed, &total)
+	return
+}
+
+// JobListTopLevel returns paginated top-level jobs (parent_job_id IS NULL), newest first.
+func JobListTopLevel(ctx context.Context, db utils.DBTX, page, limit int, includeInactive bool) ([]*models.Job, int64, error) {
+	offset := (page - 1) * limit
+
+	// Determine how many total jobs there are
+	var total int64
+	if includeInactive {
+		err := db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM jobs WHERE parent_job_id IS NULL`,
+		).Scan(&total)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else {
+		err := db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM jobs WHERE parent_job_id IS NULL AND status = ANY($1)`,
+			nonTerminalStatuses,
+		).Scan(&total)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	const selectCols = `queued_at, related_id, related_type, parent_job_id,
+		        log, error_message,
+		        started_at, completed_at,
+		        type, status, id, current_step`
+
+	var rows pgx.Rows
+	var err error
+	if includeInactive {
+		rows, err = db.Query(ctx,
+			`SELECT `+selectCols+`
+			 FROM jobs
+			 WHERE parent_job_id IS NULL
+			 ORDER BY queued_at DESC
+			 LIMIT $1 OFFSET $2`,
+			limit, offset,
+		)
+	} else {
+		rows, err = db.Query(ctx,
+			`SELECT `+selectCols+`
+			 FROM jobs
+			 WHERE parent_job_id IS NULL AND status = ANY($1)
+			 ORDER BY queued_at DESC
+			 LIMIT $2 OFFSET $3`,
+			nonTerminalStatuses, limit, offset,
+		)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	jobs, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByPos[models.Job])
+	return jobs, total, err
+}
+
+// JobGetTranscodeParent finds an existing queued/running_sub_jobs video_transcode parent job.
+func JobGetTranscodeParent(ctx context.Context, db utils.DBTX) (int64, error) {
+	var id int64
+	err := db.QueryRow(ctx,
+		`SELECT id FROM jobs
+		 WHERE type = 'video_transcode' AND status = ANY($1)
+		   AND parent_job_id IS NULL
+		 ORDER BY id ASC LIMIT 1`,
+		nonTerminalStatuses,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, pgx.ErrNoRows
+	}
+	return id, err
 }

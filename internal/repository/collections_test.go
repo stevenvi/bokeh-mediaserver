@@ -459,12 +459,12 @@ func TestCollectionIsDescendantOf(t *testing.T) {
 	})
 }
 
-func TestCollectionsWithNonManualCoverIDs(t *testing.T) {
+func TestCollectionsWithNonManualThumbnailIDs(t *testing.T) {
 	t.Run("includes_collection_without_manual_cover", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createCollection(t, db, constants.CollectionTypePhoto)
 
-		ids, err := repository.CollectionsWithNonManualCoverIDs(bg(), db)
+		ids, err := repository.CollectionsWithNonManualThumbnailIDs(bg(), db)
 		require.NoError(t, err)
 		assert.Contains(t, ids, id)
 	})
@@ -472,21 +472,21 @@ func TestCollectionsWithNonManualCoverIDs(t *testing.T) {
 	t.Run("excludes_collection_with_manual_cover", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createCollection(t, db, constants.CollectionTypePhoto)
-		require.NoError(t, repository.CollectionSetManualCover(bg(), db, id, true))
+		require.NoError(t, repository.CollectionSetManualThumbnail(bg(), db, id, true))
 
-		ids, err := repository.CollectionsWithNonManualCoverIDs(bg(), db)
+		ids, err := repository.CollectionsWithNonManualThumbnailIDs(bg(), db)
 		require.NoError(t, err)
 		assert.NotContains(t, ids, id)
 	})
 }
 
-func TestCollectionSetManualCover(t *testing.T) {
+func TestCollectionSetManualThumbnail(t *testing.T) {
 	t.Run("sets_manual_cover", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createCollection(t, db, constants.CollectionTypePhoto)
-		require.NoError(t, repository.CollectionSetManualCover(bg(), db, id, true))
+		require.NoError(t, repository.CollectionSetManualThumbnail(bg(), db, id, true))
 
-		ids, err := repository.CollectionsWithNonManualCoverIDs(bg(), db)
+		ids, err := repository.CollectionsWithNonManualThumbnailIDs(bg(), db)
 		require.NoError(t, err)
 		assert.NotContains(t, ids, id)
 	})
@@ -494,10 +494,10 @@ func TestCollectionSetManualCover(t *testing.T) {
 	t.Run("clears_manual_cover", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createCollection(t, db, constants.CollectionTypePhoto)
-		require.NoError(t, repository.CollectionSetManualCover(bg(), db, id, true))
-		require.NoError(t, repository.CollectionSetManualCover(bg(), db, id, false))
+		require.NoError(t, repository.CollectionSetManualThumbnail(bg(), db, id, true))
+		require.NoError(t, repository.CollectionSetManualThumbnail(bg(), db, id, false))
 
-		ids, err := repository.CollectionsWithNonManualCoverIDs(bg(), db)
+		ids, err := repository.CollectionsWithNonManualThumbnailIDs(bg(), db)
 		require.NoError(t, err)
 		assert.Contains(t, ids, id)
 	})

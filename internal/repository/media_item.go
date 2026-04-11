@@ -59,7 +59,8 @@ func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models
 		        pm.color_space,
 		        pm.placeholder
 		 FROM media_items m
-		 JOIN collection_access ca ON ca.collection_id = m.collection_id AND ca.user_id = $2
+		 JOIN collections c ON c.id = m.collection_id
+		 JOIN collection_access ca ON ca.collection_id = c.root_collection_id AND ca.user_id = $2
 		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
 		id, userID,
@@ -384,7 +385,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			 SELECT m.id, m.title, m.mime_type, m.ordinal,
 			        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 			        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-			        vm.date, vm.end_date, vm.author, vm.manual_cover,
+			        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
 			        vb.position_seconds
 			 FROM media_items m
 			 JOIN descendants d ON d.id = m.collection_id
@@ -406,7 +407,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			`SELECT m.id, m.title, m.mime_type, m.ordinal,
 			        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 			        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-			        vm.date, vm.end_date, vm.author, vm.manual_cover,
+			        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
 			        vb.position_seconds
 			 FROM media_items m
 			 LEFT JOIN video_metadata vm ON vm.media_item_id = m.id
@@ -433,7 +434,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
 			&vm.DurationSeconds, &vm.Width, &vm.Height, &vm.BitrateKbps,
 			&vm.VideoCodec, &vm.AudioCodec, &vm.TranscodedAt,
-			&vm.Date, &vm.EndDate, &vm.Author, &vm.ManualCover,
+			&vm.Date, &vm.EndDate, &vm.Author, &vm.ManualThumbnail,
 			&vm.BookmarkSeconds,
 		)
 		item.Video = &vm
@@ -621,35 +622,69 @@ type ScanItem struct {
 	IsMissing     bool // true when missing_since IS NOT NULL
 }
 
-// MediaItemPathsByCollection returns a set of all non-missing relative paths
-// for media items in a collection and its sub-collections (recursive).
-// Rows are consumed one at a time to avoid holding an intermediate slice.
-func MediaItemPathsByCollection(ctx context.Context, db utils.DBTX, collectionID int64) (map[string]struct{}, error) {
-	rows, err := db.Query(ctx,
-		`WITH RECURSIVE tree AS (
-			SELECT id FROM collections WHERE id = $1
-			UNION ALL
-			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
-		)
-		SELECT mi.relative_path FROM media_items mi
-		JOIN tree t ON mi.collection_id = t.id
-		WHERE mi.missing_since IS NULL`,
-		collectionID,
-	)
+// KnownScanItem holds the scan-relevant fields for a known media item.
+type KnownScanItem struct {
+	ID          int64
+	HasMetadata bool
+}
+
+// MediaItemsKnownForScan returns all non-missing media items in a collection tree,
+// keyed by relative path, with a flag indicating whether the type-appropriate metadata
+// record exists. mimeCategory should be "audio", "video", or "image".
+func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int64, mimeCategory string) (map[string]KnownScanItem, error) {
+	var metaTable string
+	switch mimeCategory {
+	case "audio":
+		metaTable = "audio_metadata"
+	case "video":
+		metaTable = "video_metadata"
+	case "image":
+		metaTable = "photo_metadata"
+	}
+
+	var query string
+	if metaTable != "" {
+		query = fmt.Sprintf(`
+			WITH RECURSIVE tree AS (
+				SELECT id FROM collections WHERE id = $1
+				UNION ALL
+				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+			)
+			SELECT mi.relative_path, mi.id, (meta.media_item_id IS NOT NULL) AS has_metadata
+			FROM media_items mi
+			JOIN tree t ON mi.collection_id = t.id
+			LEFT JOIN %s meta ON meta.media_item_id = mi.id
+			WHERE mi.missing_since IS NULL`, metaTable)
+	} else {
+		// Unknown category — treat all existing items as complete so we don't re-queue them.
+		query = `
+			WITH RECURSIVE tree AS (
+				SELECT id FROM collections WHERE id = $1
+				UNION ALL
+				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+			)
+			SELECT mi.relative_path, mi.id, true AS has_metadata
+			FROM media_items mi
+			JOIN tree t ON mi.collection_id = t.id
+			WHERE mi.missing_since IS NULL`
+	}
+
+	rows, err := db.Query(ctx, query, collectionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	paths := make(map[string]struct{})
+	items := make(map[string]KnownScanItem)
 	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
+		var path string
+		var item KnownScanItem
+		if err := rows.Scan(&path, &item.ID, &item.HasMetadata); err != nil {
 			return nil, err
 		}
-		paths[p] = struct{}{}
+		items[path] = item
 	}
-	return paths, rows.Err()
+	return items, rows.Err()
 }
 
 // MediaItemsForScan returns all media items (missing and non-missing) in a

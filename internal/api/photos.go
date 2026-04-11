@@ -213,7 +213,7 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
-		avifPath := imaging.CollectionCoverPath(h.dataPath, id, "avif")
+		avifPath := imaging.CollectionThumbnailPath(h.dataPath, id, "avif")
 		if fileExists(avifPath) {
 			w.Header().Set("Content-Type", "image/avif")
 			http.ServeFile(w, r, avifPath)
@@ -221,7 +221,7 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	webpPath := imaging.CollectionCoverPath(h.dataPath, id, "webp")
+	webpPath := imaging.CollectionThumbnailPath(h.dataPath, id, "webp")
 	if fileExists(webpPath) {
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeFile(w, r, webpPath)
@@ -229,7 +229,7 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 	}
 
 	// AVIF fallback if WebP doesn't exist (shouldn't happen but be safe)
-	avifPath := imaging.CollectionCoverPath(h.dataPath, id, "avif")
+	avifPath := imaging.CollectionThumbnailPath(h.dataPath, id, "avif")
 	if fileExists(avifPath) {
 		w.Header().Set("Content-Type", "image/avif")
 		http.ServeFile(w, r, avifPath)

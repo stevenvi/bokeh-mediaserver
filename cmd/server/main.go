@@ -18,12 +18,10 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/config"
 	"github.com/stevenvi/bokeh-mediaserver/internal/db"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
-	"github.com/stevenvi/bokeh-mediaserver/internal/indexer"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	job_definitions "github.com/stevenvi/bokeh-mediaserver/internal/jobs/definitions"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/streaming"
-	"github.com/stevenvi/bokeh-mediaserver/internal/transcoder"
 )
 
 func main() {
@@ -41,6 +39,8 @@ func run() error {
 	}
 
 	setupLogger(cfg.LogLevel, cfg.LogPath)
+
+	slog.Info("bokeh media server starting", "cpus", runtime.NumCPU())
 
 	// ── Migrations ────────────────────────────────────────────────────────────
 	slog.Info("running database migrations")
@@ -93,53 +93,30 @@ func run() error {
 		return fmt.Errorf("load banned devices: %w", err)
 	}
 
-	// ── Worker pools ──────────────────────────────────────────────────────────
-	mainPool := jobs.NewPool(cfg.WorkerCount)
-	processingPool := jobs.NewPool(cfg.ProcessingWorkerCount)
-
-	// Create per-worker exiftool process managers for the processing pool
-	processingWorkers := indexer.NewProcessingWorkers(cfg.ProcessingWorkerCount)
-	defer processingWorkers.CloseAll()
-
 	// ── Job dispatcher ────────────────────────────────────────────────────────
-	dispatcher := jobs.NewDispatcher(db, mainPool, processingPool)
+	dispatcher := jobs.NewDispatcher(db)
 	dispatcher.Start(ctx)
-	dispatcher.Register("initial_scan", indexer.HandleInitialScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
-	dispatcher.Register("filesystem_scan", indexer.HandleFilesystemScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
-	dispatcher.Register("metadata_scan", indexer.HandleMetadataScanJob(cfg.MediaPath, cfg.DataPath, dispatcher), false)
-	dispatcher.Register("process_media", indexer.HandleProcessMediaWithWorkers(processingWorkers, cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps, dispatcher), true)
-	dispatcher.Register("orphan_cleanup", job_definitions.HandleOrphanCleanup(cfg.DataPath), false)
-	dispatcher.Register("integrity_check", job_definitions.HandleIntegrityCheck(cfg.DataPath, dispatcher), false)
-	dispatcher.Register("device_cleanup", job_definitions.HandleDeviceCleanup(), false)
-	dispatcher.Register("cover_cycle", job_definitions.HandleCoverCycle(cfg.DataPath), false)
-	dispatcher.Register("transcode", transcoder.HandleTranscode(cfg), true)
+	dispatcher.Register("collection_scan", job_definitions.CollectionScanMeta, job_definitions.HandleCollectionScan(cfg.MediaPath, cfg.DataPath))
+	dispatcher.Register("scan_photo", job_definitions.ScanPhotoMeta, job_definitions.HandleScanPhoto(cfg.MediaPath, cfg.DataPath))
+	dispatcher.Register("scan_video", job_definitions.ScanVideoMeta, job_definitions.HandleScanVideo(cfg.MediaPath, cfg.DataPath, cfg.TranscodeBitrateKbps))
+	dispatcher.Register("scan_audio", job_definitions.ScanAudioMeta, job_definitions.HandleScanAudio(cfg.MediaPath, cfg.DataPath))
+	dispatcher.Register("thumbnail_scan", job_definitions.ThumbnailScanMeta, job_definitions.HandleThumbnailScan(cfg.MediaPath, cfg.DataPath))
+	dispatcher.Register("video_transcode", job_definitions.VideoTranscodeMeta, job_definitions.HandleVideoTranscode())
+	dispatcher.Register("video_transcode_item", job_definitions.VideoTranscodeItemMeta, job_definitions.HandleVideoTranscodeItem(cfg))
+	dispatcher.Register("orphan_cleanup", job_definitions.OrphanMeta, job_definitions.HandleOrphanCleanup(cfg.DataPath))
+	dispatcher.Register("integrity_check", job_definitions.IntegrityCheckMeta, job_definitions.HandleIntegrityCheck(cfg.DataPath, dispatcher))
+	dispatcher.Register("device_cleanup", job_definitions.DeviceCleanupMeta, job_definitions.HandleDeviceCleanup())
+	dispatcher.Register("cover_cycle", job_definitions.CoverCycleMeta, job_definitions.HandleCoverCycle(cfg.DataPath))
 
 	// ── Streaming idle sweeper ─────────────────────────────────────────────────
 	streaming.StartIdleSweeper(ctx)
-
-	// ── Transcode monitor: resume paused transcodes when streaming is idle ──────
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if streaming.ActiveSessionCount() == 0 {
-					transcoder.ResumeActive()
-					dispatcher.Resume()
-				}
-			}
-		}
-	}()
 
 	// ── Scheduler ─────────────────────────────────────────────────────────────
 	scheduler := jobs.NewScheduler(db, dispatcher)
 	scheduler.Start(ctx)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
-	router := api.NewRouter(db, mainPool, guard, dispatcher, cfg, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
+	router := api.NewRouter(db, guard, dispatcher, scheduler, cfg, cfg.JWTSecret, cfg.MediaPath, cfg.DataPath, cfg.ClientOrigin, cfg.Production)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -178,10 +155,6 @@ func run() error {
 	// Stop dispatcher — waits for in-flight jobs
 	slog.Info("waiting for job dispatcher to finish")
 	dispatcher.Stop()
-
-	// Close worker pools
-	mainPool.Close()
-	processingPool.Close()
 
 	slog.Info("shutdown complete")
 	return nil

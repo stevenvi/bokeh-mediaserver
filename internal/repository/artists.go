@@ -26,10 +26,10 @@ func ArtistUpsert(ctx context.Context, db utils.DBTX, name string) (int64, error
 func ArtistGet(ctx context.Context, db utils.DBTX, id int64) (*models.Artist, error) {
 	var artist models.Artist
 	err := db.QueryRow(ctx,
-		`SELECT id, name, sort_name, manual_image, created_at
+		`SELECT id, name, sort_name, manual_thumbnail, created_at
 		 FROM artists WHERE id = $1`,
 		id,
-	).Scan(&artist.ID, &artist.Name, &artist.SortName, &artist.ManualImage, &artist.CreatedAt)
+	).Scan(&artist.ID, &artist.Name, &artist.SortName, &artist.ManualThumbnail, &artist.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +127,10 @@ func ArtistGetAlbums(ctx context.Context, db utils.DBTX, artistID, collectionID 
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.AlbumSummary])
 }
 
-// ArtistSetManualImage marks an artist as having a manually uploaded image.
-func ArtistSetManualImage(ctx context.Context, db utils.DBTX, id int64, manual bool) error {
+// ArtistSetManualThumbnail marks an artist as having a manually uploaded image.
+func ArtistSetManualThumbnail(ctx context.Context, db utils.DBTX, id int64, manual bool) error {
 	_, err := db.Exec(ctx,
-		`UPDATE artists SET manual_image = $2 WHERE id = $1`,
+		`UPDATE artists SET manual_thumbnail = $2 WHERE id = $1`,
 		id, manual,
 	)
 	return err
@@ -162,15 +162,15 @@ func ArtistDelete(ctx context.Context, db utils.DBTX, artistID int64) error {
 	return err
 }
 
-// ArtistsWithoutManualImage returns IDs of artists that have manual_image = false
+// ArtistsWithoutManualThumbnail returns IDs of artists that have manual_thumbnail = false
 // and have at least one non-compilation album where they are the album artist.
 // Artists who only appear on compilation albums are excluded.
-func ArtistsWithoutManualImage(ctx context.Context, db utils.DBTX) ([]int64, error) {
+func ArtistsWithoutManualThumbnail(ctx context.Context, db utils.DBTX) ([]int64, error) {
 	rows, err := db.Query(ctx,
 		`SELECT DISTINCT a.id
 		 FROM artists a
 		 JOIN audio_albums al ON al.artist_id = a.id
-		 WHERE a.manual_image = false
+		 WHERE a.manual_thumbnail = false
 		   AND al.is_compilation = false`)
 	if err != nil {
 		return nil, err

@@ -45,7 +45,7 @@ func TestOrphanCleanup(t *testing.T) {
 
 		handler := job_definitions.HandleOrphanCleanup(dataPath)
 		job := &models.Job{ID: jobID, Type: "orphan_cleanup", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Verify orphan files were removed
@@ -78,7 +78,7 @@ func TestOrphanCleanup(t *testing.T) {
 
 		handler := job_definitions.HandleOrphanCleanup(dataPath)
 		job := &models.Job{ID: jobID, Type: "orphan_cleanup", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Verify files are still there
@@ -115,7 +115,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Verify item was deleted from DB
@@ -150,7 +150,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Item should still exist
@@ -181,7 +181,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Variant requeuing is currently disabled; verify handler completes without error
@@ -221,7 +221,7 @@ func TestIntegrityCheck(t *testing.T) {
 
 		handler := job_definitions.HandleIntegrityCheck(dataPath, &jobs.Dispatcher{})
 		job := &models.Job{ID: jobID, Type: "integrity_check", Status: "running"}
-		err = handler(ctx, tx, job)
+		err = handler(ctx, &jobs.JobContext{DB: tx, Job: job})
 		require.NoError(t, err)
 
 		// Should NOT create a duplicate process_media job

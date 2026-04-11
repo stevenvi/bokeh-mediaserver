@@ -260,15 +260,15 @@ func TestVideoSetTranscodedAt(t *testing.T) {
 	})
 }
 
-func TestVideoHasManualCover(t *testing.T) {
+func TestVideoHasManualThumbnail(t *testing.T) {
 	t.Run("false_by_default_when_manual_cover_not_set", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypeMovie)
 		itemID := createVideoMediaItem(t, db, collID)
 		createVideoMetadata(t, db, itemID)
 
-		// manual_cover defaults to false; VideoHasManulCover returns !manual_cover.
-		ok, err := repository.VideoHasManulCover(bg(), db, itemID)
+		// manual_thumbnail defaults to false; VideoHasManualThumbnail returns !manual_thumbnail.
+		ok, err := repository.VideoHasManualThumbnail(bg(), db, itemID)
 		require.NoError(t, err)
 		assert.True(t, ok) // manual_cover=false → not manual → auto-cover is appropriate
 	})
@@ -278,31 +278,31 @@ func TestVideoHasManualCover(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMovie)
 		itemID := createVideoMediaItem(t, db, collID)
 		createVideoMetadata(t, db, itemID)
-		require.NoError(t, repository.VideoSetManualCover(bg(), db, itemID, true))
+		require.NoError(t, repository.VideoSetManualThumbnail(bg(), db, itemID, true))
 
-		ok, err := repository.VideoHasManulCover(bg(), db, itemID)
+		ok, err := repository.VideoHasManualThumbnail(bg(), db, itemID)
 		require.NoError(t, err)
 		assert.False(t, ok) // manual_cover=true → manual → auto-cover not appropriate
 	})
 
 	t.Run("false_when_no_row_exists", func(t *testing.T) {
-		// VideoHasManulCover returns false (not manual) when no video_metadata row exists yet.
+		// VideoHasManualThumbnail returns false (not manual) when no video_metadata row exists yet.
 		db := testutil.NewTx(t, testPool)
-		ok, err := repository.VideoHasManulCover(bg(), db, 999999)
+		ok, err := repository.VideoHasManualThumbnail(bg(), db, 999999)
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
 }
 
-func TestVideoSetManualCover(t *testing.T) {
+func TestVideoSetManualThumbnail(t *testing.T) {
 	t.Run("sets_manual_cover_true", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypeMovie)
 		itemID := createVideoMediaItem(t, db, collID)
 		createVideoMetadata(t, db, itemID)
 
-		require.NoError(t, repository.VideoSetManualCover(bg(), db, itemID, true))
-		ok, err := repository.VideoHasManulCover(bg(), db, itemID)
+		require.NoError(t, repository.VideoSetManualThumbnail(bg(), db, itemID, true))
+		ok, err := repository.VideoHasManualThumbnail(bg(), db, itemID)
 		require.NoError(t, err)
 		assert.False(t, ok) // manual_cover=true means NOT auto-cover
 	})
@@ -312,10 +312,10 @@ func TestVideoSetManualCover(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMovie)
 		itemID := createVideoMediaItem(t, db, collID)
 		createVideoMetadata(t, db, itemID)
-		require.NoError(t, repository.VideoSetManualCover(bg(), db, itemID, true))
+		require.NoError(t, repository.VideoSetManualThumbnail(bg(), db, itemID, true))
 
-		require.NoError(t, repository.VideoSetManualCover(bg(), db, itemID, false))
-		ok, err := repository.VideoHasManulCover(bg(), db, itemID)
+		require.NoError(t, repository.VideoSetManualThumbnail(bg(), db, itemID, false))
+		ok, err := repository.VideoHasManualThumbnail(bg(), db, itemID)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})

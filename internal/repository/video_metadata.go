@@ -48,7 +48,7 @@ func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID 
 	err := db.QueryRow(ctx,
 		`SELECT vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-		        vm.date, vm.end_date, vm.author, vm.manual_cover,
+		        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
 		        vb.position_seconds
 		 FROM video_metadata vm
 		 LEFT JOIN video_bookmarks vb
@@ -58,7 +58,7 @@ func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID 
 	).Scan(
 		&m.DurationSeconds, &m.Width, &m.Height, &m.BitrateKbps,
 		&m.VideoCodec, &m.AudioCodec, &m.TranscodedAt,
-		&m.Date, &m.EndDate, &m.Author, &m.ManualCover,
+		&m.Date, &m.EndDate, &m.Author, &m.ManualThumbnail,
 		&m.BookmarkSeconds,
 	)
 	if err != nil {
@@ -132,26 +132,26 @@ func VideoSetTranscodedAt(ctx context.Context, db utils.DBTX, itemID int64, t ti
 	return err
 }
 
-// VideoHasManulCover returns true if manual_cover is false for the item,
+// VideoHasManualThumbnail returns true if manual_thumbnail is false for the item,
 // meaning auto-generated cover art is appropriate. Returns false (not manual)
 // if no row exists yet (first processing run).
-func VideoHasManulCover(ctx context.Context, db utils.DBTX, itemID int64) (bool, error) {
-	var manualCover bool
+func VideoHasManualThumbnail(ctx context.Context, db utils.DBTX, itemID int64) (bool, error) {
+	var manualThumbnail bool
 	err := db.QueryRow(ctx,
-		`SELECT manual_cover FROM video_metadata WHERE media_item_id = $1`,
+		`SELECT manual_thumbnail FROM video_metadata WHERE media_item_id = $1`,
 		itemID,
-	).Scan(&manualCover)
+	).Scan(&manualThumbnail)
 	if err != nil {
 		// Row may not exist yet (first run); treat as not manual
 		return false, nil
 	}
-	return !manualCover, nil
+	return !manualThumbnail, nil
 }
 
-// VideoSetManualCover sets the manual_cover flag on a video_metadata row.
-func VideoSetManualCover(ctx context.Context, db utils.DBTX, itemID int64, manual bool) error {
+// VideoSetManualThumbnail sets the manual_thumbnail flag on a video_metadata row.
+func VideoSetManualThumbnail(ctx context.Context, db utils.DBTX, itemID int64, manual bool) error {
 	_, err := db.Exec(ctx,
-		`UPDATE video_metadata SET manual_cover = $2 WHERE media_item_id = $1`,
+		`UPDATE video_metadata SET manual_thumbnail = $2 WHERE media_item_id = $1`,
 		itemID, manual,
 	)
 	return err

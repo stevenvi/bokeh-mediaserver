@@ -7,10 +7,14 @@ import (
 	"os"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
-	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
+
+// OrphanMeta describes the orphan_cleanup job type.
+var OrphanMeta = jobs.JobMeta{
+	Description: "Remove orphaned derived files",
+}
 
 const orphanBatchSize = 256
 
@@ -20,8 +24,9 @@ const orphanBatchSize = 256
 //
 // Directory structure: {base}/{hash[0:2]}/{hash[2:4]}/{hash[4:]}/
 // The full hash is reconstructed by concatenating the three directory name components.
-func HandleOrphanCleanup(dataPath string) func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+func HandleOrphanCleanup(dataPath string) jobs.JobHandler {
+	return func(ctx context.Context, jc *jobs.JobContext) error {
+		db, job := jc.DB, jc.Job
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting orphan cleanup")
 
 		var cleaned, checked int64

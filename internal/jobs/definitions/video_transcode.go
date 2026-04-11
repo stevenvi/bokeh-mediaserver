@@ -1,4 +1,4 @@
-package transcoder
+package definitions
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/config"
@@ -19,58 +17,35 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
-var (
-	activeMu   sync.Mutex
-	activeCmds = map[int64]*exec.Cmd{} // job ID → running ffmpeg process
-	isPaused   bool
-)
-
-// PauseActive sends SIGSTOP to all currently running background transcodes.
-// No-op if no transcodes are running or they are already paused.
-//
-// TODO: SIGSTOP is not supported on Windows. If Windows support is needed,
-// consider using Windows Job Objects or a similar suspension mechanism.
-func PauseActive() {
-	activeMu.Lock()
-	defer activeMu.Unlock()
-	if isPaused {
-		return
-	}
-	for _, cmd := range activeCmds {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGSTOP)
-		}
-	}
-	isPaused = true
+// VideoTranscodeMeta describes the video_transcode parent job type.
+var VideoTranscodeMeta = jobs.JobMeta{
+	Description:     "Transcode videos to HLS format",
+	SupportsSubjobs: true,
+	MaxConcurrency:  1,
 }
 
-// ResumeActive sends SIGCONT to all previously paused background transcodes.
-// No-op if no transcodes are running or they are not paused.
-func ResumeActive() {
-	activeMu.Lock()
-	defer activeMu.Unlock()
-	if !isPaused {
-		return
-	}
-	for _, cmd := range activeCmds {
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(syscall.SIGCONT)
-		}
-	}
-	isPaused = false
+// VideoTranscodeItemMeta describes the video_transcode_item sub-job type.
+var VideoTranscodeItemMeta = jobs.JobMeta{
+	Description: "Transcode a single video to HLS format",
+	TotalSteps:  1,
 }
 
-// HandleTranscode returns a JobHandler that performs a background HLS transcode
-// for a video media item. The transcode is stored under the item's data directory.
-//
-// Jobs are skipped (deleted) if:
-//   - video_metadata.transcoded_at IS NOT NULL (already done)
-//   - The file's bitrate is at or below cfg.TranscodeBitrateKbps (no benefit)
-func HandleTranscode(cfg *config.Config) jobs.JobHandler {
+// HandleVideoTranscode returns a no-op handler for the video_transcode parent job.
+// The actual work is done by HandleVideoTranscodeItem sub-jobs.
+func HandleVideoTranscode() jobs.JobHandler {
+	return func(ctx context.Context, jc *jobs.JobContext) error {
+		// No-op: this is a container job. Sub-jobs do the actual transcoding.
+		return nil
+	}
+}
+
+// HandleVideoTranscodeItem returns a job handler that transcodes a single video
+// to HLS format using ffmpeg at nice=19 (idle priority).
+func HandleVideoTranscodeItem(cfg *config.Config) jobs.JobHandler {
 	return func(ctx context.Context, jc *jobs.JobContext) error {
 		db, job := jc.DB, jc.Job
 		if job.RelatedID == nil {
-			return fmt.Errorf("transcode job %d has no related_id", job.ID)
+			return fmt.Errorf("video_transcode_item job %d has no related_id", job.ID)
 		}
 		itemID := *job.RelatedID
 
@@ -80,16 +55,19 @@ func HandleTranscode(cfg *config.Config) jobs.JobHandler {
 			return fmt.Errorf("fetch video_metadata for item %d: %w", itemID, err)
 		}
 
-		// Already transcoded — delete job and return
+		// Already transcoded — skip
+		// TODO: If we queued it to be transcoded, doesn't that fact suggest we don't care about the already-existing transcode?
+		// For example, perhaps it is an incomplete transcode that we need to start over on
 		if meta.TranscodedAt != nil {
-			_ = repository.JobDelete(ctx, db, job.ID)
 			slog.Info("already transcoded", "itemID", strconv.FormatInt(itemID, 10))
 			return nil
 		}
 
 		// Bitrate at or below threshold — no benefit to transcoding
+		// TODO: Again, we should do this check _before_ queueing an item to be transcoded
+		// It should only end up in this code path if we know that we actually want the
+		// item to be transcoded.
 		if meta.BitrateKbps != nil && *meta.BitrateKbps <= cfg.TranscodeBitrateKbps {
-			_ = repository.JobDelete(ctx, db, job.ID)
 			slog.Info("transcode unnecessary", "itemID", strconv.FormatInt(itemID, 10))
 			return nil
 		}
@@ -127,32 +105,16 @@ func HandleTranscode(cfg *config.Config) jobs.JobHandler {
 			manifestPath,
 		)
 
-		// Run at lower OS scheduling priority (nice level 10 on Linux).
-		jobsutils.SetNice(cmd, 10)
+		// Run at idle OS scheduling priority (nice level 19).
+		jobsutils.SetNice(cmd, 19)
 
-		activeMu.Lock()
-		activeCmds[job.ID] = cmd
-
-		_ = repository.JobUpdateProgress(ctx, db, job.ID, fmt.Sprintf("transcoding %s", fsPath))
+		slog.Info("transcoding", "item_id", itemID, "path", fsPath)
 
 		if err := cmd.Start(); err != nil {
-			delete(activeCmds, job.ID)
-			activeMu.Unlock()
 			return fmt.Errorf("start ffmpeg transcode: %w", err)
 		}
 
-		// If the system is paused, pause this new process immediately.
-		if isPaused {
-			_ = cmd.Process.Signal(syscall.SIGSTOP)
-		}
-
-		activeMu.Unlock()
 		waitErr := cmd.Wait()
-
-		activeMu.Lock()
-		delete(activeCmds, job.ID)
-		activeMu.Unlock()
-
 		if waitErr != nil {
 			return fmt.Errorf("ffmpeg transcode: %w", waitErr)
 		}
@@ -163,7 +125,6 @@ func HandleTranscode(cfg *config.Config) jobs.JobHandler {
 		}
 
 		slog.Info("transcode complete", "item_id", itemID)
-		_ = repository.JobDelete(ctx, db, job.ID)
 		return nil
 	}
 }

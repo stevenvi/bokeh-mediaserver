@@ -1,4 +1,4 @@
-package utils
+package jobsutils
 
 import (
 	"bufio"
@@ -11,19 +11,24 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // ─── Exiftool stay-open process ───────────────────────────────────────────────
 
 // ExiftoolProcess wraps a persistent exiftool process using stay_open mode.
-// One process is started per processing worker and reused for every file —
-// avoids per-file Perl startup overhead which would be ~150ms × file count.
 type ExiftoolProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout *bufio.Scanner
 	mu     sync.Mutex
+	dead   atomic.Bool // set permanently when the scanner errors; process must be replaced
+}
+
+// IsDead reports whether the process has encountered an unrecoverable error.
+func (e *ExiftoolProcess) IsDead() bool {
+	return e.dead.Load()
 }
 
 func NewExiftoolProcess() (*ExiftoolProcess, error) {
@@ -50,10 +55,12 @@ func NewExiftoolProcess() (*ExiftoolProcess, error) {
 		return nil, fmt.Errorf("start exiftool: %w", err)
 	}
 
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 1*1024*1024), 16*1024*1024) // 16 MB max for embedded album art
 	return &ExiftoolProcess{
 		cmd:    cmd,
 		stdin:  stdin,
-		stdout: bufio.NewScanner(stdoutPipe),
+		stdout: scanner,
 	}, nil
 }
 
@@ -79,10 +86,10 @@ func (e *ExiftoolProcess) Extract(path string) (map[string]any, error) {
 		sb.WriteByte('\n')
 	}
 	if err := e.stdout.Err(); err != nil {
+		e.dead.Store(true)
 		return nil, fmt.Errorf("read from exiftool: %w", err)
 	}
 
-	// exiftool -json always returns an array
 	var results []map[string]any
 	if err := json.Unmarshal([]byte(sb.String()), &results); err != nil {
 		return nil, fmt.Errorf("parse exiftool json: %w", err)
@@ -115,6 +122,7 @@ func (e *ExiftoolProcess) ExtractBinary(path, field string) ([]byte, error) {
 		sb.WriteByte('\n')
 	}
 	if err := e.stdout.Err(); err != nil {
+		e.dead.Store(true)
 		return nil, fmt.Errorf("read from exiftool: %w", err)
 	}
 
@@ -136,6 +144,8 @@ func (e *ExiftoolProcess) ExtractBinary(path, field string) ([]byte, error) {
 		return nil, fmt.Errorf("unexpected type for field %s in %s", field, path)
 	}
 
+	// exiftool prefixes binary data in JSON with "base64:" — strip it before decoding.
+	encoded = strings.TrimPrefix(encoded, "base64:")
 	return base64.StdEncoding.DecodeString(encoded)
 }
 
@@ -248,7 +258,6 @@ func ExifTimeWithOffset(m map[string]any, dateKey, offsetKey string) *time.Time 
 	if offsetKey != "" {
 		if ov, ok2 := m[offsetKey]; ok2 && ov != nil {
 			if os, ok3 := ov.(string); ok3 {
-				// time.Parse with a pure offset reference time gives us the seconds offset.
 				if ref, err := time.Parse("-07:00", os); err == nil {
 					_, secs := ref.Zone()
 					loc = time.FixedZone(os, secs)

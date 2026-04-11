@@ -125,7 +125,7 @@ func CollectionsTopLevel(ctx context.Context, db utils.DBTX) ([]models.Collectio
 			type, 
 			id, 
 			is_enabled, 
-			manual_cover
+			manual_thumbnail
 		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
 	)
 	if err != nil {
@@ -304,11 +304,11 @@ func CollectionIsDescendantOf(ctx context.Context, db utils.DBTX, ancestorID int
 	return ok, err
 }
 
-// CollectionsWithNonManualCoverIDs returns IDs of all enabled collections that don't have manual_cover set.
-func CollectionsWithNonManualCoverIDs(ctx context.Context, db utils.DBTX) ([]int64, error) {
+// CollectionsWithNonManualThumbnailIDs returns IDs of all enabled collections that don't have manual_thumbnail set.
+func CollectionsWithNonManualThumbnailIDs(ctx context.Context, db utils.DBTX) ([]int64, error) {
 	rows, err := db.Query(ctx,
 		`SELECT id FROM collections
-		 WHERE manual_cover = false AND is_enabled = true`,
+		 WHERE manual_thumbnail = false AND is_enabled = true`,
 	)
 	if err != nil {
 		return nil, err
@@ -316,10 +316,10 @@ func CollectionsWithNonManualCoverIDs(ctx context.Context, db utils.DBTX) ([]int
 	return pgx.CollectRows(rows, pgx.RowTo[int64])
 }
 
-// CollectionSetManualCover sets or clears the manual_cover flag on a collection.
-func CollectionSetManualCover(ctx context.Context, db utils.DBTX, collectionID int64, manual bool) error {
+// CollectionSetManualThumbnail sets or clears the manual_thumbnail flag on a collection.
+func CollectionSetManualThumbnail(ctx context.Context, db utils.DBTX, collectionID int64, manual bool) error {
 	_, err := db.Exec(ctx,
-		`UPDATE collections SET manual_cover = $2 WHERE id = $1`,
+		`UPDATE collections SET manual_thumbnail = $2 WHERE id = $1`,
 		collectionID, manual,
 	)
 	return err

@@ -17,7 +17,7 @@ type Collection struct {
 	Type               string     `json:"type"`
 	ID                 int64      `json:"id"`
 	IsEnabled          bool       `json:"is_enabled"`
-	ManualCover        bool       `json:"manual_cover"`
+	ManualThumbnail    bool       `json:"manual_thumbnail"`
 }
 
 // CollectionView is the user-facing detail view of a single collection.
@@ -65,6 +65,7 @@ type Job struct {
 	QueuedAt     time.Time  `json:"queued_at"`
 	RelatedID    *int64     `json:"related_id,omitempty"`
 	RelatedType  *string    `json:"related_type,omitempty"`
+	ParentJobID  *int64     `json:"parent_job_id,omitempty"`
 	Log          *string    `json:"log,omitempty"`
 	ErrorMessage *string    `json:"error_message,omitempty"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
@@ -72,6 +73,7 @@ type Job struct {
 	Type         string     `json:"type"`
 	Status       string     `json:"status"`
 	ID           int64      `json:"id"`
+	CurrentStep  int        `json:"current_step"`
 }
 
 type User struct {
@@ -94,7 +96,7 @@ type VideoMetadata struct {
 	EndDate         *time.Time `json:"end_date,omitempty"`
 	Author          *string    `json:"author,omitempty"`
 	BookmarkSeconds *int       `json:"bookmark_seconds,omitempty"` // populated per-user at query time; nil means no bookmark
-	ManualCover     bool       `json:"manual_cover"`
+	ManualThumbnail bool       `json:"manual_thumbnail"`
 }
 
 // VideoBookmark stores a user's playback position for a video item.
@@ -171,11 +173,11 @@ type AccessHistoryEntry struct {
 
 // Artist represents a music artist (materialized from audio metadata).
 type Artist struct {
-	CreatedAt   time.Time `json:"created_at"`
-	Name        string    `json:"name"`
-	SortName    string    `json:"sort_name"`
-	ID          int64     `json:"id"`
-	ManualImage bool      `json:"manual_image"`
+	CreatedAt       time.Time `json:"created_at"`
+	Name            string    `json:"name"`
+	SortName        string    `json:"sort_name"`
+	ID              int64     `json:"id"`
+	ManualThumbnail bool      `json:"manual_thumbnail"`
 }
 
 // ArtistSummary is the user-facing view of an artist in a listing.

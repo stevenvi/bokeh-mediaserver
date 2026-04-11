@@ -3,56 +3,51 @@ package jobs
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/robfig/cron/v3"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-const scheduleReloadInterval = 1 * time.Hour // re-read from DB hourly
-
-// scheduledJob defines a recurring job type and its schedule configuration.
-// If trigger is nil, the default behavior is triggerByType using jobType.
-type scheduledJob struct {
-	trigger         func(s *Scheduler, ctx context.Context) // nil = use triggerByType
-	configKey       string                                  // column name in server_config
-	defaultSchedule string                                  // fallback cron expression
-	jobType         string                                  // jobs.type value
-}
-
-var scheduledJobs = []scheduledJob{
-	{(*Scheduler).TriggerScans, "scan_schedule", "0 3 * * *", "filesystem_scan"},
-	{nil, "integrity_schedule", "0 4 * * 0", "integrity_check"},
-	{nil, "device_cleanup_schedule", "0 2 1 * *", "device_cleanup"},
-	{nil, "cover_cycle_schedule", "0 5 * * 1", "cover_cycle"},
-}
-
-// Scheduler reads cron schedules from server_config and creates jobs at the
-// appropriate times. Schedules are re-read from the DB periodically to pick
-// up admin changes without requiring a restart.
+// Scheduler reads job schedules from the jobs_schedule table and enqueues jobs
+// at the appropriate times. It supports live reload via NotifyReload().
 type Scheduler struct {
 	db         utils.DBTX
 	dispatcher *Dispatcher
+	reloadCh   chan struct{}
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 }
 
-// NewScheduler creates a new scheduler. The dispatcher is used to wake up the job
-// polling after jobs are enqueued so they are picked up immediately rather than
-// waiting for the next poll interval.
-func NewScheduler(db utils.DBTX, dispatcher *Dispatcher) *Scheduler {
-	return &Scheduler{db: db, dispatcher: dispatcher}
+// NewScheduler creates a new scheduler.
+func NewScheduler(db *pgxpool.Pool, dispatcher *Dispatcher) *Scheduler {
+	return &Scheduler{
+		db:         db,
+		dispatcher: dispatcher,
+		reloadCh:   make(chan struct{}, 1),
+	}
+}
+
+// NotifyReload signals the scheduler to re-read the jobs_schedule table
+// and rebuild its cron schedules.
+func (s *Scheduler) NotifyReload() {
+	select {
+	case s.reloadCh <- struct{}{}:
+	default:
+	}
 }
 
 // Start begins the scheduler loop.
 func (s *Scheduler) Start(ctx context.Context) {
 	ctx, s.cancel = context.WithCancel(ctx)
-	s.wg.Go(func() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
 		s.run(ctx)
-	})
+	}()
 	slog.Info("scheduler started")
 }
 
@@ -65,55 +60,35 @@ func (s *Scheduler) Stop() {
 	slog.Info("scheduler stopped")
 }
 
-// ScheduleConfig maps config keys to their resolved cron expressions.
-type ScheduleConfig map[string]string
-
-func (s *Scheduler) LoadSchedules(ctx context.Context) ScheduleConfig {
-	cfg := make(ScheduleConfig, len(scheduledJobs))
-	for _, sj := range scheduledJobs {
-		cfg[sj.configKey] = sj.defaultSchedule
-	}
-
-	overrides, err := repository.ServerConfigSchedules(ctx, s.db)
-	if err != nil {
-		slog.Warn("failed to load schedules from DB, using defaults", "err", err)
-		return cfg
-	}
-
-	for key, val := range overrides {
-		if val != nil && strings.TrimSpace(*val) != "" {
-			cfg[key] = *val
-		}
-	}
-	return cfg
-}
-
 func (s *Scheduler) run(ctx context.Context) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 	type activeSchedule struct {
+		name     string
 		schedule cron.Schedule
-		job      scheduledJob
 	}
 
 	var schedules []activeSchedule
-	var lastScheduleLoad time.Time
+	var lastLoad time.Time
 
 	reloadSchedules := func() {
-		cfg := s.LoadSchedules(ctx)
-		lastScheduleLoad = time.Now()
+		rows, err := repository.JobScheduleList(ctx, s.db)
+		if err != nil {
+			slog.Warn("failed to load job schedules", "err", err)
+			return
+		}
+		lastLoad = time.Now()
 
 		schedules = schedules[:0]
-		logAttrs := make([]any, 0, len(scheduledJobs)*2)
-		for _, sj := range scheduledJobs {
-			expr := cfg[sj.configKey]
-			parsed, err := parser.Parse(expr)
+		logAttrs := make([]any, 0, len(rows)*2)
+		for _, row := range rows {
+			parsed, err := parser.Parse(row.Cron)
 			if err != nil {
-				slog.Error("invalid schedule, using default", "key", sj.configKey, "schedule", expr, "err", err)
-				parsed, _ = parser.Parse(sj.defaultSchedule)
+				slog.Warn("invalid schedule cron expression", "name", row.Name, "cron", row.Cron, "err", err)
+				continue
 			}
-			schedules = append(schedules, activeSchedule{job: sj, schedule: parsed})
-			logAttrs = append(logAttrs, sj.configKey, expr)
+			schedules = append(schedules, activeSchedule{name: row.Name, schedule: parsed})
+			logAttrs = append(logAttrs, row.Name, row.Cron)
 		}
 		slog.Info("schedules loaded", logAttrs...)
 	}
@@ -121,18 +96,31 @@ func (s *Scheduler) run(ctx context.Context) {
 	reloadSchedules()
 
 	for {
-		now := time.Now()
-
-		if time.Since(lastScheduleLoad) > scheduleReloadInterval {
-			reloadSchedules()
-			now = time.Now()
+		if ctx.Err() != nil {
+			return
 		}
 
-		// Find earliest next trigger across all jobs.
-		type pending struct { //nolint:govet
+		now := time.Now()
+
+		// Find earliest next trigger across all schedules.
+		type pending struct {
 			activeSchedule
 			nextTime time.Time
 		}
+
+		if len(schedules) == 0 {
+			// No schedules — wait for reload or context cancellation.
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.reloadCh:
+				reloadSchedules()
+			case <-time.After(1 * time.Hour):
+				reloadSchedules()
+			}
+			continue
+		}
+
 		items := make([]pending, len(schedules))
 		earliest := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 		for i, as := range schedules {
@@ -144,7 +132,7 @@ func (s *Scheduler) run(ctx context.Context) {
 
 		logAttrs := make([]any, 0, len(items)*2)
 		for _, p := range items {
-			logAttrs = append(logAttrs, "next_"+p.job.configKey, p.nextTime)
+			logAttrs = append(logAttrs, "next_"+p.name, p.nextTime)
 		}
 		slog.Debug("scheduler waiting", logAttrs...)
 
@@ -153,24 +141,41 @@ func (s *Scheduler) run(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 			return
+		case <-s.reloadCh:
+			timer.Stop()
+			reloadSchedules()
+		case <-time.After(1 * time.Hour):
+			// Periodic reload to pick up any DB changes not triggered via NotifyReload.
+			if time.Since(lastLoad) > time.Hour {
+				reloadSchedules()
+			}
 		case t := <-timer.C:
 			const tolerance = 30 * time.Second
 			for _, p := range items {
 				if t.After(p.nextTime.Add(-tolerance)) && t.Before(p.nextTime.Add(tolerance)) {
-					if p.job.trigger != nil {
-						p.job.trigger(s, ctx)
-					} else {
-						s.triggerByType(ctx, p.job.jobType)
-					}
+					s.triggerSchedule(ctx, p.name)
 				}
 			}
 		}
 	}
 }
 
-func (s *Scheduler) TriggerScans(ctx context.Context) {
-	slog.Info("scheduled scan triggered")
+// triggerSchedule fires the appropriate action for a scheduled job name.
+func (s *Scheduler) triggerSchedule(ctx context.Context, name string) {
+	slog.Info("scheduled trigger", "name", name)
 
+	switch name {
+	case "collection_scan":
+		s.triggerCollectionScans(ctx)
+	default:
+		s.triggerByType(ctx, name)
+	}
+}
+
+// triggerCollectionScans enqueues a collection_scan for each enabled top-level collection
+// that doesn't already have an active scan.
+// TODO: This should probably not be handled here...
+func (s *Scheduler) triggerCollectionScans(ctx context.Context) {
 	collIDs, err := repository.CollectionsTopLevelEnabled(ctx, s.db)
 	if err != nil {
 		slog.Error("query collections for scheduled scan", "err", err)
@@ -178,45 +183,27 @@ func (s *Scheduler) TriggerScans(ctx context.Context) {
 	}
 
 	for _, collID := range collIDs {
-		// Block if an initial_scan or another filesystem_scan is already active.
-		active, err := repository.JobIsAnyActive(ctx, s.db, []string{"filesystem_scan", "initial_scan"}, collID)
+		active, err := repository.JobIsActiveForCollection(ctx, s.db, collID)
 		if err != nil {
-			slog.Warn("check active scan", "collection_id", collID, "err", err)
+			slog.Warn("check active collection scan", "collection_id", collID, "err", err)
 			continue
 		}
 		if active {
-			slog.Info("skipping scheduled filesystem scan — conflicting scan active", "collection_id", collID)
+			slog.Info("skipping scheduled collection scan — already active", "collection_id", collID)
 			continue
 		}
 
-		jobID, err := repository.JobCreate(ctx, s.db, "filesystem_scan", &collID, nil)
-		if err != nil {
-			slog.Error("create scheduled filesystem scan job", "collection_id", collID, "err", err)
+		relatedType := "collection"
+		if _, err := s.dispatcher.Enqueue(ctx, "collection_scan", &collID, &relatedType); err != nil {
+			slog.Error("enqueue scheduled collection scan", "collection_id", collID, "err", err)
 			continue
 		}
-		slog.Info("queued scheduled filesystem scan", "collection_id", collID, "job_id", jobID)
+		slog.Info("queued scheduled collection scan", "collection_id", collID)
 	}
-	s.dispatcher.TriggerImmediately()
 }
 
-// TriggerIntegrityCheck triggers a scheduled integrity check.
-func (s *Scheduler) TriggerIntegrityCheck(ctx context.Context) {
-	s.triggerByType(ctx, "integrity_check")
-}
-
-// TriggerDeviceCleanup triggers a scheduled device cleanup.
-func (s *Scheduler) TriggerDeviceCleanup(ctx context.Context) {
-	s.triggerByType(ctx, "device_cleanup")
-}
-
-// TriggerCoverCycle triggers a scheduled cover cycle.
-func (s *Scheduler) TriggerCoverCycle(ctx context.Context) {
-	s.triggerByType(ctx, "cover_cycle")
-}
-
+// triggerByType enqueues a simple (no related entity) job if not already active.
 func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
-	slog.Info("scheduled job triggered", "type", jobType)
-
 	active, err := repository.JobIsActiveByType(ctx, s.db, jobType)
 	if err != nil {
 		slog.Error("check active job", "type", jobType, "err", err)
@@ -227,11 +214,9 @@ func (s *Scheduler) triggerByType(ctx context.Context, jobType string) {
 		return
 	}
 
-	jobID, err := repository.JobCreate(ctx, s.db, jobType, nil, nil)
-	if err != nil {
-		slog.Error("create scheduled job", "type", jobType, "err", err)
+	if _, err := s.dispatcher.Enqueue(ctx, jobType, nil, nil); err != nil {
+		slog.Error("enqueue scheduled job", "type", jobType, "err", err)
 		return
 	}
-	slog.Info("queued scheduled job", "type", jobType, "job_id", jobID)
-	s.dispatcher.TriggerImmediately()
+	slog.Info("queued scheduled job", "type", jobType)
 }

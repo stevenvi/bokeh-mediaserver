@@ -357,7 +357,7 @@ func (h *videoHandler) uploadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := repository.VideoSetManualCover(r.Context(), h.db, id, true); err != nil {
+	if err := repository.VideoSetManualThumbnail(r.Context(), h.db, id, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update video metadata")
 		return
 	}

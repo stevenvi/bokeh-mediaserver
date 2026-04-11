@@ -6,17 +6,22 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/stevenvi/bokeh-mediaserver/internal/models"
+	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
+
+// DeviceCleanupMeta describes the device_cleanup job type.
+var DeviceCleanupMeta = jobs.JobMeta{
+	Description: "Remove inactive device sessions",
+}
 
 const deviceStaleAge = 365 * 24 * time.Hour
 
 // HandleDeviceCleanup returns a job handler that deletes non-banned devices
 // not seen in the past year.
-func HandleDeviceCleanup() func(ctx context.Context, db utils.DBTX, job *models.Job) error {
-	return func(ctx context.Context, db utils.DBTX, job *models.Job) error {
+func HandleDeviceCleanup() jobs.JobHandler {
+	return func(ctx context.Context, jc *jobs.JobContext) error {
+		db, job := jc.DB, jc.Job
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "starting device cleanup")
 
 		cutoff := time.Now().Add(-deviceStaleAge)

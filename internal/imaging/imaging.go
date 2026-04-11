@@ -75,25 +75,52 @@ func TilesPath(basePath string, hash string) string {
 	return filepath.Join(ItemDataPath(basePath, hash), "tiles")
 }
 
-// CollectionCoverDir returns the directory for a collection's cover images.
-func CollectionCoverDir(dataPath string, collectionID int64) string {
+// CollectionThumbnailDir returns the directory for a collection's thumbnail images.
+func CollectionThumbnailDir(dataPath string, collectionID int64) string {
 	return filepath.Join(dataPath, "collection_images", fmt.Sprintf("%d", collectionID))
 }
 
-// CollectionCoverPath returns the path for a collection's cover image.
-func CollectionCoverPath(dataPath string, collectionID int64, ext string) string {
-	return filepath.Join(CollectionCoverDir(dataPath, collectionID), "cover."+ext)
+// CollectionThumbnailPath returns the path for a collection's thumbnail image.
+func CollectionThumbnailPath(dataPath string, collectionID int64, ext string) string {
+	return filepath.Join(CollectionThumbnailDir(dataPath, collectionID), "cover."+ext)
 }
 
-// CollectionCoverExists returns true if a collection cover image exists on disk.
-func CollectionCoverExists(dataPath string, collectionID int64) bool {
-	_, err := os.Stat(CollectionCoverPath(dataPath, collectionID, "avif"))
+// CollectionThumbnailExists returns true if a collection thumbnail image exists on disk.
+func CollectionThumbnailExists(dataPath string, collectionID int64) bool {
+	_, err := os.Stat(CollectionThumbnailPath(dataPath, collectionID, "avif"))
 	return err == nil
+}
+
+// atomicWrite writes data to a temp file in the same directory as finalPath,
+// sets permissions to 0644, then renames it into place. This prevents partial
+// file writes — the final path either has the complete content or doesn't exist.
+func atomicWrite(finalPath string, data []byte) error {
+	dir := filepath.Dir(finalPath)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmpPath)
+		if werr != nil {
+			return werr
+		}
+		return cerr
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, finalPath)
 }
 
 // coverFromFile loads srcPath, auto-rotates, center-crops to widthRatio:heightRatio,
 // resizes to 400px wide, and writes AVIF + WebP to the given paths.
 // Use widthRatio=1, heightRatio=1 for a square crop.
+// WebP is written first; AVIF is written last and acts as the completion sentinel.
 func coverFromFile(srcPath, avifPath, webpPath string, widthRatio, heightRatio int) error {
 	if err := os.MkdirAll(filepath.Dir(avifPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir cover dir: %w", err)
@@ -134,22 +161,21 @@ func coverFromFile(srcPath, avifPath, webpPath string, widthRatio, heightRatio i
 		}
 	}
 
-	// Export AVIF
-	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{Quality: 60, Lossless: false, StripMetadata: true})
-	if err != nil {
-		return fmt.Errorf("export avif: %w", err)
-	}
-	if err := os.WriteFile(avifPath, avifBytes, 0o644); err != nil {
-		return fmt.Errorf("write avif: %w", err)
-	}
-
-	// Export WebP
+	// Export WebP first; AVIF is written last and serves as the completion sentinel.
 	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{Quality: 60, Lossless: false, StripMetadata: true})
 	if err != nil {
 		return fmt.Errorf("export webp: %w", err)
 	}
-	if err := os.WriteFile(webpPath, webpBytes, 0o644); err != nil {
+	if err := atomicWrite(webpPath, webpBytes); err != nil {
 		return fmt.Errorf("write webp: %w", err)
+	}
+
+	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{Quality: 60, Lossless: false, StripMetadata: true})
+	if err != nil {
+		return fmt.Errorf("export avif: %w", err)
+	}
+	if err := atomicWrite(avifPath, avifBytes); err != nil {
+		return fmt.Errorf("write avif: %w", err)
 	}
 
 	return nil
@@ -159,6 +185,77 @@ func coverFromFile(srcPath, avifPath, webpPath string, widthRatio, heightRatio i
 // center-crops to square, resizes to 400px, and writes AVIF and WebP to the given paths.
 func squareCoverFromFile(srcPath, avifPath, webpPath string) error {
 	return coverFromFile(srcPath, avifPath, webpPath, 1, 1)
+}
+
+// largeCoverFromFile loads srcPath, auto-rotates, center-crops to square,
+// resizes to at most 1280px wide (no upscale), and writes AVIF only.
+func largeCoverFromFile(srcPath, avifPath string) error {
+	if err := os.MkdirAll(filepath.Dir(avifPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir cover dir: %w", err)
+	}
+
+	img, err := vips.NewImageFromFile(srcPath)
+	if err != nil {
+		return fmt.Errorf("load image: %w", err)
+	}
+	defer img.Close()
+
+	if err := img.AutoRotate(); err != nil {
+		return fmt.Errorf("auto-rotate: %w", err)
+	}
+
+	// Center-crop to square
+	w, h := img.Width(), img.Height()
+	if w > h {
+		left := (w - h) / 2
+		if err := img.ExtractArea(left, 0, h, h); err != nil {
+			return fmt.Errorf("crop to square: %w", err)
+		}
+	} else if h > w {
+		top := (h - w) / 2
+		if err := img.ExtractArea(0, top, w, w); err != nil {
+			return fmt.Errorf("crop to square: %w", err)
+		}
+	}
+
+	// Resize to at most 1280px (no upscale)
+	const maxSize = 1280
+	if img.Width() > maxSize {
+		scale := float64(maxSize) / float64(img.Width())
+		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+			return fmt.Errorf("resize cover: %w", err)
+		}
+	}
+
+	// Export AVIF only
+	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{Quality: 70, Lossless: false, StripMetadata: true})
+	if err != nil {
+		return fmt.Errorf("export avif: %w", err)
+	}
+	if err := atomicWrite(avifPath, avifBytes); err != nil {
+		return fmt.Errorf("write avif: %w", err)
+	}
+
+	return nil
+}
+
+// largeCoverFromBytes writes raw image bytes to a temp file and calls largeCoverFromFile.
+func largeCoverFromBytes(imageBytes []byte, avifPath string) error {
+	tmp, err := os.CreateTemp("", "bokeh-large-cover-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := tmp.Write(imageBytes); err != nil {
+		return fmt.Errorf("write to temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	return largeCoverFromFile(tmp.Name(), avifPath)
 }
 
 // squareCoverFromBytes writes raw image bytes to a temp file and calls squareCoverFromFile.
@@ -180,97 +277,129 @@ func squareCoverFromBytes(imageBytes []byte, avifPath, webpPath string) error {
 	return squareCoverFromFile(tmp.Name(), avifPath, webpPath)
 }
 
-// GenerateCollectionCover loads a thumb AVIF, center-crops it to a square,
+// GenerateCollectionThumbnail loads a thumb AVIF, center-crops it to a square,
 // and writes both AVIF and WebP versions to the collection_images directory.
-func GenerateCollectionCover(srcAvifThumbPath string, dataPath string, collectionID int64) error {
+func GenerateCollectionThumbnail(srcAvifThumbPath string, dataPath string, collectionID int64) error {
 	return squareCoverFromFile(srcAvifThumbPath,
-		CollectionCoverPath(dataPath, collectionID, "avif"),
-		CollectionCoverPath(dataPath, collectionID, "webp"),
+		CollectionThumbnailPath(dataPath, collectionID, "avif"),
+		CollectionThumbnailPath(dataPath, collectionID, "webp"),
 	)
 }
 
-// GenerateCollectionCoverFromUpload loads an arbitrary image file, auto-rotates,
+// GenerateCollectionThumbnailFromUpload loads an arbitrary image file, auto-rotates,
 // center-crops to square, resizes to 400x400, and writes AVIF + WebP covers.
-func GenerateCollectionCoverFromUpload(srcPath string, dataPath string, collectionID int64) error {
+func GenerateCollectionThumbnailFromUpload(srcPath string, dataPath string, collectionID int64) error {
 	return squareCoverFromFile(srcPath,
-		CollectionCoverPath(dataPath, collectionID, "avif"),
-		CollectionCoverPath(dataPath, collectionID, "webp"),
+		CollectionThumbnailPath(dataPath, collectionID, "avif"),
+		CollectionThumbnailPath(dataPath, collectionID, "webp"),
 	)
 }
 
-// ArtistImageDir returns the directory for an artist's cover images.
-func ArtistImageDir(dataPath string, artistID int64) string {
+// ArtistThumbnailDir returns the directory for an artist's thumbnail images.
+func ArtistThumbnailDir(dataPath string, artistID int64) string {
 	return filepath.Join(dataPath, "artist_images", fmt.Sprintf("%d", artistID))
 }
 
-// ArtistImagePath returns the path for an artist's cover image.
-func ArtistImagePath(dataPath string, artistID int64, ext string) string {
-	return filepath.Join(ArtistImageDir(dataPath, artistID), "cover."+ext)
+// ArtistThumbnailPath returns the path for an artist's thumbnail image.
+func ArtistThumbnailPath(dataPath string, artistID int64, ext string) string {
+	return filepath.Join(ArtistThumbnailDir(dataPath, artistID), "cover."+ext)
 }
 
-// ArtistImageExists returns true if an artist cover image exists on disk.
-func ArtistImageExists(dataPath string, artistID int64) bool {
-	_, err := os.Stat(ArtistImagePath(dataPath, artistID, "avif"))
+// ArtistThumbnailExists returns true if an artist thumbnail image exists on disk.
+func ArtistThumbnailExists(dataPath string, artistID int64) bool {
+	_, err := os.Stat(ArtistThumbnailPath(dataPath, artistID, "avif"))
 	return err == nil
 }
 
-// GenerateArtistImageFromUpload loads an arbitrary image file, auto-rotates,
+// GenerateArtistThumbnailFromUpload loads an arbitrary image file, auto-rotates,
 // center-crops to square, resizes to 400x400, and writes AVIF + WebP covers.
-func GenerateArtistImageFromUpload(srcPath string, dataPath string, artistID int64) error {
+func GenerateArtistThumbnailFromUpload(srcPath string, dataPath string, artistID int64) error {
 	return squareCoverFromFile(srcPath,
-		ArtistImagePath(dataPath, artistID, "avif"),
-		ArtistImagePath(dataPath, artistID, "webp"),
+		ArtistThumbnailPath(dataPath, artistID, "avif"),
+		ArtistThumbnailPath(dataPath, artistID, "webp"),
 	)
 }
 
-// GenerateArtistCover loads an album cover AVIF and writes it as the artist image.
-func GenerateArtistCover(srcAvifPath string, dataPath string, artistID int64) error {
+// GenerateArtistThumbnail loads an album thumbnail AVIF and writes it as the artist thumbnail.
+func GenerateArtistThumbnail(srcAvifPath string, dataPath string, artistID int64) error {
 	return squareCoverFromFile(srcAvifPath,
-		ArtistImagePath(dataPath, artistID, "avif"),
-		ArtistImagePath(dataPath, artistID, "webp"),
+		ArtistThumbnailPath(dataPath, artistID, "avif"),
+		ArtistThumbnailPath(dataPath, artistID, "webp"),
 	)
 }
 
-// AlbumCoverDir returns the directory for an album's cover images.
+// AlbumThumbnailDir returns the directory for an album's thumbnail images (400px).
+func AlbumThumbnailDir(dataPath string, albumID int64) string {
+	return filepath.Join(dataPath, "album_images", fmt.Sprintf("%d", albumID))
+}
+
+// AlbumThumbnailPath returns the path for an album thumbnail image with the given extension (400px).
+func AlbumThumbnailPath(dataPath string, albumID int64, ext string) string {
+	return filepath.Join(AlbumThumbnailDir(dataPath, albumID), "thumb."+ext)
+}
+
+// AlbumThumbnailExists returns true if an album thumbnail AVIF exists on disk (400px).
+func AlbumThumbnailExists(dataPath string, albumID int64) bool {
+	_, err := os.Stat(AlbumThumbnailPath(dataPath, albumID, "avif"))
+	return err == nil
+}
+
+// GenerateAlbumThumbnailFromUpload loads an arbitrary image file, auto-rotates,
+// center-crops to square, resizes to 400x400, and writes AVIF + WebP thumbnail.
+func GenerateAlbumThumbnailFromUpload(srcPath string, dataPath string, albumID int64) error {
+	return squareCoverFromFile(srcPath,
+		AlbumThumbnailPath(dataPath, albumID, "avif"),
+		AlbumThumbnailPath(dataPath, albumID, "webp"),
+	)
+}
+
+// GenerateAlbumThumbnailFromBytes takes raw image bytes (e.g. extracted from embedded
+// audio art) and generates an album thumbnail (400px) from them.
+func GenerateAlbumThumbnailFromBytes(imageBytes []byte, dataPath string, albumID int64) error {
+	return squareCoverFromBytes(imageBytes,
+		AlbumThumbnailPath(dataPath, albumID, "avif"),
+		AlbumThumbnailPath(dataPath, albumID, "webp"),
+	)
+}
+
+// AlbumCoverDir returns the directory for an album's cover images (1280px).
 func AlbumCoverDir(dataPath string, albumID int64) string {
 	return filepath.Join(dataPath, "album_images", fmt.Sprintf("%d", albumID))
 }
 
-// AlbumCoverPath returns the path for an album cover image with the given extension.
+// AlbumCoverPath returns the path for an album cover image with the given extension (1280px).
 func AlbumCoverPath(dataPath string, albumID int64, ext string) string {
 	return filepath.Join(AlbumCoverDir(dataPath, albumID), "cover."+ext)
 }
 
-// AlbumCoverExists returns true if an album cover AVIF exists on disk.
+// AlbumCoverExists returns true if an album cover AVIF exists on disk (1280px).
 func AlbumCoverExists(dataPath string, albumID int64) bool {
 	_, err := os.Stat(AlbumCoverPath(dataPath, albumID, "avif"))
 	return err == nil
 }
 
 // GenerateAlbumCoverFromUpload loads an arbitrary image file, auto-rotates,
-// center-crops to square, resizes to 400x400, and writes AVIF + WebP covers.
+// center-crops to square, resizes up to 1280px, and writes AVIF cover.
 func GenerateAlbumCoverFromUpload(srcPath string, dataPath string, albumID int64) error {
-	return squareCoverFromFile(srcPath,
+	return largeCoverFromFile(srcPath,
 		AlbumCoverPath(dataPath, albumID, "avif"),
-		AlbumCoverPath(dataPath, albumID, "webp"),
 	)
 }
 
 // GenerateAlbumCoverFromBytes takes raw image bytes (e.g. extracted from embedded
-// audio art) and generates an album cover from them.
+// audio art) and generates an album cover (1280px, AVIF only) from them.
 func GenerateAlbumCoverFromBytes(imageBytes []byte, dataPath string, albumID int64) error {
-	return squareCoverFromBytes(imageBytes,
+	return largeCoverFromBytes(imageBytes,
 		AlbumCoverPath(dataPath, albumID, "avif"),
-		AlbumCoverPath(dataPath, albumID, "webp"),
 	)
 }
 
-// GenerateCoverFromBytes takes raw image bytes (e.g. extracted album art)
-// and generates a collection cover from them.
-func GenerateCoverFromBytes(imageBytes []byte, dataPath string, collectionID int64) error {
+// GenerateThumbnailFromBytes takes raw image bytes (e.g. extracted album art)
+// and generates a collection thumbnail from them.
+func GenerateThumbnailFromBytes(imageBytes []byte, dataPath string, collectionID int64) error {
 	return squareCoverFromBytes(imageBytes,
-		CollectionCoverPath(dataPath, collectionID, "avif"),
-		CollectionCoverPath(dataPath, collectionID, "webp"),
+		CollectionThumbnailPath(dataPath, collectionID, "avif"),
+		CollectionThumbnailPath(dataPath, collectionID, "webp"),
 	)
 }
 
@@ -289,7 +418,11 @@ func DZIExists(dataPath string, hash string) bool {
 	return err == nil
 }
 
-func GenerateVariant(srcPath string, dataPath string, hash string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
+// generateVariant writes one image variant into outDir.
+// Thumb is always last in the variants slice, and its JPEG is written after its AVIF,
+// making thumb.jpg the final file written and therefore the completion sentinel for
+// the entire variant set.
+func generateVariant(outDir string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
 	// Skip variants at or above source resolution — no point upscaling.
 	if spec.size >= srcLongestEdge {
 		slog.Debug("skipping variant — source too small",
@@ -313,34 +446,29 @@ func GenerateVariant(srcPath string, dataPath string, hash string, spec variantS
 		return fmt.Errorf("resize %s: %w", spec.name, err)
 	}
 
-	// Export AVIF
-	avifParams := vips.AvifExportParams{
+	avifBytes, _, err := img.ExportAvif(&vips.AvifExportParams{
 		Quality:       spec.quality,
 		Lossless:      false,
 		StripMetadata: true,
-	}
-	avifBytes, _, err := img.ExportAvif(&avifParams)
+	})
 	if err != nil {
 		return fmt.Errorf("export %s avif: %w", spec.name, err)
 	}
-	avifPath := VariantPath(dataPath, hash, spec.name, "avif")
-	if err := os.WriteFile(avifPath, avifBytes, 0o644); err != nil {
+	if err := atomicWrite(filepath.Join(outDir, spec.name+".avif"), avifBytes); err != nil {
 		return fmt.Errorf("write %s avif: %w", spec.name, err)
 	}
 
 	// Pre-generate JPEG thumb for Roku and legacy clients.
 	// Re-uses the already-resized img — no second resize needed.
 	if spec.name == VariantThumb {
-		jpegParams := vips.JpegExportParams{
+		jpegBytes, _, err := img.ExportJpeg(&vips.JpegExportParams{
 			Quality:       spec.quality,
 			StripMetadata: true,
-		}
-		jpegBytes, _, err := img.ExportJpeg(&jpegParams)
+		})
 		if err != nil {
 			return fmt.Errorf("export thumb jpeg: %w", err)
 		}
-		jpegPath := VariantPath(dataPath, hash, spec.name, "jpg")
-		if err := os.WriteFile(jpegPath, jpegBytes, 0o644); err != nil {
+		if err := atomicWrite(filepath.Join(outDir, spec.name+".jpg"), jpegBytes); err != nil {
 			return fmt.Errorf("write thumb jpeg: %w", err)
 		}
 	}
@@ -348,15 +476,9 @@ func GenerateVariant(srcPath string, dataPath string, hash string, spec variantS
 	return nil
 }
 
-// GenerateAllVariants creates all AVIF variants and the pre-generated JPEG thumb.
-// Called by the indexer worker pool for each new or changed photo.
-func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
-	outDir := ItemDataPath(dataPath, hash)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
-
-	// Load the source image
+// generateAllVariants writes all AVIF variants and the JPEG thumb into outDir.
+// outDir must already exist.
+func generateAllVariants(srcPath string, outDir string) error {
 	src, err := vips.NewImageFromFile(srcPath)
 	if err != nil {
 		return fmt.Errorf("load source: %w", err)
@@ -368,42 +490,33 @@ func GenerateAllVariants(srcPath string, dataPath string, hash string) error {
 		return fmt.Errorf("auto-rotate: %w", err)
 	}
 
-	// Determine the longest edge for resizing decisions
 	srcLongestEdge := max(src.Width(), src.Height())
-
 	for _, v := range variants {
-		if err := GenerateVariant(srcPath, dataPath, hash, v, src, srcLongestEdge); err != nil {
+		if err := generateVariant(outDir, v, src, srcLongestEdge); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
-// GenerateDZI creates a Deep Zoom Image tile pyramid via the vips CLI.
+// generateDZI creates a Deep Zoom Image tile pyramid via the vips CLI.
 // Tiles are encoded as AVIF at quality 85.
 // Output: {tilesDir}/image.dzi + {tilesDir}/image_files/
+// tilesDir must already exist.
+//
 // NOTE: govips does not support dzsave, so we shell out to the CLI.
-//
-//	It's janky but is sufficient and is only called once per photo.
-//
 // TODO: Implement this into govips and remove the CLI dependency.
-func GenerateDZI(srcPath string, dataPath string, hash string) error {
-	tilesDir := TilesPath(dataPath, hash)
-	if err := os.MkdirAll(tilesDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir tiles: %w", err)
-	}
-
+func generateDZI(srcPath string, tilesDir string) error {
 	// Auto-rotate source before tiling so EXIF orientation is baked in.
 	// vips dzsave doesn't honor EXIF rotation, so we create a temp
 	// pre-rotated file and tile from that.
-	tmpDir, err := os.MkdirTemp("", "bokeh-dzi-*")
+	rotTmpDir, err := os.MkdirTemp("", "bokeh-dzi-rot-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return fmt.Errorf("create rot temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer os.RemoveAll(rotTmpDir)
 
-	rotatedPath, err := autoRotateToTemp(srcPath, tmpDir)
+	rotatedPath, err := autoRotateToTemp(srcPath, rotTmpDir)
 	if err != nil {
 		return fmt.Errorf("pre-rotate for dzi: %w", err)
 	}
@@ -412,7 +525,6 @@ func GenerateDZI(srcPath string, dataPath string, hash string) error {
 	//   {output}.dzi          — the manifest
 	//   {output}_files/       — the tile pyramid
 	output := filepath.Join(tilesDir, "image")
-
 	cmd := exec.Command("vips", "dzsave",
 		rotatedPath,
 		output,
@@ -423,7 +535,58 @@ func GenerateDZI(srcPath string, dataPath string, hash string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("vips dzsave: %w\n%s", err, out)
 	}
+	return nil
+}
 
+// GenerateItemDerivedData generates all derived files for a photo item — image
+// variants (AVIF + JPEG thumb) and DZI tile pyramid — atomically.
+//
+// All output is written to a temporary directory adjacent to the final
+// ItemDataPath. On success the temp directory is renamed to the final
+// path in a single syscall, so the derived-data directory either contains
+// the complete set of files or does not exist at all. Any partial output
+// from an interrupted prior run is discarded before the rename.
+func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
+	finalDir := ItemDataPath(dataPath, hash)
+	parentDir := filepath.Dir(finalDir)
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir parent: %w", err)
+	}
+
+	// Temp dir is in the same parent so os.Rename is always within one filesystem.
+	tmpDir, err := os.MkdirTemp(parentDir, ".bokeh-item-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	// Clean up on failure; no-op after a successful rename.
+	success := false
+	defer func() {
+		if !success {
+			os.RemoveAll(tmpDir)
+		}
+	}()
+
+	if err := generateAllVariants(srcPath, tmpDir); err != nil {
+		return err
+	}
+
+	tilesDir := filepath.Join(tmpDir, "tiles")
+	if err := os.Mkdir(tilesDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir tiles: %w", err)
+	}
+	if err := generateDZI(srcPath, tilesDir); err != nil {
+		return err
+	}
+
+	// Discard any stale partial directory from a previous failed run, then
+	// atomically replace it with the newly generated content.
+	if err := os.RemoveAll(finalDir); err != nil {
+		return fmt.Errorf("remove stale dir: %w", err)
+	}
+	if err := os.Rename(tmpDir, finalDir); err != nil {
+		return fmt.Errorf("rename to final: %w", err)
+	}
+	success = true
 	return nil
 }
 

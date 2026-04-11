@@ -19,16 +19,17 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
+	"github.com/stevenvi/bokeh-mediaserver/internal/models"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 )
 
 type adminHandler struct {
 	db          *pgxpool.Pool
 	guard       *DeviceGuard
-	pool        *jobs.Pool
 	authPlugins map[string]auth.Plugin
 	authHandler *authHandler
 	dispatcher  *jobs.Dispatcher
+	scheduler   *jobs.Scheduler
 	mediaPath   string
 	dataPath    string
 }
@@ -67,13 +68,13 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Auto-queue an initial scan for the newly created collection.
-	jobID, err := repository.JobCreate(r.Context(), h.db, "initial_scan", &id, nil)
+	// Auto-queue a collection scan for the newly created collection.
+	relatedType := "collection"
+	jobID, err := h.dispatcher.Enqueue(r.Context(), "collection_scan", &id, &relatedType)
 	if err != nil {
-		slog.Warn("auto-queue initial scan for new collection", "collection_id", id, "err", err)
+		slog.Warn("auto-queue collection scan for new collection", "collection_id", id, "err", err)
 	} else {
-		slog.Info("auto-queued initial scan for new collection", "collection_id", id, "job_id", jobID)
-		h.dispatcher.TriggerImmediately()
+		slog.Info("auto-queued collection scan for new collection", "collection_id", id, "job_id", jobID)
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "scan_job_id": jobID})
@@ -114,9 +115,9 @@ func (h *adminHandler) deleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Clean up cover images on disk for the top-level collection and all descendants (best-effort).
+	// Clean up thumbnail images on disk for the top-level collection and all descendants (best-effort).
 	for _, id := range append([]int64{collectionID}, descendantIDs...) {
-		_ = os.RemoveAll(imaging.CollectionCoverDir(h.dataPath, id))
+		_ = os.RemoveAll(imaging.CollectionThumbnailDir(h.dataPath, id))
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -132,61 +133,163 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, collections)
 }
 
-// POST /api/v1/admin/collections/:id/scan?type=filesystem|metadata
-// Queues a filesystem_scan (default) or metadata_scan for the collection.
-// Concurrency rules (per collection):
-//   - filesystem_scan: blocked if an initial_scan or another filesystem_scan is active.
-//   - metadata_scan:   blocked if an initial_scan or another metadata_scan is active.
-//   - A filesystem_scan and metadata_scan may coexist for the same collection.
-func (h *adminHandler) triggerScan(w http.ResponseWriter, r *http.Request) {
-	collectionID, ok := urlIntParam(w, r, "id")
-	if !ok {
-		return
+// subJobTypes lists job types that are not user-invocable via POST /api/v1/admin/jobs.
+var subJobTypes = map[string]bool{
+	"scan_photo":            true,
+	"scan_video":            true,
+	"scan_audio":            true,
+	"video_transcode_item":  true,
+}
+
+// jobResponse is the consistent shape returned for all job API responses.
+type jobResponse struct {
+	ID              int64     `json:"id"`
+	Type            string    `json:"type"`
+	Status          string    `json:"status"`
+	Step            int       `json:"step"`
+	TotalSteps      int       `json:"total_steps"`
+	SupportsSubJobs bool      `json:"supports_sub_jobs"`
+	SubJobsCompleted int64    `json:"subjobs_completed"`
+	TotalSubJobs    int64     `json:"total_sub_jobs"`
+	RelatedID       *int64    `json:"related_id"`
+	RelatedType     *string   `json:"related_type"`
+	RelatedName     *string   `json:"related_name"`
+	Log             *string   `json:"log"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// enrichJob converts a *models.Job to a jobResponse with meta info resolved.
+func (h *adminHandler) enrichJob(r *http.Request, job *models.Job) jobResponse {
+	meta, _ := h.dispatcher.GetMeta(job.Type)
+
+	updatedAt := job.QueuedAt
+	if job.CompletedAt != nil {
+		updatedAt = *job.CompletedAt
+	} else if job.StartedAt != nil {
+		updatedAt = *job.StartedAt
 	}
 
-	isEnabled, err := repository.CollectionIsEnabled(r.Context(), h.db, collectionID)
+	resp := jobResponse{
+		ID:              job.ID,
+		Type:            job.Type,
+		Status:          job.Status,
+		Step:            job.CurrentStep,
+		TotalSteps:      meta.TotalSteps,
+		SupportsSubJobs: meta.SupportsSubjobs,
+		RelatedID:       job.RelatedID,
+		RelatedType:     job.RelatedType,
+		Log:             job.Log,
+		CreatedAt:       job.QueuedAt,
+		UpdatedAt:       updatedAt,
+	}
+
+	// Resolve related_name
+	if job.RelatedID != nil && job.RelatedType != nil && *job.RelatedType == "collection" {
+		if coll, err := repository.CollectionGet(r.Context(), h.db, *job.RelatedID); err == nil {
+			resp.RelatedName = &coll.Name
+		}
+	}
+
+	// Sub-job counts
+	if meta.SupportsSubjobs {
+		completed, total, _ := repository.JobSubJobCounts(r.Context(), h.db, job.ID)
+		resp.SubJobsCompleted = completed
+		resp.TotalSubJobs = total
+	}
+
+	return resp
+}
+
+// GET /api/v1/admin/jobs
+func (h *adminHandler) listJobs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	inactive := q.Get("inactive") == "true"
+
+	page := 1
+	if p := q.Get("page"); strings.TrimSpace(p) != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			page = n
+		}
+	}
+	limit := 50
+	if l := q.Get("limit"); strings.TrimSpace(l) != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = min(200, n)
+		}
+	}
+
+	jobs, total, err := repository.JobListTopLevel(r.Context(), h.db, page, limit, inactive)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "collection not found")
-		return
-	}
-	if !isEnabled {
-		writeError(w, http.StatusBadRequest, "collection is disabled")
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
 
-	// Map the ?type= param to a job type string.
-	var jobType string
-	switch r.URL.Query().Get("type") {
-	case "", "filesystem":
-		jobType = "filesystem_scan"
-	case "metadata":
-		jobType = "metadata_scan"
-	default:
-		writeError(w, http.StatusBadRequest, "invalid scan type: must be 'filesystem' or 'metadata'")
+	responses := make([]jobResponse, len(jobs))
+	for i, job := range jobs {
+		responses[i] = h.enrichJob(r, job)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jobs":  responses,
+		"total": total,
+		"page":  page,
+		"limit": limit,
+	})
+}
+
+// POST /api/v1/admin/jobs
+func (h *adminHandler) createJob(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Type        string  `json:"type"`
+		RelatedID   *int64  `json:"related_id"`
+		RelatedType *string `json:"related_type"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.Type) == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
 		return
 	}
 
-	// Prevent duplicate scans of the same type and block while an initial scan runs.
-	blockTypes := []string{jobType, "initial_scan"}
-	active, err := repository.JobIsAnyActive(r.Context(), h.db, blockTypes, collectionID)
+	// Reject sub-job types
+	if subJobTypes[body.Type] {
+		writeError(w, http.StatusBadRequest, "job type "+body.Type+" is not user-invocable")
+		return
+	}
+
+	// Check for already-active job
+	var active bool
+	var err error
+	if body.RelatedID != nil {
+		active, err = repository.JobIsActive(r.Context(), h.db, body.Type, *body.RelatedID)
+	} else {
+		active, err = repository.JobIsActiveByType(r.Context(), h.db, body.Type)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "job check failed")
 		return
 	}
 	if active {
-		writeError(w, http.StatusConflict, "a conflicting scan is already queued or running for this collection")
+		writeError(w, http.StatusConflict, "a job of type "+body.Type+" is already queued or running")
 		return
 	}
 
-	jobID, err := repository.JobCreate(r.Context(), h.db, jobType, &collectionID, nil)
+	jobID, err := h.dispatcher.Enqueue(r.Context(), body.Type, body.RelatedID, body.RelatedType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
-	slog.Info("scan job queued", "job_id", jobID, "collection_id", collectionID, "type", jobType)
-	h.dispatcher.TriggerImmediately()
-	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+	slog.Info("job queued via API", "type", body.Type, "job_id", jobID)
+
+	job, err := repository.JobGet(r.Context(), h.db, jobID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch job")
+		return
+	}
+	writeJSON(w, http.StatusCreated, h.enrichJob(r, job))
 }
 
 // DELETE /api/v1/admin/collections/:id/derivatives
@@ -236,39 +339,74 @@ func (h *adminHandler) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, h.enrichJob(r, job))
 }
 
-// triggerSimpleJob creates a job with no related entity and returns 202 with the job ID.
-func (h *adminHandler) triggerSimpleJob(w http.ResponseWriter, r *http.Request, jobType string) {
-	jobID, err := repository.JobCreate(r.Context(), h.db, jobType, nil, nil)
+// GET /api/v1/admin/schedules
+func (h *adminHandler) listSchedules(w http.ResponseWriter, r *http.Request) {
+	schedules, err := repository.JobScheduleList(r.Context(), h.db)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create job")
+		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
-	slog.Info("job queued", "type", jobType, "job_id", jobID)
-	h.dispatcher.TriggerImmediately()
-	writeJSON(w, http.StatusAccepted, map[string]int64{"job_id": jobID})
+	writeJSON(w, http.StatusOK, schedules)
 }
 
-// POST /api/v1/admin/maintenance/orphan-cleanup
-func (h *adminHandler) triggerOrphanCleanup(w http.ResponseWriter, r *http.Request) {
-	h.triggerSimpleJob(w, r, "orphan_cleanup")
+// PUT /api/v1/admin/schedules/:name
+func (h *adminHandler) upsertSchedule(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "schedule name is required")
+		return
+	}
+
+	var body struct {
+		Cron        string  `json:"cron"`
+		Description *string `json:"description"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Cron == "" {
+		writeError(w, http.StatusBadRequest, "cron is required")
+		return
+	}
+
+	if err := repository.JobScheduleUpsert(r.Context(), h.db, name, body.Cron, body.Description); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to upsert schedule")
+		return
+	}
+
+	if h.scheduler != nil {
+		h.scheduler.NotifyReload()
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/v1/admin/maintenance/integrity-check
-func (h *adminHandler) triggerIntegrityCheck(w http.ResponseWriter, r *http.Request) {
-	h.triggerSimpleJob(w, r, "integrity_check")
-}
+// DELETE /api/v1/admin/schedules/:name
+func (h *adminHandler) deleteSchedule(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "schedule name is required")
+		return
+	}
 
-// POST /api/v1/admin/maintenance/device-cleanup
-func (h *adminHandler) triggerDeviceCleanup(w http.ResponseWriter, r *http.Request) {
-	h.triggerSimpleJob(w, r, "device_cleanup")
-}
+	deleted, err := repository.JobScheduleDelete(r.Context(), h.db, name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if !deleted {
+		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
 
-// POST /api/v1/admin/maintenance/cover-cycle
-func (h *adminHandler) triggerCoverCycle(w http.ResponseWriter, r *http.Request) {
-	h.triggerSimpleJob(w, r, "cover_cycle")
+	if h.scheduler != nil {
+		h.scheduler.NotifyReload()
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // POST /api/v1/admin/collections/{id}/cover
@@ -306,12 +444,12 @@ func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Requ
 	tmp.Close()
 
 	// Load, crop to square, resize to 400x400, export AVIF + WebP
-	if err := imaging.GenerateCollectionCoverFromUpload(tmp.Name(), h.dataPath, collectionID); err != nil {
+	if err := imaging.GenerateCollectionThumbnailFromUpload(tmp.Name(), h.dataPath, collectionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process cover image")
 		return
 	}
 
-	if err := repository.CollectionSetManualCover(r.Context(), h.db, collectionID, true); err != nil {
+	if err := repository.CollectionSetManualThumbnail(r.Context(), h.db, collectionID, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update collection")
 		return
 	}

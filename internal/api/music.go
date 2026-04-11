@@ -2,6 +2,7 @@ package api
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -145,7 +146,7 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
-		avifPath := imaging.ArtistImagePath(h.dataPath, id, "avif")
+		avifPath := imaging.ArtistThumbnailPath(h.dataPath, id, "avif")
 		if fileExists(avifPath) {
 			w.Header().Set("Content-Type", "image/avif")
 			http.ServeFile(w, r, avifPath)
@@ -153,14 +154,14 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	webpPath := imaging.ArtistImagePath(h.dataPath, id, "webp")
+	webpPath := imaging.ArtistThumbnailPath(h.dataPath, id, "webp")
 	if fileExists(webpPath) {
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeFile(w, r, webpPath)
 		return
 	}
 
-	avifPath := imaging.ArtistImagePath(h.dataPath, id, "avif")
+	avifPath := imaging.ArtistThumbnailPath(h.dataPath, id, "avif")
 	if fileExists(avifPath) {
 		w.Header().Set("Content-Type", "image/avif")
 		http.ServeFile(w, r, avifPath)
@@ -170,8 +171,8 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 	writeError(w, http.StatusNotFound, "artist image not found")
 }
 
-// GET /images/albums/{albumId}/cover
-func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
+// GET /images/albums/{albumId}/thumb
+func (h *musicHandler) serveAlbumThumbnail(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "albumId")
 	if !ok {
 		return
@@ -181,7 +182,7 @@ func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
-		avifPath := imaging.AlbumCoverPath(h.dataPath, id, "avif")
+		avifPath := imaging.AlbumThumbnailPath(h.dataPath, id, "avif")
 		if fileExists(avifPath) {
 			w.Header().Set("Content-Type", "image/avif")
 			http.ServeFile(w, r, avifPath)
@@ -189,21 +190,66 @@ func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	webpPath := imaging.AlbumCoverPath(h.dataPath, id, "webp")
+	webpPath := imaging.AlbumThumbnailPath(h.dataPath, id, "webp")
 	if fileExists(webpPath) {
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeFile(w, r, webpPath)
 		return
 	}
 
-	avifPath := imaging.AlbumCoverPath(h.dataPath, id, "avif")
+	avifPath := imaging.AlbumThumbnailPath(h.dataPath, id, "avif")
 	if fileExists(avifPath) {
 		w.Header().Set("Content-Type", "image/avif")
 		http.ServeFile(w, r, avifPath)
 		return
 	}
 
-	writeError(w, http.StatusNotFound, "album cover not found")
+	writeError(w, http.StatusNotFound, "album thumbnail not found")
+}
+
+// GET /images/albums/{albumId}/cover
+// Serves the 1280px album cover. Stored as AVIF; converted on-the-fly for clients
+// that don't accept AVIF.
+func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
+	id, ok := urlIntParam(w, r, "albumId")
+	if !ok {
+		return
+	}
+
+	avifPath := imaging.AlbumCoverPath(h.dataPath, id, "avif")
+	if !fileExists(avifPath) {
+		writeError(w, http.StatusNotFound, "album cover not found")
+		return
+	}
+
+	accept := r.Header.Get("Accept")
+
+	if strings.Contains(accept, "image/avif") {
+		w.Header().Set("Content-Type", "image/avif")
+		http.ServeFile(w, r, avifPath)
+		return
+	}
+
+	if strings.Contains(accept, "image/webp") {
+		webpBytes, err := imaging.GenerateWebP(avifPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "image conversion failed")
+			return
+		}
+		w.Header().Set("Content-Type", "image/webp")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(webpBytes)
+		return
+	}
+
+	jpegBytes, err := imaging.GenerateJPEG(avifPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "image conversion failed")
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(jpegBytes)
 }
 
 // POST /api/v1/admin/artists/{id}/image
@@ -246,12 +292,12 @@ func (h *musicHandler) uploadArtistImage(w http.ResponseWriter, r *http.Request)
 	}
 	tmp.Close()
 
-	if err := imaging.GenerateArtistImageFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+	if err := imaging.GenerateArtistThumbnailFromUpload(tmp.Name(), h.dataPath, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process image")
 		return
 	}
 
-	if err := repository.ArtistSetManualImage(r.Context(), h.db, id, true); err != nil {
+	if err := repository.ArtistSetManualThumbnail(r.Context(), h.db, id, true); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update artist")
 		return
 	}
@@ -268,11 +314,11 @@ func (h *musicHandler) deleteArtistImage(w http.ResponseWriter, r *http.Request)
 
 	// Remove files
 	for _, ext := range []string{"avif", "webp"} {
-		path := imaging.ArtistImagePath(h.dataPath, id, ext)
+		path := imaging.ArtistThumbnailPath(h.dataPath, id, ext)
 		_ = os.Remove(path)
 	}
 
-	if err := repository.ArtistSetManualImage(r.Context(), h.db, id, false); err != nil {
+	if err := repository.ArtistSetManualThumbnail(r.Context(), h.db, id, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update artist")
 		return
 	}
@@ -319,9 +365,12 @@ func (h *musicHandler) uploadAlbumCover(w http.ResponseWriter, r *http.Request) 
 	}
 	tmp.Close()
 
-	if err := imaging.GenerateAlbumCoverFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+	if err := imaging.GenerateAlbumThumbnailFromUpload(tmp.Name(), h.dataPath, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process image")
 		return
+	}
+	if err := imaging.GenerateAlbumCoverFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+		slog.Warn("generate album cover (1280px)", "album_id", id, "err", err)
 	}
 
 	if err := repository.AlbumSetManualCover(r.Context(), h.db, id, true); err != nil {
@@ -340,9 +389,9 @@ func (h *musicHandler) deleteAlbumCover(w http.ResponseWriter, r *http.Request) 
 	}
 
 	for _, ext := range []string{"avif", "webp"} {
-		path := imaging.AlbumCoverPath(h.dataPath, id, ext)
-		_ = os.Remove(path)
+		_ = os.Remove(imaging.AlbumThumbnailPath(h.dataPath, id, ext))
 	}
+	_ = os.Remove(imaging.AlbumCoverPath(h.dataPath, id, "avif"))
 
 	if err := repository.AlbumSetManualCover(r.Context(), h.db, id, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update album")

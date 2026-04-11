@@ -1,8 +1,9 @@
-package transcoder
+package jobsutils_test
 
 import (
 	"os/exec"
 	"testing"
+	jobsutils "github.com/stevenvi/bokeh-mediaserver/internal/jobs/utils"
 )
 
 // TestSetNiceWrapsCommand verifies that setNice prepends "nice -n 10" to the command.
@@ -14,7 +15,7 @@ func TestSetNiceWrapsCommand(t *testing.T) {
 
 	cmd := exec.Command("echo", "hello")
 	originalArg0 := cmd.Args[0]
-	setNice(cmd)
+	jobsutils.SetNice(cmd, 10)
 
 	if cmd.Path != nicePath {
 		t.Errorf("cmd.Path: got %q, want %q", cmd.Path, nicePath)
@@ -40,7 +41,7 @@ func TestSetNiceRunsAtReducedPriority(t *testing.T) {
 	}
 
 	cmd := exec.Command("true")
-	setNice(cmd)
+	jobsutils.SetNice(cmd, 19)
 
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("command failed: %v", err)

@@ -29,7 +29,7 @@ func TestCreate(t *testing.T) {
 			db := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
-			id, err := repository.JobCreate(ctx, db, tt.jobType, tt.relatedID, tt.relatedType)
+			id, err := repository.JobCreate(ctx, db, tt.jobType, tt.relatedID, tt.relatedType, nil)
 			require.NoError(t, err)
 			assert.Greater(t, id, int64(0))
 
@@ -45,77 +45,11 @@ func TestCreate(t *testing.T) {
 	}
 }
 
-func TestClaimNextJob(t *testing.T) {
-	t.Run("claims_queued_job", func(t *testing.T) {
-		db := testutil.NewTx(t, db_test_utils.TestPool)
-		ctx := context.Background()
-
-		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
-		require.NoError(t, err)
-
-		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
-		require.NoError(t, err)
-		require.NotNil(t, job)
-		assert.Equal(t, id, job.ID)
-		assert.Equal(t, "running", job.Status)
-		assert.NotNil(t, job.StartedAt)
-	})
-
-	t.Run("returns_nil_when_empty", func(t *testing.T) {
-		db := testutil.NewTx(t, db_test_utils.TestPool)
-		ctx := context.Background()
-
-		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
-		require.NoError(t, err)
-		assert.Nil(t, job)
-	})
-
-	t.Run("skips_running_jobs", func(t *testing.T) {
-		db := testutil.NewTx(t, db_test_utils.TestPool)
-		ctx := context.Background()
-
-		id, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
-		require.NoError(t, err)
-		require.NoError(t, repository.JobMarkRunning(ctx, db, id))
-
-		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
-		require.NoError(t, err)
-		assert.Nil(t, job, "should not claim already-running job")
-	})
-
-	t.Run("filters_by_type", func(t *testing.T) {
-		db := testutil.NewTx(t, db_test_utils.TestPool)
-		ctx := context.Background()
-
-		_, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
-		require.NoError(t, err)
-
-		job, err := repository.JobClaimNext(ctx, db, []string{"process_media"})
-		require.NoError(t, err)
-		assert.Nil(t, job, "should not claim job of wrong type")
-	})
-
-	t.Run("claims_oldest_first", func(t *testing.T) {
-		db := testutil.NewTx(t, db_test_utils.TestPool)
-		ctx := context.Background()
-
-		id1, err := repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(1), testutil.StrPtr("collection"))
-		require.NoError(t, err)
-		_, err = repository.JobCreate(ctx, db, "filesystem_scan", testutil.Int64Ptr(2), testutil.StrPtr("collection"))
-		require.NoError(t, err)
-
-		job, err := repository.JobClaimNext(ctx, db, []string{"filesystem_scan"})
-		require.NoError(t, err)
-		require.NotNil(t, job)
-		assert.Equal(t, id1, job.ID, "should claim oldest queued job first")
-	})
-}
-
 func TestUpdateProgress(t *testing.T) {
 	db := testutil.NewTx(t, db_test_utils.TestPool)
 	ctx := context.Background()
 
-	id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
+	id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, repository.JobUpdateProgress(ctx, db, id, "step 1"))
@@ -144,7 +78,7 @@ func TestMarkStateTransitions(t *testing.T) {
 			db := testutil.NewTx(t, db_test_utils.TestPool)
 			ctx := context.Background()
 
-			id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
+			id, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil, nil)
 			require.NoError(t, err)
 
 			switch tt.action {
@@ -189,7 +123,7 @@ func TestIsActive(t *testing.T) {
 			ctx := context.Background()
 
 			relatedID := int64(999)
-			id, err := repository.JobCreate(ctx, db, "filesystem_scan", &relatedID, testutil.StrPtr("collection"))
+			id, err := repository.JobCreate(ctx, db, "filesystem_scan", &relatedID, testutil.StrPtr("collection"), nil)
 			require.NoError(t, err)
 
 			switch tt.status {
@@ -213,16 +147,16 @@ func TestRecoverStuckJobs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two jobs and mark them running (simulating a crash)
-	id1, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
+	id1, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, repository.JobMarkRunning(ctx, db, id1))
 
-	id2, err := repository.JobCreate(ctx, db, "process_media", nil, nil)
+	id2, err := repository.JobCreate(ctx, db, "process_media", nil, nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, repository.JobMarkRunning(ctx, db, id2))
 
 	// Also create a done job that should NOT be affected
-	id3, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil)
+	id3, err := repository.JobCreate(ctx, db, "filesystem_scan", nil, nil, nil)
 	require.NoError(t, err)
 	require.NoError(t, repository.JobMarkDone(ctx, db, id3))
 

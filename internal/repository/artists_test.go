@@ -127,38 +127,38 @@ func TestArtistGetAlbums(t *testing.T) {
 	})
 }
 
-func TestArtistSetManualImage(t *testing.T) {
+func TestArtistSetManualThumbnail(t *testing.T) {
 	t.Run("sets_manual_image", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createArtist(t, db)
-		require.NoError(t, repository.ArtistSetManualImage(bg(), db, id, false))
-		require.NoError(t, repository.ArtistSetManualImage(bg(), db, id, true))
+		require.NoError(t, repository.ArtistSetManualThumbnail(bg(), db, id, false))
+		require.NoError(t, repository.ArtistSetManualThumbnail(bg(), db, id, true))
 
 		artist, err := repository.ArtistGet(bg(), db, id)
 		require.NoError(t, err)
-		assert.True(t, artist.ManualImage)
+		assert.True(t, artist.ManualThumbnail)
 	})
 
 	t.Run("clears_manual_image", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		id := createArtist(t, db)
-		require.NoError(t, repository.ArtistSetManualImage(bg(), db, id, true))
-		require.NoError(t, repository.ArtistSetManualImage(bg(), db, id, false))
+		require.NoError(t, repository.ArtistSetManualThumbnail(bg(), db, id, true))
+		require.NoError(t, repository.ArtistSetManualThumbnail(bg(), db, id, false))
 
 		artist, err := repository.ArtistGet(bg(), db, id)
 		require.NoError(t, err)
-		assert.False(t, artist.ManualImage)
+		assert.False(t, artist.ManualThumbnail)
 	})
 }
 
-func TestArtistsWithoutManualImage(t *testing.T) {
+func TestArtistsWithoutManualThumbnail(t *testing.T) {
 	t.Run("includes_artist_with_non_compilation_album", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypeMusic)
 		artistID := createArtist(t, db)
 		createAlbum(t, db, &artistID, collID) // non-compilation by default
 
-		ids, err := repository.ArtistsWithoutManualImage(bg(), db)
+		ids, err := repository.ArtistsWithoutManualThumbnail(bg(), db)
 		require.NoError(t, err)
 		assert.Contains(t, ids, artistID)
 	})
@@ -168,9 +168,9 @@ func TestArtistsWithoutManualImage(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMusic)
 		artistID := createArtist(t, db)
 		createAlbum(t, db, &artistID, collID)
-		require.NoError(t, repository.ArtistSetManualImage(bg(), db, artistID, true))
+		require.NoError(t, repository.ArtistSetManualThumbnail(bg(), db, artistID, true))
 
-		ids, err := repository.ArtistsWithoutManualImage(bg(), db)
+		ids, err := repository.ArtistsWithoutManualThumbnail(bg(), db)
 		require.NoError(t, err)
 		assert.NotContains(t, ids, artistID)
 	})

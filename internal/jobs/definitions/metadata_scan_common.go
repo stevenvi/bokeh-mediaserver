@@ -1,4 +1,4 @@
-package indexer
+package definitions
 
 import (
 	"math"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
+	jobsutils "github.com/stevenvi/bokeh-mediaserver/internal/jobs/utils"
 )
 
 // parseTrackNumber parses a track/disc string like "3", "3/12", or "03" into a *int16.
@@ -84,13 +84,13 @@ func parseDurationString(s string) *float64 {
 //  3. ContentCreateDate — used by some video containers
 //  4. Earliest of FileCreateDate, FileModifyDate (exiftool), and OS mod time
 func createdAt(fsPath string, exifData map[string]any) *time.Time {
-	if t := utils.ExifTimeWithOffset(exifData, "DateTimeOriginal", "OffsetTimeOriginal"); t != nil {
+	if t := jobsutils.ExifTimeWithOffset(exifData, "DateTimeOriginal", "OffsetTimeOriginal"); t != nil {
 		return t
 	}
-	if t := utils.ExifTimeWithOffset(exifData, "CreateDate", "OffsetTimeDigitized"); t != nil {
+	if t := jobsutils.ExifTimeWithOffset(exifData, "CreateDate", "OffsetTimeDigitized"); t != nil {
 		return t
 	}
-	if t := utils.ExifTimeWithOffset(exifData, "ContentCreateDate", ""); t != nil {
+	if t := jobsutils.ExifTimeWithOffset(exifData, "ContentCreateDate", ""); t != nil {
 		return t
 	}
 
