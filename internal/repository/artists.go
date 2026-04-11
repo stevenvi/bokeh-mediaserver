@@ -45,8 +45,12 @@ func ArtistsInCollection(ctx context.Context, db utils.DBTX, collectionID int64,
 		WITH artist_ids AS (
 			SELECT DISTINCT al.artist_id AS aid
 			FROM audio_albums al
+			JOIN audio_metadata am ON am.album_id = al.id
+			JOIN media_items mi ON mi.id = am.media_item_id
 			WHERE al.root_collection_id = $1
 			  AND al.artist_id IS NOT NULL
+			  AND mi.missing_since IS NULL
+			  AND mi.hidden_at IS NULL
 		)`
 
 	// Count and list queries have different parameter positions for search ($2 vs $4),
