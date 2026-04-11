@@ -91,7 +91,17 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation (used by Roku Poster nodes).
+	formatParam := r.URL.Query().Get("format")
+	var accept string
+	switch formatParam {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 	acceptsWebP := strings.Contains(accept, "image/webp")
 
@@ -102,21 +112,27 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 	if acceptsAVIF {
 		for _, v := range fallbackChain {
+			if v == variantOriginal {
+				http.ServeFile(w, r, fsPath)
+				return
+			}
 			path := imaging.VariantPath(h.dataPath, hash, v, "avif")
 			if fileExists(path) {
 				http.ServeFile(w, r, path)
 				return
 			}
 		}
-
-		// Last resort: serve source file directly
-		http.ServeFile(w, r, fsPath)
 		return
 	}
 
 	// Non-AVIF path: transcode from the best available AVIF on disk.
 	// Check for pre-generated JPEG thumb first (always exists on disk).
 	for _, v := range fallbackChain {
+		if v == variantOriginal {
+			http.ServeFile(w, r, fsPath)
+			return
+		}
+
 		jpegPath := imaging.VariantPath(h.dataPath, hash, v, "jpg")
 		if fileExists(jpegPath) {
 			http.ServeFile(w, r, jpegPath)
@@ -209,7 +225,16 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation.
+	var accept string
+	switch r.URL.Query().Get("format") {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
@@ -239,8 +264,12 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 	writeError(w, http.StatusNotFound, "cover not found")
 }
 
-// variantFallbackChain returns the variant and all smaller variants in order.
-// The requested variant is always first — it's tried before falling back.
+// variantOriginal is a sentinel value in a fallback chain representing the source file.
+const variantOriginal = "original"
+
+// variantFallbackChain returns the variant, the source file sentinel, and all smaller
+// variants in order. The source file is placed immediately after the requested variant
+// so that a too-small-to-derive source is preferred over downsampled smaller variants.
 func variantFallbackChain(variant string) []string {
 	order := []string{
 		imaging.VariantPreview,
@@ -249,10 +278,13 @@ func variantFallbackChain(variant string) []string {
 	}
 	for i, v := range order {
 		if v == variant {
-			return order[i:]
+			chain := make([]string, 0, len(order)-i+1)
+			chain = append(chain, v, variantOriginal)
+			chain = append(chain, order[i+1:]...)
+			return chain
 		}
 	}
-	return []string{imaging.VariantThumb}
+	return []string{imaging.VariantThumb, variantOriginal}
 }
 
 // fileExists returns true if the path exists and is a regular file.

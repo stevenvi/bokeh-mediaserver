@@ -142,7 +142,16 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation.
+	var accept string
+	switch r.URL.Query().Get("format") {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
@@ -178,7 +187,16 @@ func (h *musicHandler) serveAlbumThumbnail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation.
+	var accept string
+	switch r.URL.Query().Get("format") {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {
@@ -222,7 +240,16 @@ func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation.
+	var accept string
+	switch r.URL.Query().Get("format") {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 
 	if strings.Contains(accept, "image/avif") {
 		w.Header().Set("Content-Type", "image/avif")

@@ -246,7 +246,16 @@ func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accept := r.Header.Get("Accept")
+	// ?format= query param overrides Accept header negotiation.
+	var accept string
+	switch r.URL.Query().Get("format") {
+	case "webp":
+		accept = "image/webp"
+	case "jpeg", "jpg":
+		accept = "image/jpeg"
+	default:
+		accept = r.Header.Get("Accept")
+	}
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 
 	if acceptsAVIF {

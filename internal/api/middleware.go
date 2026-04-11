@@ -42,6 +42,12 @@ func requireJWT(secret string, guard *DeviceGuard, adminOnly bool) func(http.Han
 				}
 			}
 
+			// Last resort: ?access_token= query param (needed for Roku Poster nodes
+			// which cannot set HTTP headers or cookies).
+			if strings.TrimSpace(tokenStr) == "" {
+				tokenStr = r.URL.Query().Get("access_token")
+			}
+
 			if tokenStr == "" {
 				writeError(w, http.StatusUnauthorized, "missing or invalid authorization")
 				return
