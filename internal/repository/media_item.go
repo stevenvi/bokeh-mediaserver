@@ -626,11 +626,13 @@ type ScanItem struct {
 type KnownScanItem struct {
 	ID          int64
 	HasMetadata bool
+	IsMissing   bool
+	FileHash    string
 }
 
-// MediaItemsKnownForScan returns all non-missing media items in a collection tree,
-// keyed by relative path, with a flag indicating whether the type-appropriate metadata
-// record exists. mimeCategory should be "audio", "video", or "image".
+// MediaItemsKnownForScan returns all media items (including missing) in a collection
+// tree, keyed by relative path, with a flag indicating whether the type-appropriate
+// metadata record exists. mimeCategory should be "audio", "video", or "image".
 func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int64, mimeCategory string) (map[string]KnownScanItem, error) {
 	var metaTable string
 	switch mimeCategory {
@@ -650,11 +652,11 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 				UNION ALL
 				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 			)
-			SELECT mi.relative_path, mi.id, (meta.media_item_id IS NOT NULL) AS has_metadata
+			SELECT mi.relative_path, mi.id, (meta.media_item_id IS NOT NULL) AS has_metadata,
+			       (mi.missing_since IS NOT NULL) AS is_missing, mi.file_hash
 			FROM media_items mi
 			JOIN tree t ON mi.collection_id = t.id
-			LEFT JOIN %s meta ON meta.media_item_id = mi.id
-			WHERE mi.missing_since IS NULL`, metaTable)
+			LEFT JOIN %s meta ON meta.media_item_id = mi.id`, metaTable)
 	} else {
 		// Unknown category — treat all existing items as complete so we don't re-queue them.
 		query = `
@@ -663,10 +665,10 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 				UNION ALL
 				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 			)
-			SELECT mi.relative_path, mi.id, true AS has_metadata
+			SELECT mi.relative_path, mi.id, true AS has_metadata,
+			       (mi.missing_since IS NOT NULL) AS is_missing, mi.file_hash
 			FROM media_items mi
-			JOIN tree t ON mi.collection_id = t.id
-			WHERE mi.missing_since IS NULL`
+			JOIN tree t ON mi.collection_id = t.id`
 	}
 
 	rows, err := db.Query(ctx, query, collectionID)
@@ -679,7 +681,7 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 	for rows.Next() {
 		var path string
 		var item KnownScanItem
-		if err := rows.Scan(&path, &item.ID, &item.HasMetadata); err != nil {
+		if err := rows.Scan(&path, &item.ID, &item.HasMetadata, &item.IsMissing, &item.FileHash); err != nil {
 			return nil, err
 		}
 		items[path] = item
@@ -706,6 +708,16 @@ func MediaItemsForScan(ctx context.Context, db utils.DBTX, collectionID int64) (
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[ScanItem])
+}
+
+// MediaItemUpdateFileInfo updates the file_size_bytes and file_hash for an existing
+// media item when the scan detects that the file content has changed.
+func MediaItemUpdateFileInfo(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string) error {
+	_, err := db.Exec(ctx,
+		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3 WHERE id = $1`,
+		itemID, fileSize, fileHash,
+	)
+	return err
 }
 
 // MediaItemMarkMissing marks a single item as missing (sets missing_since = now()).

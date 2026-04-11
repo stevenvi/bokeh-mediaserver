@@ -42,8 +42,12 @@ const (
 // changed, and missing files. The job's related_id must be the collection ID.
 //
 // Step 1: Walk directories and upsert sub-collections.
-// Step 2: Walk files, upsert media items, queue sub-jobs for new/changed files.
-// Step 3: Mark items not seen in walk as missing.
+// Step 2: Walk files. For each file: if new, upsert and queue metadata sub-job;
+//
+//	if previously missing and now found, restore it (hash-check still applies).
+//	if known, hash and queue sub-job only if content changed or metadata is missing;
+//
+// Step 3: Mark items not seen in the walk as missing.
 func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 	return func(ctx context.Context, jc *jobs.JobContext) error {
 		db, job := jc.DB, jc.Job
@@ -78,7 +82,7 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "Walking files")
 		slog.Info("collection scan: walking files", "job_id", job.ID, "collection_id", collectionID)
 
-		// Load known items to detect new vs existing files and whether metadata is complete.
+		// Load all known items (including missing) to detect new vs existing files.
 		knownItems, err := repository.MediaItemsKnownForScan(ctx, db, collectionID, mimeCategory)
 		if err != nil {
 			return fmt.Errorf("load known items: %w", err)
@@ -99,7 +103,7 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 			}
 
 			filesWalked++
-			if filesWalked%1000 == 0 {
+			if filesWalked%250 == 0 {
 				slog.Info("collection scan: walking files", "job_id", job.ID, "walked", filesWalked)
 			}
 
@@ -126,19 +130,6 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 
 			relatedType := "media_item"
 
-			// If the file is already in the DB, check whether its metadata sub-job completed.
-			if known, exists := knownItems[relPath]; exists {
-				if known.HasMetadata {
-					return nil // fully processed, skip
-				}
-				// media_item exists but metadata record is missing — sub-job likely failed.
-				// Re-queue it without re-hashing or re-upserting.
-				jc.AddSubJob(scanJobType, &known.ID, &relatedType)
-				filesQueued++
-				slog.Debug("re-queued scan sub-job for missing metadata", "path", path, "type", scanJobType)
-				return nil
-			}
-
 			stat, statErr := os.Stat(path)
 			if statErr != nil {
 				slog.Warn("stat failed", "path", path, "err", statErr)
@@ -154,6 +145,31 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 				return nil
 			}
 
+			// Known file (present or previously missing): compare hash to decide if re-processing is needed.
+			if known, exists := knownItems[relPath]; exists {
+				if known.IsMissing {
+					if e := repository.MediaItemClearMissing(ctx, db, known.ID); e != nil {
+						slog.Warn("clear missing failed", "item_id", known.ID, "err", e)
+						errCount++
+						return nil
+					}
+				}
+				if fileHash == known.FileHash && known.HasMetadata {
+					return nil // unchanged and fully processed
+				}
+				if fileHash != known.FileHash {
+					if e := repository.MediaItemUpdateFileInfo(ctx, db, known.ID, fileSize, fileHash); e != nil {
+						slog.Warn("update file info failed", "item_id", known.ID, "err", e)
+						errCount++
+						return nil
+					}
+				}
+				jc.AddSubJob(scanJobType, &known.ID, &relatedType)
+				filesQueued++
+				return nil
+			}
+
+			// New file: upsert and queue.
 			dirPath := filepath.Dir(path)
 			folderCollectionID, ok := pathToID[dirPath]
 			if !ok {
@@ -187,47 +203,38 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 			"queued", filesQueued,
 			"errors", errCount,
 		)
+		if filesWalked == 0 && errCount == 0 {
+			slog.Warn("collection scan: walk found no eligible files — collection path may be inaccessible or empty",
+				"job_id", job.ID, "path", collectionPath)
+		}
 
-		// Step 3: Mark items missing / restore reappeared items
+		// Step 3: Mark items not seen in the walk as missing.
 		jc.SetStep(ctx, 3)
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "Marking missing items")
-		slog.Info("collection scan: syncing missing items", "job_id", job.ID)
+		slog.Info("collection scan: marking missing items", "job_id", job.ID)
 
 		items, err := repository.MediaItemsForScan(ctx, db, collectionID)
 		if err != nil {
 			return fmt.Errorf("load items for sync: %w", err)
 		}
 
-		var marked, restored int64
+		var marked int64
 		for _, item := range items {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			_, seen := seenPaths[item.RelativePath]
-
-			if !seen {
-				if !item.IsMissing {
-					if e := repository.MediaItemMarkMissing(ctx, db, item.ID); e != nil {
-						slog.Warn("mark missing failed", "item_id", item.ID, "err", e)
-						continue
-					}
-					marked++
+			if _, seen := seenPaths[item.RelativePath]; !seen && !item.IsMissing {
+				if e := repository.MediaItemMarkMissing(ctx, db, item.ID); e != nil {
+					slog.Warn("mark missing failed", "item_id", item.ID, "err", e)
+					continue
 				}
-			} else {
-				if item.IsMissing {
-					if e := repository.MediaItemClearMissing(ctx, db, item.ID); e != nil {
-						slog.Warn("clear missing failed", "item_id", item.ID, "err", e)
-						continue
-					}
-					restored++
-				}
+				marked++
 			}
 		}
 
 		slog.Info("collection scan: sync complete",
 			"job_id", job.ID,
 			"marked_missing", marked,
-			"restored", restored,
 		)
 
 		repository.CollectionTouchLastScanned(ctx, db, collectionID)
