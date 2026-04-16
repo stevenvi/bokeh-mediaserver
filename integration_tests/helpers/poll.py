@@ -1,5 +1,5 @@
 import time
-from conftest import BASE_URL
+from tests.conftest import BASE_URL
 import httpx
 from helpers.auth import bearer
 

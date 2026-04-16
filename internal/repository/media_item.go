@@ -62,7 +62,7 @@ func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models
 		 JOIN collections c ON c.id = m.collection_id
 		 JOIN collection_access ca ON ca.collection_id = c.root_collection_id AND ca.user_id = $2
 		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
-		 WHERE m.id = $1 AND m.hidden_at IS NULL`,
+		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL`,
 		id, userID,
 	).Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
 		&hasPhoto,
@@ -104,7 +104,7 @@ func MediaItemFileHashAndPath(ctx context.Context, db utils.DBTX, id, userID int
 	err = db.QueryRow(ctx,
 		`SELECT m.file_hash, m.relative_path FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
-		 WHERE m.id = $1 AND m.hidden_at IS NULL
+		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
 		   AND EXISTS (
 		       SELECT 1 FROM collection_access ca
 		       WHERE ca.collection_id = c.root_collection_id

@@ -7,7 +7,7 @@ definition order and share state via class-level variables.
 
 import httpx
 import pytest
-from conftest import BASE_URL
+from tests.conftest import BASE_URL
 from helpers.auth import bearer
 from helpers.poll import wait_for_job
 from pydantic import BaseModel

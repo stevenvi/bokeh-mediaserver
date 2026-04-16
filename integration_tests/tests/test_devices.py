@@ -15,7 +15,7 @@ import httpx
 import pytest
 from helpers.auth import bearer, decode_jwt
 from pydantic import AwareDatetime, BaseModel
-from conftest import BASE_URL, LoginResponse, create_user_local, login_local, refresh
+from tests.conftest import BASE_URL, LoginResponse, create_user_local, login_local, refresh
 
 
 # ── Convenience functions ────────────────────────────────────────────────────

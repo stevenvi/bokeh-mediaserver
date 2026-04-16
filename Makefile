@@ -43,7 +43,7 @@ coverage-check: test-unit
 
 # ── Pytest integration tests ──────────────────────────────────────────────────
 test-integration:
-	docker compose -f $(DOCKER_COMPOSE_INTEG) up --build --abort-on-container-exit --exit-code-from test-runner ; \
+	docker compose -f $(DOCKER_COMPOSE_INTEG) up --build --abort-on-container-exit --exit-code-from test-runner --attach test-runner ; \
 	EXIT_CODE=$$? ; \
 	docker compose -f $(DOCKER_COMPOSE_INTEG) down --volumes ; \
 	exit $$EXIT_CODE

@@ -2,7 +2,7 @@ import uuid
 import time
 import httpx
 from helpers.auth import bearer, decode_jwt
-from conftest import login_local
+from tests.conftest import login_local
 import pytest
 
 

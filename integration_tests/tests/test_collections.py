@@ -11,7 +11,7 @@ import os
 from typing import Any
 import uuid
 import httpx
-from conftest import BASE_URL, admin_token, admin_user_id, create_user_local, login_local
+from tests.conftest import BASE_URL, admin_token, admin_user_id, create_user_local, login_local
 import pytest
 from helpers.auth import bearer
 from helpers.poll import wait_for_job
