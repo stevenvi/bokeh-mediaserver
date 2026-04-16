@@ -36,17 +36,7 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 		fsPath := filepath.Join(mediaPath, relativePath)
 
 		// Extract EXIF
-		et := jc.Et
-		var exifData map[string]any
-		if et != nil {
-			exifData, err = et.Extract(fsPath)
-			if err != nil {
-				slog.Warn("exiftool extract failed", "path", fsPath, "err", err)
-				exifData = map[string]any{}
-			}
-		} else {
-			exifData = map[string]any{}
-		}
+		exifData := extractExif(jc.Et, fsPath, "exiftool extract failed")
 
 		// Update title from exiftool composite Title if available
 		if title := jobsutils.ExifStr(exifData, "Title"); title != nil && *title != "" {

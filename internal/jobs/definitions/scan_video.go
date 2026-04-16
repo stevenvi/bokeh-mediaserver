@@ -46,17 +46,7 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		fsPath := filepath.Join(mediaPath, relativePath)
 
 		// --- Step 1: exiftool extraction ---
-		et := jc.Et
-		var exifData map[string]any
-		if et != nil {
-			exifData, err = et.Extract(fsPath)
-			if err != nil {
-				slog.Warn("exiftool extract failed for video", "path", fsPath, "err", err)
-				exifData = map[string]any{}
-			}
-		} else {
-			exifData = map[string]any{}
-		}
+		exifData := extractExif(jc.Et, fsPath, "exiftool extract failed for video")
 
 		// Duration
 		durationFloat := parseDuration(exifData)

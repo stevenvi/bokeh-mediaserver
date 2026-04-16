@@ -36,17 +36,7 @@ func HandleScanAudio(mediaPath, dataPath string) jobs.JobHandler {
 		fsPath := filepath.Join(mediaPath, relativePath)
 
 		// Extract tags via exiftool
-		et := jc.Et
-		var exifData map[string]any
-		if et != nil {
-			exifData, err = et.Extract(fsPath)
-			if err != nil {
-				slog.Warn("exiftool extract failed for audio", "path", fsPath, "err", err)
-				exifData = map[string]any{}
-			}
-		} else {
-			exifData = map[string]any{}
-		}
+		exifData := extractExif(jc.Et, fsPath, "exiftool extract failed for audio")
 
 		// Extract tag values
 		title := jobsutils.ExifStr(exifData, "Title")

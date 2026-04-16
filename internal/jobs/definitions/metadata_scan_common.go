@@ -1,6 +1,7 @@
 package definitions
 
 import (
+	"log/slog"
 	"math"
 	"os"
 	"strconv"
@@ -9,6 +10,20 @@ import (
 
 	jobsutils "github.com/stevenvi/bokeh-mediaserver/internal/jobs/utils"
 )
+
+// extractExif runs exiftool on fsPath using et. On failure or if et is nil,
+// logs a warning and returns an empty (non-nil) map.
+func extractExif(et *jobsutils.ExiftoolProcess, fsPath, warnMsg string) map[string]any {
+	if et == nil {
+		return map[string]any{}
+	}
+	data, err := et.Extract(fsPath)
+	if err != nil {
+		slog.Warn(warnMsg, "path", fsPath, "err", err)
+		return map[string]any{}
+	}
+	return data
+}
 
 // parseTrackNumber parses a track/disc string like "3", "3/12", or "03" into a *int16.
 func parseTrackNumber(s string) *int16 {
