@@ -84,10 +84,23 @@ func AlbumDelete(ctx context.Context, db utils.DBTX, albumID int64) error {
 }
 
 // AlbumGetRandomNonCompilationIDByArtist returns a random non-compilation album ID
-// for the given artist. Returns pgx.ErrNoRows if none exist.
-// TODO: This should be limited to albums in the same collection, but it looks like we don't have that data at the moment...
-func AlbumGetRandomNonCompilationIDByArtist(ctx context.Context, db utils.DBTX, artistID int64) (int64, error) {
+// for the given artist within the specified root collection.
+// If rootCollectionID is 0, albums from any collection are considered.
+// Returns pgx.ErrNoRows if none exist.
+func AlbumGetRandomNonCompilationIDByArtist(ctx context.Context, db utils.DBTX, artistID int64, rootCollectionID int64) (int64, error) {
 	var id int64
+	if rootCollectionID != 0 {
+		err := db.QueryRow(ctx,
+			`SELECT id FROM audio_albums
+			 WHERE artist_id = $1
+			   AND is_compilation = false
+			   AND root_collection_id = $2
+			 ORDER BY RANDOM()
+			 LIMIT 1`,
+			artistID, rootCollectionID,
+		).Scan(&id)
+		return id, err
+	}
 	err := db.QueryRow(ctx,
 		`SELECT id FROM audio_albums
 		 WHERE artist_id = $1

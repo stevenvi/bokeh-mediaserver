@@ -96,7 +96,7 @@ func TestAlbumGetRandomNonCompilationIDByArtist(t *testing.T) {
 		artistID := createArtist(t, db)
 		albumID := createAlbum(t, db, &artistID, collID)
 
-		got, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID)
+		got, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, collID)
 		require.NoError(t, err)
 		assert.Equal(t, albumID, got)
 	})
@@ -108,7 +108,7 @@ func TestAlbumGetRandomNonCompilationIDByArtist(t *testing.T) {
 		albumID1 := createAlbum(t, db, &artistID, collID)
 		albumID2 := createAlbum(t, db, &artistID, collID)
 
-		got, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID)
+		got, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, collID)
 		require.NoError(t, err)
 		assert.True(t, slices.Contains([]int64{albumID1, albumID2}, got))
 	})
@@ -122,7 +122,7 @@ func TestAlbumGetRandomNonCompilationIDByArtist(t *testing.T) {
 		_, _, err := repository.AlbumUpsert(bg(), db, "Hits Vol. 1", &artistID, nil, nil, collID, true)
 		require.NoError(t, err)
 
-		_, err = repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID)
+		_, err = repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, collID)
 		assert.ErrorIs(t, err, pgx.ErrNoRows)
 	})
 
@@ -131,7 +131,24 @@ func TestAlbumGetRandomNonCompilationIDByArtist(t *testing.T) {
 		_ = createCollection(t, db, constants.CollectionTypeMusic)
 		artistID := createArtist(t, db)
 
-		_, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID)
+		_, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, 0)
 		assert.ErrorIs(t, err, pgx.ErrNoRows)
+	})
+
+	t.Run("scoped_to_collection", func(t *testing.T) {
+		db := testutil.NewTx(t, testPool)
+		collID1 := createCollection(t, db, constants.CollectionTypeMusic)
+		collID2 := createCollection(t, db, constants.CollectionTypeMusic)
+		artistID := createArtist(t, db)
+		_ = createAlbum(t, db, &artistID, collID1)
+
+		// Album exists in collID1 but not collID2
+		_, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, collID2)
+		assert.ErrorIs(t, err, pgx.ErrNoRows)
+
+		// Zero means any collection — should find it
+		got, err := repository.AlbumGetRandomNonCompilationIDByArtist(bg(), db, artistID, 0)
+		require.NoError(t, err)
+		assert.Greater(t, got, int64(0))
 	})
 }

@@ -78,7 +78,7 @@ func HandleCoverCycle(dataPath string) jobs.JobHandler {
 // checks that an album thumbnail AVIF exists on disk, and generates the artist thumbnail from it.
 // Returns nil silently if no eligible album or thumbnail exists.
 func GenerateThumbnailForArtist(ctx context.Context, db utils.DBTX, dataPath string, artistID int64) error {
-	albumID, err := repository.AlbumGetRandomNonCompilationIDByArtist(ctx, db, artistID)
+	albumID, err := repository.AlbumGetRandomNonCompilationIDByArtist(ctx, db, artistID, 0)
 	if err == pgx.ErrNoRows {
 		return nil // no eligible albums
 	}
