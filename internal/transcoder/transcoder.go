@@ -142,7 +142,9 @@ func HandleTranscode(cfg *config.Config) jobs.JobHandler {
 		}
 
 		// If the system is paused, pause this new process immediately.
-		if isPaused {
+		// Guard against cmd.Process being nil in case the process exited
+		// between Start() and here.
+		if isPaused && cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGSTOP)
 		}
 
