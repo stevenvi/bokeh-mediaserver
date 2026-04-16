@@ -52,6 +52,12 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Reject path traversal attempts.
+	if strings.Contains(body.RelativePath, "..") {
+		writeError(w, http.StatusBadRequest, "relative_path must not contain '..'")
+		return
+	}
+
 	// Verify the path exists on the filesystem.
 	fullPath := filepath.Join(h.mediaPath, body.RelativePath)
 	if info, err := os.Stat(fullPath); err != nil {
@@ -793,6 +799,12 @@ func (h *adminHandler) listDirectories(w http.ResponseWriter, r *http.Request) {
 	raw := chi.URLParam(r, "*")
 	subPath, err := url.PathUnescape(raw)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// Reject path traversal attempts.
+	if strings.Contains(subPath, "..") {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
