@@ -94,8 +94,9 @@ type Session struct {
 }
 
 var (
-	sessions   = map[int64]*Session{} // maps item id to session
-	sessionsMu sync.Mutex
+	sessions      = map[int64]*Session{} // maps item id to session
+	sessionsMu    sync.Mutex
+	dispatcherRef *jobs.Dispatcher // set by GetOrCreateSession, used by sweeper to Resume
 )
 
 // ActiveSessionCount returns the number of live streaming sessions.
@@ -157,6 +158,7 @@ func GetOrCreateSession(itemID int64, bitrateKbps *int, fsPath string, bitrateTh
 		segmentAdded:  make(chan struct{}),
 	}
 	sessions[itemID] = s
+	dispatcherRef = dispatcher
 
 	// Pause background work while streaming
 	dispatcher.Pause()
@@ -562,6 +564,11 @@ func sweepIdleSessions() {
 		if idle > SessionIdleTimeout {
 			cleanupSession(itemID, s)
 		}
+	}
+
+	// Resume background jobs when no active sessions remain.
+	if len(sessions) == 0 && dispatcherRef != nil {
+		dispatcherRef.Resume()
 	}
 }
 
