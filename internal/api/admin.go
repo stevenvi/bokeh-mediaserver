@@ -70,7 +70,8 @@ func (h *adminHandler) createCollection(w http.ResponseWriter, r *http.Request) 
 
 	id, err := repository.CollectionCreate(r.Context(), h.db, body.Name, body.Type, body.RelativePath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create collection: "+err.Error())
+		slog.Error("failed to create collection", "name", body.Name, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to create collection")
 		return
 	}
 
@@ -511,7 +512,8 @@ func (h *adminHandler) createUser(w http.ResponseWriter, r *http.Request) {
 
 	userID, err := plugin.CreateUser(r.Context(), h.db, body.Name, body.Credentials)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		slog.Warn("create user failed", "name", body.Name, "err", err)
+		writeError(w, http.StatusBadRequest, "failed to create user")
 		return
 	}
 
@@ -581,7 +583,8 @@ func (h *adminHandler) changeUserCredentials(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := plugin.UpdateCredentials(r.Context(), h.db, targetID, body.Credentials); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		slog.Warn("update credentials failed", "user_id", targetID, "err", err)
+		writeError(w, http.StatusBadRequest, "failed to update credentials")
 		return
 	}
 
@@ -619,6 +622,7 @@ func (h *adminHandler) revokeUserDevice(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.guard.Revoke(deviceID, auth.AccessTokenTTL)
+	slog.Warn("SECURITY: admin revoked device", "target_user_id", targetID, "device_id", deviceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -636,6 +640,7 @@ func (h *adminHandler) revokeAllUserDevices(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.guard.RevokeMany(ids, auth.AccessTokenTTL)
+	slog.Warn("SECURITY: admin revoked all devices for user", "target_user_id", targetID, "revoked_devices", len(ids))
 	w.WriteHeader(http.StatusNoContent)
 }
 

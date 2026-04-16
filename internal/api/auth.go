@@ -131,7 +131,8 @@ func (h *authHandler) login(w http.ResponseWriter, r *http.Request) {
 	userID, err := plugin.Authenticate(r.Context(), h.db, body.Credentials)
 	if err != nil {
 		h.rl.Record(ip)
-		writeError(w, http.StatusUnauthorized, err.Error())
+		slog.Info("authentication failed", "provider", body.Provider, "ip", ip)
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
@@ -271,10 +272,11 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found {
-		// TODO: Deleted data provides no audit log!
 		ids, _ := repository.DevicesDeleteForUser(r.Context(), h.db, stolenUserID)
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
-		slog.Warn("refresh token reuse detected — all devices revoked",
+		slog.Warn("SECURITY: refresh token reuse — all devices revoked",
+			"user_id", stolenUserID, "revoked_devices", len(ids), "ip", ip)
+		slog.Warn("SECURITY: refresh token reuse — login revoked",
 			"user_id", stolenUserID, "ip", ip)
 		clearAuthCookies(w, h.production)
 		writeError(w, http.StatusUnauthorized, "refresh token reuse detected; all devices have been revoked")
@@ -364,9 +366,12 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	userID, _ := strconv.ParseInt(claims.Subject, 10, 64)
 
 	// Delete the device row so its refresh token becomes invalid immediately.
-	_, _ = repository.DeviceDelete(r.Context(), h.db, claims.DeviceID, userID)
+	affected, _ := repository.DeviceDelete(r.Context(), h.db, claims.DeviceID, userID)
 	// Revoke the access token for its remaining TTL via the in-memory guard.
 	h.guard.Revoke(claims.DeviceID, auth.AccessTokenTTL)
+	if affected > 0 {
+		slog.Info("device logged out", "user_id", userID, "device_id", claims.DeviceID)
+	}
 
 	clearAuthCookies(w, h.production)
 	w.WriteHeader(http.StatusNoContent)
@@ -430,6 +435,7 @@ func (h *authHandler) banDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.guard.Ban(deviceID)
+	slog.Warn("SECURITY: device banned", "user_id", userID, "device_id", deviceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -449,6 +455,7 @@ func (h *authHandler) unbanDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.guard.Unban(deviceID)
+	slog.Info("device unbanned", "user_id", userID, "device_id", deviceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -477,7 +484,8 @@ func (h *authHandler) changeCredentials(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := plugin.UpdateCredentials(r.Context(), h.db, userID, body.Credentials); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		slog.Warn("credential update failed", "user_id", userID, "err", err)
+		writeError(w, http.StatusBadRequest, "failed to update credentials")
 		return
 	}
 
