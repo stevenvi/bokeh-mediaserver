@@ -20,4 +20,3 @@ func TestServerConfigTranscodeBitrate(t *testing.T) {
 		assert.Greater(t, kbps, 0)
 	})
 }
-

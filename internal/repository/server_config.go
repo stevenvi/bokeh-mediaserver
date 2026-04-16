@@ -14,4 +14,3 @@ func ServerConfigTranscodeBitrate(ctx context.Context, db utils.DBTX) (int, erro
 	).Scan(&kbps)
 	return kbps, err
 }
-

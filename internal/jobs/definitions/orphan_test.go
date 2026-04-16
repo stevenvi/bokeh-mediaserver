@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 // stubHash is the file_hash inserted by testutil.InsertMediaItem.
 const stubHash = "abc123"
 

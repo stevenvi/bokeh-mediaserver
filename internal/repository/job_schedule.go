@@ -11,15 +11,15 @@ import (
 
 // JobSchedule represents a row in the jobs_schedule table.
 type JobSchedule struct {
+	UpdatedAt   time.Time `json:"updated_at"`
+	Description *string   `json:"description,omitempty"`
 	Name        string    `json:"name"`
 	Cron        string    `json:"cron"`
-	Description *string   `json:"description,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // JobScheduleList returns all job schedule rows.
 func JobScheduleList(ctx context.Context, db utils.DBTX) ([]*JobSchedule, error) {
-	rows, err := db.Query(ctx, `SELECT name, cron, description, updated_at FROM jobs_schedule ORDER BY name`)
+	rows, err := db.Query(ctx, `SELECT updated_at, description, name, cron FROM jobs_schedule ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}

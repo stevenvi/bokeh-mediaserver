@@ -11,7 +11,6 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
-
 // nonTerminalStatuses are the job statuses that indicate a job is still in progress.
 var nonTerminalStatuses = []string{"queued", "running", "running_sub_jobs"}
 
@@ -81,9 +80,9 @@ func JobCreateSubJobBatch(ctx context.Context, db utils.DBTX, parentID int64, sp
 
 // SubJobSpec holds the parameters for a single sub-job to be created in batch.
 type SubJobSpec struct {
-	JobType     string
 	RelatedID   *int64
 	RelatedType *string
+	JobType     string
 }
 
 // JobMarkRunning sets a job to running status with the current timestamp.
@@ -186,7 +185,6 @@ func JobIsActive(ctx context.Context, db utils.DBTX, jobType string, relatedID i
 	).Scan(&count)
 	return count > 0, err
 }
-
 
 // JobIsActiveByType returns true if any top-level job of the given type is queued or running.
 func JobIsActiveByType(ctx context.Context, db utils.DBTX, jobType string) (bool, error) {

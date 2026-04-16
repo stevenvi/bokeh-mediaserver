@@ -142,29 +142,29 @@ func (h *adminHandler) listCollections(w http.ResponseWriter, r *http.Request) {
 
 // subJobTypes lists job types that are not user-invocable via POST /api/v1/admin/jobs.
 var subJobTypes = map[string]bool{
-	"scan_photo":            true,
-	"scan_video":            true,
-	"scan_audio":            true,
-	"video_transcode_item":  true,
+	"scan_photo":           true,
+	"scan_video":           true,
+	"scan_audio":           true,
+	"video_transcode_item": true,
 }
 
 // jobResponse is the consistent shape returned for all job API responses.
 type jobResponse struct {
-	ID              int64     `json:"id"`
-	Type            string    `json:"type"`
-	Status          string    `json:"status"`
-	Step            int       `json:"step"`
-	TotalSteps      int       `json:"total_steps"`
-	SupportsSubJobs  bool      `json:"supports_sub_jobs"`
-	SubJobsCompleted int64     `json:"subjobs_completed"`
-	TotalSubJobs     int64     `json:"total_sub_jobs"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	RelatedID        *int64    `json:"related_id"`
+	Log              *string   `json:"log"`
+	RelatedName      *string   `json:"related_name"`
+	RelatedType      *string   `json:"related_type"`
+	Type             string    `json:"type"`
+	Status           string    `json:"status"`
+	Step             int       `json:"step"`
 	SubjobsEnqueued  int       `json:"subjobs_enqueued"`
-	RelatedID       *int64    `json:"related_id"`
-	RelatedType     *string   `json:"related_type"`
-	RelatedName     *string   `json:"related_name"`
-	Log             *string   `json:"log"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	TotalSubJobs     int64     `json:"total_sub_jobs"`
+	SubJobsCompleted int64     `json:"subjobs_completed"`
+	TotalSteps       int       `json:"total_steps"`
+	ID               int64     `json:"id"`
+	SupportsSubJobs  bool      `json:"supports_sub_jobs"`
 }
 
 // enrichJob converts a *models.Job to a jobResponse with meta info resolved.
@@ -250,9 +250,9 @@ func (h *adminHandler) listJobs(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/admin/jobs
 func (h *adminHandler) createJob(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Type        string  `json:"type"`
 		RelatedID   *int64  `json:"related_id"`
 		RelatedType *string `json:"related_type"`
+		Type        string  `json:"type"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -370,8 +370,8 @@ func (h *adminHandler) upsertSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Cron        string  `json:"cron"`
 		Description *string `json:"description"`
+		Cron        string  `json:"cron"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return

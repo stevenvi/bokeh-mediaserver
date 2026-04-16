@@ -7,7 +7,6 @@ import (
 
 var punctuationRegex, _ = regexp.Compile("[^a-zA-Z0-9 ]+")
 
-
 // GenerateSortName creates a sort-friendly name by:
 //  1. Lower-casing the result so mixed-case names sort with their peers
 //  2. Stripping punctuation (e.g. `"Weird Al" Yankovic` → `weird al yankovic`)

@@ -64,8 +64,8 @@ func (s *Scheduler) run(ctx context.Context) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
 	type activeSchedule struct {
-		name     string
 		schedule cron.Schedule
+		name     string
 	}
 
 	var schedules []activeSchedule

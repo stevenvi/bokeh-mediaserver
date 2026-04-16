@@ -141,7 +141,7 @@ func ArtistSetManualThumbnail(ctx context.Context, db utils.DBTX, id int64, manu
 }
 
 // ArtistsWithNoTracks returns IDs of artists that have no remaining albums
-// and no track references (as either track artist or album artist). 
+// and no track references (as either track artist or album artist).
 // Safe to call after empty albums have been removed.
 func ArtistsWithNoTracks(ctx context.Context, db utils.DBTX) ([]int64, error) {
 	rows, err := db.Query(ctx,

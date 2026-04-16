@@ -17,33 +17,29 @@ import (
 )
 
 type registeredHandler struct {
-	meta    JobMeta
 	handler JobHandler
+	meta    JobMeta
 }
 
 type queuedJob struct {
-	id      int64
 	jobType string
+	id      int64
 }
 
 // Dispatcher runs jobs sequentially (one top-level at a time) with parallel sub-job execution.
 type Dispatcher struct {
 	db       utils.DBTX
+	ctx      context.Context
 	handlers map[string]registeredHandler
+	wakeCh   chan struct{}
+	cancel   context.CancelFunc
+	doneCh   chan struct{}
+	et       *jobsutils.ExiftoolProcess
+	queue    []queuedJob
 	mu       sync.RWMutex
-
-	queue   []queuedJob
-	queueMu sync.Mutex
-	wakeCh  chan struct{}
-
-	ctx    context.Context
-	cancel context.CancelFunc
-	doneCh chan struct{}
-
-	et   *jobsutils.ExiftoolProcess
-	etMu sync.Mutex
-
-	paused atomic.Bool
+	queueMu  sync.Mutex
+	etMu     sync.Mutex
+	paused   atomic.Bool
 }
 
 // NewDispatcher creates a new sequential dispatcher.

@@ -21,20 +21,19 @@ type JobMeta struct {
 
 // subJobSpec holds the details of a sub-job to be created.
 type subJobSpec struct {
-	jobType     string
 	relatedID   *int64
 	relatedType *string
+	jobType     string
 }
 
 // JobContext is passed to every job handler.
 type JobContext struct {
-	DB  utils.DBTX
-	Job *models.Job
-	Et  *jobsutils.ExiftoolProcess
-
-	mu            sync.Mutex
-	subJobBuf     []subJobSpec
-	dispatcher    *Dispatcher
+	DB         utils.DBTX
+	Job        *models.Job
+	Et         *jobsutils.ExiftoolProcess
+	dispatcher *Dispatcher
+	subJobBuf  []subJobSpec
+	mu         sync.Mutex
 }
 
 // SetStep updates the job's current_step in the DB.

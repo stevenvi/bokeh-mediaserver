@@ -62,19 +62,19 @@ type PhotoMetadata struct {
 }
 
 type Job struct {
-	QueuedAt     time.Time  `json:"queued_at"`
-	RelatedID    *int64     `json:"related_id,omitempty"`
-	RelatedType  *string    `json:"related_type,omitempty"`
-	ParentJobID  *int64     `json:"parent_job_id,omitempty"`
-	Log          *string    `json:"log,omitempty"`
-	ErrorMessage *string    `json:"error_message,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	Type         string     `json:"type"`
-	Status       string     `json:"status"`
-	ID           int64      `json:"id"`
-	CurrentStep      int        `json:"current_step"`
-	SubjobsEnqueued  int        `json:"subjobs_enqueued"`
+	QueuedAt        time.Time  `json:"queued_at"`
+	RelatedID       *int64     `json:"related_id,omitempty"`
+	RelatedType     *string    `json:"related_type,omitempty"`
+	ParentJobID     *int64     `json:"parent_job_id,omitempty"`
+	Log             *string    `json:"log,omitempty"`
+	ErrorMessage    *string    `json:"error_message,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	Type            string     `json:"type"`
+	Status          string     `json:"status"`
+	ID              int64      `json:"id"`
+	CurrentStep     int        `json:"current_step"`
+	SubjobsEnqueued int        `json:"subjobs_enqueued"`
 }
 
 type User struct {

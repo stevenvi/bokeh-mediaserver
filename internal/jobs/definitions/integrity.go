@@ -126,4 +126,3 @@ func pruneStaleItems(ctx context.Context, db utils.DBTX, dataPath string, jobID 
 
 	return pruned, nil
 }
-

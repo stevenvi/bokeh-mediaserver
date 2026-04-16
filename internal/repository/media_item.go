@@ -619,15 +619,15 @@ type ScanItem struct {
 	RelativePath  string
 	FileSizeBytes int64
 	FileHash      string
-	IsMissing     bool // true when missing_since IS NOT NULL
+	IsMissing     bool
 }
 
 // KnownScanItem holds the scan-relevant fields for a known media item.
 type KnownScanItem struct {
+	FileHash    string
 	ID          int64
 	HasMetadata bool
 	IsMissing   bool
-	FileHash    string
 }
 
 // MediaItemsKnownForScan returns all media items (including missing) in a collection

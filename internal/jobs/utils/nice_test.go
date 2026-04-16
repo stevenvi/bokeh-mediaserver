@@ -3,6 +3,7 @@ package jobsutils_test
 import (
 	"os/exec"
 	"testing"
+
 	jobsutils "github.com/stevenvi/bokeh-mediaserver/internal/jobs/utils"
 )
 
