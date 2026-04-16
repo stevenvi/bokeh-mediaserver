@@ -11,6 +11,23 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
+// collectionAccessExists is the EXISTS subquery fragment that checks whether a user
+// has access to a media item's root collection. It assumes the outer query has joined
+// collections as "c" and that userID is bound to $2.
+const collectionAccessExists = `EXISTS (
+	    SELECT 1 FROM collection_access ca
+	    WHERE ca.collection_id = c.root_collection_id
+	      AND ca.user_id = $2
+	)`
+
+// collectionAccessExistsFromParam is the EXISTS subquery for contexts where the
+// collection ID comes from query parameter $1 (no outer join on "c"). userID is $2.
+const collectionAccessExistsFromParam = `EXISTS (
+	    SELECT 1 FROM collection_access ca
+	    JOIN collections c ON c.id = $1
+	    WHERE ca.collection_id = c.root_collection_id AND ca.user_id = $2
+	)`
+
 // MediaItemUpsert inserts or updates a media item, returning the ID and whether the file was unchanged.
 // Uses a CTE to capture pre-existing state for change detection in a single round-trip.
 func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, title, relativePath string, fileSizeBytes int64, fileHash, mimeType string) (id int64, wasUnchanged bool, err error) {
@@ -105,11 +122,7 @@ func MediaItemFileHashAndPath(ctx context.Context, db utils.DBTX, id, userID int
 		`SELECT m.file_hash, m.relative_path FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
-		   AND EXISTS (
-		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = c.root_collection_id
-		         AND ca.user_id = $2
-		   )`,
+		   AND `+collectionAccessExists,
 		id, userID,
 	).Scan(&hash, &relativePath)
 	return
@@ -134,14 +147,10 @@ func MediaItemsByCollectionPaginated(ctx context.Context, db utils.DBTX, collect
 		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.collection_id = $1 AND m.missing_since IS NULL AND m.hidden_at IS NULL
-		   AND EXISTS (
-		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = c.root_collection_id
-		         AND ca.user_id = $4
-		   )
+		   AND `+collectionAccessExists+`
 		 ORDER BY m.ordinal ASC NULLS LAST, m.title ASC
-		 LIMIT $2 OFFSET $3`,
-		collectionID, limit, offset, userID,
+		 LIMIT $3 OFFSET $4`,
+		collectionID, userID, limit, offset,
 	)
 	if err != nil {
 		return nil, err
@@ -330,11 +339,7 @@ func MediaItemGetAudioStreamInfo(ctx context.Context, db utils.DBTX, itemID int6
 		`SELECT m.relative_path, m.mime_type FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
-		   AND EXISTS (
-		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = c.root_collection_id
-		         AND ca.user_id = $2
-		   )`,
+		   AND `+collectionAccessExists,
 		itemID, userID,
 	).Scan(&relativePath, &mimeType)
 	return
@@ -347,11 +352,7 @@ func MediaItemGetVideoStreamInfo(ctx context.Context, db utils.DBTX, itemID int6
 		`SELECT m.relative_path, m.mime_type, m.file_hash FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL
-		   AND EXISTS (
-		       SELECT 1 FROM collection_access ca
-		       WHERE ca.collection_id = c.root_collection_id
-		         AND ca.user_id = $2
-		   )`,
+		   AND `+collectionAccessExists,
 		itemID, userID,
 	).Scan(&relativePath, &mimeType, &hash)
 	return
@@ -392,11 +393,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			 LEFT JOIN video_metadata vm ON vm.media_item_id = m.id
 			 LEFT JOIN video_bookmarks vb ON vb.media_item_id = m.id AND vb.user_id = $2
 			 WHERE m.missing_since IS NULL AND m.hidden_at IS NULL
-			   AND EXISTS (
-			       SELECT 1 FROM collection_access ca
-			       JOIN collections c ON c.id = $1
-			       WHERE ca.collection_id = c.root_collection_id AND ca.user_id = $2
-			   )
+			   AND `+collectionAccessExistsFromParam+`
 			 ORDER BY m.title ASC
 			 LIMIT $3 OFFSET $4`,
 			collectionID, userID, limit, offset,
@@ -414,11 +411,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			 LEFT JOIN video_bookmarks vb ON vb.media_item_id = m.id AND vb.user_id = $2
 			 WHERE m.collection_id = $1
 			   AND m.missing_since IS NULL AND m.hidden_at IS NULL
-			   AND EXISTS (
-			       SELECT 1 FROM collection_access ca
-			       JOIN collections c ON c.id = $1
-			       WHERE ca.collection_id = c.root_collection_id AND ca.user_id = $2
-			   )
+			   AND `+collectionAccessExistsFromParam+`
 			 ORDER BY m.relative_path ASC
 			 LIMIT $3 OFFSET $4`,
 			collectionID, userID, limit, offset,
