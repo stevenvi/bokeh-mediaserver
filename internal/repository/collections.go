@@ -232,11 +232,13 @@ func CollectionTouchLastScanned(ctx context.Context, db utils.DBTX, id int64) {
 }
 
 // CollectionGrantAccessToUser grants a user access to the given top-level collections (idempotent).
+// Only collections with parent_collection_id IS NULL are inserted; sub-collections are silently skipped.
 func CollectionGrantAccessToUser(ctx context.Context, db utils.DBTX, userID int64, collectionIDs []int64) error {
-	// TODO: Enforce top-level collections only in query
 	_, err := db.Exec(ctx,
 		`INSERT INTO collection_access (user_id, collection_id)
-		 SELECT $1, unnest($2::bigint[])
+		 SELECT $1, c.id
+		 FROM unnest($2::bigint[]) AS cid(id)
+		 JOIN collections c ON c.id = cid.id AND c.parent_collection_id IS NULL
 		 ON CONFLICT DO NOTHING`,
 		userID, collectionIDs,
 	)
@@ -244,11 +246,13 @@ func CollectionGrantAccessToUser(ctx context.Context, db utils.DBTX, userID int6
 }
 
 // CollectionGrantAccessToUsers grants a set of users access to the given collection (idempotent).
+// Only succeeds if collectionID is a top-level collection (parent_collection_id IS NULL).
 func CollectionGrantAccessToUsers(ctx context.Context, db utils.DBTX, collectionID int64, userIDs []int64) error {
-	// TODO: Enforce top-level collections only in query
 	_, err := db.Exec(ctx,
 		`INSERT INTO collection_access (user_id, collection_id)
-		 SELECT unnest($1::bigint[]), $2
+		 SELECT uid.id, $2
+		 FROM unnest($1::bigint[]) AS uid(id)
+		 WHERE EXISTS (SELECT 1 FROM collections WHERE id = $2 AND parent_collection_id IS NULL)
 		 ON CONFLICT DO NOTHING`,
 		userIDs, collectionID,
 	)

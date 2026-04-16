@@ -338,6 +338,21 @@ func TestCollectionGrantAccessToUser(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, ids, 1)
 	})
+
+	t.Run("rejects_sub_collections", func(t *testing.T) {
+		db := testutil.NewTx(t, testPool)
+		userID := createUser(t, db)
+		parentID := createCollection(t, db, constants.CollectionTypePhoto)
+		subID, err := repository.CollectionUpsertSubCollection(bg(), db, parentID, parentID, "Sub", "photos/sub-grant-test")
+		require.NoError(t, err)
+
+		// Granting access to a sub-collection should silently skip it.
+		require.NoError(t, repository.CollectionGrantAccessToUser(bg(), db, userID, []int64{subID}))
+
+		ids, err := repository.CollectionsAccessibleByUser(bg(), db, userID)
+		require.NoError(t, err)
+		assert.Empty(t, ids)
+	})
 }
 
 func TestCollectionGrantAccessToUsers(t *testing.T) {
@@ -361,6 +376,21 @@ func TestCollectionGrantAccessToUsers(t *testing.T) {
 		require.NoError(t, repository.CollectionGrantAccessToUsers(bg(), db, collID, []int64{}))
 
 		ids, err := repository.CollectionGetUsersWithAccess(bg(), db, collID)
+		require.NoError(t, err)
+		assert.Empty(t, ids)
+	})
+
+	t.Run("rejects_sub_collection", func(t *testing.T) {
+		db := testutil.NewTx(t, testPool)
+		u1 := createUser(t, db)
+		parentID := createCollection(t, db, constants.CollectionTypePhoto)
+		subID, err := repository.CollectionUpsertSubCollection(bg(), db, parentID, parentID, "Sub", "photos/sub-grant-users-test")
+		require.NoError(t, err)
+
+		// Granting access to a sub-collection should silently skip.
+		require.NoError(t, repository.CollectionGrantAccessToUsers(bg(), db, subID, []int64{u1}))
+
+		ids, err := repository.CollectionGetUsersWithAccess(bg(), db, subID)
 		require.NoError(t, err)
 		assert.Empty(t, ids)
 	})
