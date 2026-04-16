@@ -83,21 +83,44 @@ func (jc *JobContext) SubJobCount() int {
 	return len(jc.subJobBuf)
 }
 
-// FlushSubJobs writes buffered sub-jobs to the DB with parent_job_id set.
+// FlushSubJobs writes buffered sub-jobs to the DB in batches with parent_job_id set.
 // Returns the number of sub-jobs created.
-// TODO: Can this be done in a batch for efficiency??
 func (jc *JobContext) FlushSubJobs(ctx context.Context) (int, error) {
 	jc.mu.Lock()
 	buf := jc.subJobBuf
 	jc.subJobBuf = nil
 	jc.mu.Unlock()
 
-	for _, spec := range buf {
-		if _, err := repository.JobCreateSubJob(ctx, jc.DB, spec.jobType, spec.relatedID, spec.relatedType, jc.Job.ID); err != nil {
-			slog.Warn("flush sub-job", "type", spec.jobType, "err", err)
-		}
+	if len(buf) == 0 {
+		return 0, nil
 	}
-	return len(buf), nil
+
+	const batchSize = 500
+	total := 0
+	for i := 0; i < len(buf); i += batchSize {
+		end := i + batchSize
+		if end > len(buf) {
+			end = len(buf)
+		}
+		chunk := buf[i:end]
+
+		specs := make([]repository.SubJobSpec, len(chunk))
+		for j, s := range chunk {
+			specs[j] = repository.SubJobSpec{
+				JobType:     s.jobType,
+				RelatedID:   s.relatedID,
+				RelatedType: s.relatedType,
+			}
+		}
+
+		n, err := repository.JobCreateSubJobBatch(ctx, jc.DB, jc.Job.ID, specs)
+		if err != nil {
+			slog.Warn("flush sub-job batch", "offset", i, "count", len(chunk), "err", err)
+			continue
+		}
+		total += n
+	}
+	return total, nil
 }
 
 // JobHandler processes a single job. The job is already marked as 'running' in the DB.

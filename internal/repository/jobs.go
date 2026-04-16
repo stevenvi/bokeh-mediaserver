@@ -43,6 +43,49 @@ func JobCreateSubJob(ctx context.Context, db utils.DBTX, jobType string, related
 	return id, err
 }
 
+// JobCreateSubJobBatch inserts multiple sub-jobs in a single statement and
+// atomically increments the parent's subjobs_enqueued counter by the batch size.
+// Returns the number of rows inserted.
+func JobCreateSubJobBatch(ctx context.Context, db utils.DBTX, parentID int64, specs []SubJobSpec) (int, error) {
+	if len(specs) == 0 {
+		return 0, nil
+	}
+
+	// Build a multi-row VALUES clause: ($1, $2, $3, $4), ($5, $6, $7, $8), ...
+	// Using unnest with arrays is more efficient for pgx.
+	types := make([]string, len(specs))
+	relatedIDs := make([]*int64, len(specs))
+	relatedTypes := make([]*string, len(specs))
+	for i, s := range specs {
+		types[i] = s.JobType
+		relatedIDs[i] = s.RelatedID
+		relatedTypes[i] = s.RelatedType
+	}
+
+	_, err := db.Exec(ctx,
+		`WITH inserted AS (
+		     INSERT INTO jobs (type, related_id, related_type, parent_job_id)
+		     SELECT t, r, rt, $4
+		     FROM unnest($1::text[], $2::bigint[], $3::text[]) AS x(t, r, rt)
+		     RETURNING 1
+		 )
+		 UPDATE jobs SET subjobs_enqueued = subjobs_enqueued + (SELECT count(*) FROM inserted)
+		 WHERE id = $4`,
+		types, relatedIDs, relatedTypes, parentID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return len(specs), nil
+}
+
+// SubJobSpec holds the parameters for a single sub-job to be created in batch.
+type SubJobSpec struct {
+	JobType     string
+	RelatedID   *int64
+	RelatedType *string
+}
+
 // JobMarkRunning sets a job to running status with the current timestamp.
 func JobMarkRunning(ctx context.Context, db utils.DBTX, jobID int64) error {
 	_, err := db.Exec(ctx,
