@@ -103,7 +103,7 @@ func PhotoExifRaw(ctx context.Context, db utils.DBTX, itemID int64, userID int64
 		 FROM photo_metadata pm
 		 JOIN media_items m ON m.id = pm.media_item_id AND m.hidden_at IS NULL AND m.missing_since IS NULL
 		 JOIN collections c ON c.id = m.collection_id
-		 JOIN collection_access ca ON ca.collection_id = c.id AND ca.user_id = $2
+		 JOIN collection_access ca ON ca.collection_id = c.root_collection_id AND ca.user_id = $2
 		 WHERE pm.media_item_id = $1`, itemID, userID).Scan(&raw)
 	return raw, err
 }
