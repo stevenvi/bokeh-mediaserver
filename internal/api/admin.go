@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -425,35 +424,14 @@ func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+	tmpPath, ok := parseUploadToTemp(w, r, "cover", 10<<20, "bokeh-cover-upload-*.tmp")
+	if !ok {
 		return
 	}
-
-	file, _, err := r.FormFile("cover")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing cover file")
-		return
-	}
-	defer file.Close()
-
-	// Write to temp file for govips to load
-	tmp, err := os.CreateTemp("", "bokeh-cover-upload-*.tmp")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create temp file")
-		return
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-
-	if _, err := io.Copy(tmp, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read upload")
-		return
-	}
-	tmp.Close()
+	defer os.Remove(tmpPath)
 
 	// Load, crop to square, resize to 400x400, export AVIF + WebP
-	if err := imaging.GenerateCollectionThumbnailFromUpload(tmp.Name(), h.dataPath, collectionID); err != nil {
+	if err := imaging.GenerateCollectionThumbnailFromUpload(tmpPath, h.dataPath, collectionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process cover image")
 		return
 	}

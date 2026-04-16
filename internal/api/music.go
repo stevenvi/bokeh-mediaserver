@@ -293,33 +293,13 @@ func (h *musicHandler) uploadArtistImage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := r.ParseMultipartForm(20 << 20); err != nil { // 20 MB limit
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+	tmpPath, ok2 := parseUploadToTemp(w, r, "image", 20<<20, "bokeh-artist-upload-*.tmp")
+	if !ok2 {
 		return
 	}
+	defer os.Remove(tmpPath)
 
-	file, _, err := r.FormFile("image")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "image file required")
-		return
-	}
-	defer file.Close()
-
-	tmp, err := os.CreateTemp("", "bokeh-artist-upload-*.tmp")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create temp file")
-		return
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-
-	if _, err := io.Copy(tmp, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read upload")
-		return
-	}
-	tmp.Close()
-
-	if err := imaging.GenerateArtistThumbnailFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+	if err := imaging.GenerateArtistThumbnailFromUpload(tmpPath, h.dataPath, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process image")
 		return
 	}
@@ -366,37 +346,17 @@ func (h *musicHandler) uploadAlbumCover(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := r.ParseMultipartForm(20 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+	tmpPath, ok2 := parseUploadToTemp(w, r, "image", 20<<20, "bokeh-album-upload-*.tmp")
+	if !ok2 {
 		return
 	}
+	defer os.Remove(tmpPath)
 
-	file, _, err := r.FormFile("image")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "image file required")
-		return
-	}
-	defer file.Close()
-
-	tmp, err := os.CreateTemp("", "bokeh-album-upload-*.tmp")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create temp file")
-		return
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-
-	if _, err := io.Copy(tmp, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read upload")
-		return
-	}
-	tmp.Close()
-
-	if err := imaging.GenerateAlbumThumbnailFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+	if err := imaging.GenerateAlbumThumbnailFromUpload(tmpPath, h.dataPath, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process image")
 		return
 	}
-	if err := imaging.GenerateAlbumCoverFromUpload(tmp.Name(), h.dataPath, id); err != nil {
+	if err := imaging.GenerateAlbumCoverFromUpload(tmpPath, h.dataPath, id); err != nil {
 		slog.Warn("generate album cover (1280px)", "album_id", id, "err", err)
 	}
 
