@@ -3,27 +3,32 @@ package api
 import (
 	"sync"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 const (
-	maxAttempts   = 5
-	attemptWindow = time.Minute
-	lockDuration  = 30 * time.Minute
+	maxAttempts         = 5
+	attemptWindow       = time.Minute
+	lockDuration        = 30 * time.Minute
+	rateLimiterCapacity = 10_000 // bounds memory to ~2 MB across both caches
 )
 
 // loginRateLimiter tracks failed login attempts per IP and temporarily locks
-// IPs that exceed the threshold.
-// TODO: An attacker could use this to cause memory overflow by spamming attempts with random IPs. Should use a sensible LRU cache.
+// IPs that exceed the threshold. Both caches are bounded LRU to prevent memory
+// exhaustion via random IPs.
 type loginRateLimiter struct {
-	attempts map[string][]time.Time
-	locked   map[string]time.Time
+	attempts *lru.Cache[string, []time.Time]
+	locked   *lru.Cache[string, time.Time]
 	mutex    sync.Mutex
 }
 
 func newLoginRateLimiter() *loginRateLimiter {
+	attempts, _ := lru.New[string, []time.Time](rateLimiterCapacity)
+	locked, _ := lru.New[string, time.Time](rateLimiterCapacity)
 	return &loginRateLimiter{
-		attempts: make(map[string][]time.Time),
-		locked:   make(map[string]time.Time),
+		attempts: attempts,
+		locked:   locked,
 	}
 }
 
@@ -31,14 +36,14 @@ func newLoginRateLimiter() *loginRateLimiter {
 func (this *loginRateLimiter) IsLocked(ip string) bool {
 	this.mutex.Lock()
 	defer this.mutex.Unlock()
-	until, ok := this.locked[ip]
+	until, ok := this.locked.Get(ip)
 	if !ok {
 		return false
 	}
 	if time.Now().Before(until) {
 		return true
 	}
-	delete(this.locked, ip)
+	this.locked.Remove(ip)
 	return false
 }
 
@@ -52,7 +57,7 @@ func (this *loginRateLimiter) Record(ip string) bool {
 	cutoff := now.Add(-attemptWindow)
 
 	// Keep only attempts within the window.
-	existing := this.attempts[ip]
+	existing, _ := this.attempts.Get(ip)
 	filtered := existing[:0]
 	for _, t := range existing {
 		if t.After(cutoff) {
@@ -60,11 +65,11 @@ func (this *loginRateLimiter) Record(ip string) bool {
 		}
 	}
 	filtered = append(filtered, now)
-	this.attempts[ip] = filtered
+	this.attempts.Add(ip, filtered)
 
 	if len(filtered) >= maxAttempts {
-		this.locked[ip] = now.Add(lockDuration)
-		delete(this.attempts, ip)
+		this.locked.Add(ip, now.Add(lockDuration))
+		this.attempts.Remove(ip)
 		return true
 	}
 	return false

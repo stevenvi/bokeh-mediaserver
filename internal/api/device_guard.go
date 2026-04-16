@@ -5,24 +5,28 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
+const revokedCacheCapacity = 65_536 // bounds memory to ~2 MB
+
 // DeviceGuard provides O(1) in-memory checks for revoked and banned device IDs.
-// Revoked entries are pruned lazily when their TTL expires.
+// Revoked entries are pruned lazily when their TTL expires; the cache is bounded
+// to prevent memory exhaustion.
 // Banned entries persist until explicitly unbanned.
-// TODO: An attacker could use this to cause memory overflow by spamming attempts from random IPs. Should use a bounded LRU cache.
 type DeviceGuard struct {
-	revoked map[int64]time.Time // device_id → access token expiry time
-	banned  map[int64]struct{}  // device_id → permanently blocked until unbanned
+	revoked *lru.Cache[int64, time.Time] // device_id → access token expiry time
+	banned  map[int64]struct{}           // device_id → permanently blocked until unbanned
 	mutex   sync.RWMutex
 }
 
 // NewDeviceGuard creates a new DeviceGuard.
 func NewDeviceGuard() *DeviceGuard {
+	revoked, _ := lru.New[int64, time.Time](revokedCacheCapacity)
 	return &DeviceGuard{
-		revoked: make(map[int64]time.Time),
+		revoked: revoked,
 		banned:  make(map[int64]struct{}),
 	}
 }
@@ -46,7 +50,7 @@ func (this *DeviceGuard) LoadBanned(ctx context.Context, db utils.DBTX) error {
 func (this *DeviceGuard) Revoke(id int64, ttl time.Duration) {
 	this.mutex.Lock()
 	defer this.mutex.Unlock()
-	this.revoked[id] = time.Now().Add(ttl)
+	this.revoked.Add(id, time.Now().Add(ttl))
 }
 
 // RevokeMany calls Revoke for each ID.
@@ -55,7 +59,7 @@ func (this *DeviceGuard) RevokeMany(ids []int64, ttl time.Duration) {
 	this.mutex.Lock()
 	defer this.mutex.Unlock()
 	for _, id := range ids {
-		this.revoked[id] = expiry
+		this.revoked.Add(id, expiry)
 	}
 }
 
@@ -64,7 +68,7 @@ func (this *DeviceGuard) Ban(id int64) {
 	this.mutex.Lock()
 	defer this.mutex.Unlock()
 	this.banned[id] = struct{}{}
-	delete(this.revoked, id) // ban supersedes revoke
+	this.revoked.Remove(id) // ban supersedes revoke
 }
 
 // Unban removes a device from the banned set.
@@ -83,7 +87,7 @@ func (this *DeviceGuard) IsBlocked(id int64) bool {
 		this.mutex.RUnlock()
 		return true
 	}
-	expiry, revoked := this.revoked[id]
+	expiry, revoked := this.revoked.Get(id)
 	this.mutex.RUnlock()
 
 	if !revoked {
@@ -94,8 +98,8 @@ func (this *DeviceGuard) IsBlocked(id int64) bool {
 	}
 	// Entry expired — prune it.
 	this.mutex.Lock()
-	if exp, ok := this.revoked[id]; ok && !time.Now().Before(exp) {
-		delete(this.revoked, id)
+	if exp, ok := this.revoked.Get(id); ok && !time.Now().Before(exp) {
+		this.revoked.Remove(id)
 	}
 	this.mutex.Unlock()
 	return false
