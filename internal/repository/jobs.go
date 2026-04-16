@@ -124,12 +124,16 @@ func JobUpdateProgress(ctx context.Context, db utils.DBTX, jobID int64, msg stri
 	return err
 }
 
-// JobMarkDone sets a job to done status.
+// JobMarkDone sets a job to done status and removes its sub-jobs atomically.
 func JobMarkDone(ctx context.Context, db utils.DBTX, jobID int64) error {
-	// Remove sub-jobs from db for the sake of cleanliness
-	_, err1 := db.Exec(ctx, `DELETE FROM jobs WHERE parent_job_id = $1`, jobID)
-	_, err2 := db.Exec(ctx, `UPDATE jobs SET status = 'done', completed_at = now() WHERE id = $1`, jobID)
-	return errors.Join(err1, err2)
+	_, err := db.Exec(ctx,
+		`WITH cleanup AS (
+		     DELETE FROM jobs WHERE parent_job_id = $1
+		 )
+		 UPDATE jobs SET status = 'done', completed_at = now() WHERE id = $1`,
+		jobID,
+	)
+	return err
 }
 
 // JobMarkFailed sets a job to failed status with an error message.
