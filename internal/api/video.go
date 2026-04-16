@@ -26,18 +26,11 @@ type videoHandler struct {
 }
 
 // isLocalRequest returns true if the request originates from an RFC 1918 or
-// loopback address. X-Forwarded-For is checked first (leftmost hop); if absent
-// the direct RemoteAddr is used.
+// loopback address.
 func isLocalRequest(r *http.Request) bool {
-	raw := r.Header.Get("X-Forwarded-For")
-	if raw != "" {
-		// Leftmost IP is the original client
-		raw = strings.TrimSpace(strings.SplitN(raw, ",", 2)[0])
-	} else {
-		raw, _, _ = net.SplitHostPort(r.RemoteAddr)
-		if raw == "" {
-			raw = r.RemoteAddr
-		}
+	raw, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if raw == "" {
+		raw = r.RemoteAddr
 	}
 
 	ip := net.ParseIP(raw)
