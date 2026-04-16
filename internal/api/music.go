@@ -1,7 +1,6 @@
 package api
 
 import (
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -142,42 +141,11 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// ?format= query param overrides Accept header negotiation.
-	var accept string
-	switch r.URL.Query().Get("format") {
-	case "webp":
-		accept = "image/webp"
-	case "jpeg", "jpg":
-		accept = "image/jpeg"
-	default:
-		accept = r.Header.Get("Accept")
-	}
-	acceptsAVIF := strings.Contains(accept, "image/avif")
-
-	if acceptsAVIF {
-		avifPath := imaging.ArtistThumbnailPath(h.dataPath, id, "avif")
-		if fileExists(avifPath) {
-			w.Header().Set("Content-Type", "image/avif")
-			http.ServeFile(w, r, avifPath)
-			return
-		}
-	}
-
-	webpPath := imaging.ArtistThumbnailPath(h.dataPath, id, "webp")
-	if fileExists(webpPath) {
-		w.Header().Set("Content-Type", "image/webp")
-		http.ServeFile(w, r, webpPath)
-		return
-	}
-
-	avifPath := imaging.ArtistThumbnailPath(h.dataPath, id, "avif")
-	if fileExists(avifPath) {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
-		return
-	}
-
-	writeError(w, http.StatusNotFound, "artist image not found")
+	serveStoredImage(w, r,
+		imaging.ArtistThumbnailPath(h.dataPath, id, "avif"),
+		imaging.ArtistThumbnailPath(h.dataPath, id, "webp"),
+		"artist image not found",
+	)
 }
 
 // GET /images/albums/{albumId}/thumb
@@ -187,42 +155,11 @@ func (h *musicHandler) serveAlbumThumbnail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// ?format= query param overrides Accept header negotiation.
-	var accept string
-	switch r.URL.Query().Get("format") {
-	case "webp":
-		accept = "image/webp"
-	case "jpeg", "jpg":
-		accept = "image/jpeg"
-	default:
-		accept = r.Header.Get("Accept")
-	}
-	acceptsAVIF := strings.Contains(accept, "image/avif")
-
-	if acceptsAVIF {
-		avifPath := imaging.AlbumThumbnailPath(h.dataPath, id, "avif")
-		if fileExists(avifPath) {
-			w.Header().Set("Content-Type", "image/avif")
-			http.ServeFile(w, r, avifPath)
-			return
-		}
-	}
-
-	webpPath := imaging.AlbumThumbnailPath(h.dataPath, id, "webp")
-	if fileExists(webpPath) {
-		w.Header().Set("Content-Type", "image/webp")
-		http.ServeFile(w, r, webpPath)
-		return
-	}
-
-	avifPath := imaging.AlbumThumbnailPath(h.dataPath, id, "avif")
-	if fileExists(avifPath) {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
-		return
-	}
-
-	writeError(w, http.StatusNotFound, "album thumbnail not found")
+	serveStoredImage(w, r,
+		imaging.AlbumThumbnailPath(h.dataPath, id, "avif"),
+		imaging.AlbumThumbnailPath(h.dataPath, id, "webp"),
+		"album thumbnail not found",
+	)
 }
 
 // GET /images/albums/{albumId}/cover
@@ -241,15 +178,7 @@ func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ?format= query param overrides Accept header negotiation.
-	var accept string
-	switch r.URL.Query().Get("format") {
-	case "webp":
-		accept = "image/webp"
-	case "jpeg", "jpg":
-		accept = "image/jpeg"
-	default:
-		accept = r.Header.Get("Accept")
-	}
+	accept := resolveAccept(r)
 
 	if strings.Contains(accept, "image/avif") {
 		w.Header().Set("Content-Type", "image/avif")

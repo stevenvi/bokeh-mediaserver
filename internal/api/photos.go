@@ -92,16 +92,7 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ?format= query param overrides Accept header negotiation (used by Roku Poster nodes).
-	formatParam := r.URL.Query().Get("format")
-	var accept string
-	switch formatParam {
-	case "webp":
-		accept = "image/webp"
-	case "jpeg", "jpg":
-		accept = "image/jpeg"
-	default:
-		accept = r.Header.Get("Accept")
-	}
+	accept := resolveAccept(r)
 	acceptsAVIF := strings.Contains(accept, "image/avif")
 	acceptsWebP := strings.Contains(accept, "image/webp")
 
@@ -225,43 +216,52 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// ?format= query param overrides Accept header negotiation.
-	var accept string
+	serveStoredImage(w, r,
+		imaging.CollectionThumbnailPath(h.dataPath, id, "avif"),
+		imaging.CollectionThumbnailPath(h.dataPath, id, "webp"),
+		"cover not found",
+	)
+}
+
+// resolveAccept returns the effective Accept value for image format negotiation.
+// The ?format= query parameter takes precedence over the Accept header, allowing
+// clients that cannot set headers (e.g. Roku Poster nodes) to request a specific format.
+func resolveAccept(r *http.Request) string {
 	switch r.URL.Query().Get("format") {
 	case "webp":
-		accept = "image/webp"
+		return "image/webp"
 	case "jpeg", "jpg":
-		accept = "image/jpeg"
+		return "image/jpeg"
 	default:
-		accept = r.Header.Get("Accept")
+		return r.Header.Get("Accept")
 	}
-	acceptsAVIF := strings.Contains(accept, "image/avif")
+}
 
-	if acceptsAVIF {
-		avifPath := imaging.CollectionThumbnailPath(h.dataPath, id, "avif")
-		if fileExists(avifPath) {
-			w.Header().Set("Content-Type", "image/avif")
-			http.ServeFile(w, r, avifPath)
-			return
-		}
+// serveStoredImage serves an image file with AVIF-first content negotiation.
+// It prefers AVIF when the client accepts it, falls back to WebP, then AVIF
+// regardless of Accept (as a last resort), and returns 404 if neither exists.
+func serveStoredImage(w http.ResponseWriter, r *http.Request, avifPath, webpPath, notFoundMsg string) {
+	accept := resolveAccept(r)
+
+	if strings.Contains(accept, "image/avif") && fileExists(avifPath) {
+		w.Header().Set("Content-Type", "image/avif")
+		http.ServeFile(w, r, avifPath)
+		return
 	}
 
-	webpPath := imaging.CollectionThumbnailPath(h.dataPath, id, "webp")
 	if fileExists(webpPath) {
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeFile(w, r, webpPath)
 		return
 	}
 
-	// AVIF fallback if WebP doesn't exist (shouldn't happen but be safe)
-	avifPath := imaging.CollectionThumbnailPath(h.dataPath, id, "avif")
 	if fileExists(avifPath) {
 		w.Header().Set("Content-Type", "image/avif")
 		http.ServeFile(w, r, avifPath)
 		return
 	}
 
-	writeError(w, http.StatusNotFound, "cover not found")
+	writeError(w, http.StatusNotFound, notFoundMsg)
 }
 
 // variantOriginal is a sentinel value in a fallback chain representing the source file.

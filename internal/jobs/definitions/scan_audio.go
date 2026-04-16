@@ -187,7 +187,7 @@ func HandleScanAudio(mediaPath, dataPath string) jobs.JobHandler {
 		if hasPicture && albumID != nil && !albumManualCover {
 			needsArt := !imaging.AlbumThumbnailExists(dataPath, *albumID)
 			if needsArt {
-				if err := extractAndGenerateAlbumArt(et, fsPath, dataPath, *albumID); err != nil {
+				if err := extractAndGenerateAlbumArt(jc.Et, fsPath, dataPath, *albumID); err != nil {
 					slog.Warn("extract album art", "path", fsPath, "err", err)
 				}
 			}

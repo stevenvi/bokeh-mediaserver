@@ -239,42 +239,11 @@ func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ?format= query param overrides Accept header negotiation.
-	var accept string
-	switch r.URL.Query().Get("format") {
-	case "webp":
-		accept = "image/webp"
-	case "jpeg", "jpg":
-		accept = "image/jpeg"
-	default:
-		accept = r.Header.Get("Accept")
-	}
-	acceptsAVIF := strings.Contains(accept, "image/avif")
-
-	if acceptsAVIF {
-		avifPath := imaging.VariantPath(h.dataPath, fileHash, "cover", "avif")
-		if fileExists(avifPath) {
-			w.Header().Set("Content-Type", "image/avif")
-			http.ServeFile(w, r, avifPath)
-			return
-		}
-	}
-
-	webpPath := imaging.VariantPath(h.dataPath, fileHash, "cover", "webp")
-	if fileExists(webpPath) {
-		w.Header().Set("Content-Type", "image/webp")
-		http.ServeFile(w, r, webpPath)
-		return
-	}
-
-	avifPath := imaging.VariantPath(h.dataPath, fileHash, "cover", "avif")
-	if fileExists(avifPath) {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
-		return
-	}
-
-	writeError(w, http.StatusNotFound, "cover not found")
+	serveStoredImage(w, r,
+		imaging.VariantPath(h.dataPath, fileHash, "cover", "avif"),
+		imaging.VariantPath(h.dataPath, fileHash, "cover", "webp"),
+		"cover not found",
+	)
 }
 
 // PUT /api/v1/media/{id}/bookmark
