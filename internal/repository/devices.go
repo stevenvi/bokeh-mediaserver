@@ -15,17 +15,15 @@ import (
 // "Fifteen should be more than enough for any user"
 const maxDevicesPerUser = 15
 
-// DeviceFindByUserAndUUID returns a device by (userID, device_uuid), or ErrNotFound.
-func DeviceFindByUserAndUUID(ctx context.Context, db utils.DBTX, userID int64, uuid string) (*models.Device, error) {
+// deviceColumns is the canonical SELECT column list for a full Device scan.
+const deviceColumns = `id, device_uuid, user_id, refresh_token_hash, previous_refresh_token_hash,
+	        expires_at, device_name, banned_at,
+	        access_history, created_at, last_seen_at`
+
+// scanDevice scans a full Device from a single query row.
+func scanDevice(row pgx.Row) (*models.Device, error) {
 	d := &models.Device{}
-	err := db.QueryRow(ctx,
-		`SELECT id, device_uuid, user_id, refresh_token_hash, previous_refresh_token_hash,
-		        expires_at, device_name, banned_at,
-		        access_history, created_at, last_seen_at
-		 FROM devices
-		 WHERE user_id = $1 AND device_uuid = $2`,
-		userID, uuid,
-	).Scan(
+	err := row.Scan(
 		&d.ID, &d.DeviceUUID, &d.UserID, &d.RefreshTokenHash, &d.PreviousRefreshTokenHash,
 		&d.ExpiresAt, &d.DeviceName, &d.BannedAt,
 		&d.AccessHistory, &d.CreatedAt, &d.LastSeenAt,
@@ -36,25 +34,24 @@ func DeviceFindByUserAndUUID(ctx context.Context, db utils.DBTX, userID int64, u
 	return d, err
 }
 
+// DeviceFindByUserAndUUID returns a device by (userID, device_uuid), or ErrNotFound.
+func DeviceFindByUserAndUUID(ctx context.Context, db utils.DBTX, userID int64, uuid string) (*models.Device, error) {
+	return scanDevice(db.QueryRow(ctx,
+		`SELECT `+deviceColumns+`
+		 FROM devices
+		 WHERE user_id = $1 AND device_uuid = $2`,
+		userID, uuid,
+	))
+}
+
 // DeviceFindByRefreshTokenHash looks up a device by its current refresh_token_hash.
 func DeviceFindByRefreshTokenHash(ctx context.Context, db utils.DBTX, hash string) (*models.Device, error) {
-	d := &models.Device{}
-	err := db.QueryRow(ctx,
-		`SELECT id, device_uuid, user_id, refresh_token_hash, previous_refresh_token_hash,
-		        expires_at, device_name, banned_at,
-		        access_history, created_at, last_seen_at
+	return scanDevice(db.QueryRow(ctx,
+		`SELECT `+deviceColumns+`
 		 FROM devices
 		 WHERE refresh_token_hash = $1`,
 		hash,
-	).Scan(
-		&d.ID, &d.DeviceUUID, &d.UserID, &d.RefreshTokenHash, &d.PreviousRefreshTokenHash,
-		&d.ExpiresAt, &d.DeviceName, &d.BannedAt,
-		&d.AccessHistory, &d.CreatedAt, &d.LastSeenAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return d, err
+	))
 }
 
 // DeviceFindByPreviousRefreshTokenHash checks for a replayed (already-rotated) refresh token.
