@@ -63,13 +63,14 @@ func setAuthCookies(w http.ResponseWriter, accessToken, refreshToken string, pro
 }
 
 // clearAuthCookies overwrites both auth cookies with empty expired values.
-func clearAuthCookies(w http.ResponseWriter) {
+func clearAuthCookies(w http.ResponseWriter, production bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "access_token",
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   production,
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -78,6 +79,7 @@ func clearAuthCookies(w http.ResponseWriter) {
 		Path:     "/api/v1/auth/refresh",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   production,
 		SameSite: http.SameSiteStrictMode,
 	})
 }
@@ -274,7 +276,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
 		slog.Warn("refresh token reuse detected — all devices revoked",
 			"user_id", stolenUserID, "ip", ip)
-		clearAuthCookies(w)
+		clearAuthCookies(w, h.production)
 		writeError(w, http.StatusUnauthorized, "refresh token reuse detected; all devices have been revoked")
 		return
 	}
@@ -288,13 +290,13 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 
 	// Verify device_uuid matches — mismatch indicates stolen token.
 	// This is a little heavy-handed, maybe we should just revoke the offending device instead of all devices?
-	// TODO: Deleted data provides no audit log!
 	if device.DeviceUUID != deviceUUID {
 		ids, _ := repository.DevicesDeleteForUser(r.Context(), h.db, device.UserID)
 		h.guard.RevokeMany(ids, auth.AccessTokenTTL)
-		slog.Warn("refresh device_uuid mismatch — all devices revoked",
-			"user_id", device.UserID, "ip", ip)
-		clearAuthCookies(w)
+		slog.Warn("SECURITY: device_uuid mismatch on refresh — all devices revoked",
+			"user_id", device.UserID, "expected_uuid", device.DeviceUUID,
+			"received_uuid", deviceUUID, "revoked_devices", len(ids), "ip", ip)
+		clearAuthCookies(w, h.production)
 		writeError(w, http.StatusUnauthorized, "device mismatch; all devices have been revoked")
 		return
 	}
@@ -310,7 +312,7 @@ func (h *authHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if localAccessOnly && !isLocalRequest(r) {
-		clearAuthCookies(w)
+		clearAuthCookies(w, h.production)
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -366,7 +368,7 @@ func (h *authHandler) logout(w http.ResponseWriter, r *http.Request) {
 	// Revoke the access token for its remaining TTL via the in-memory guard.
 	h.guard.Revoke(claims.DeviceID, auth.AccessTokenTTL)
 
-	clearAuthCookies(w)
+	clearAuthCookies(w, h.production)
 	w.WriteHeader(http.StatusNoContent)
 }
 
