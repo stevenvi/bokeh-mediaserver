@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/davidbyttow/govips/v2/vips"
+	"github.com/cshum/vipsgen/vips"
 )
 
 // Variant names served by the image endpoint.
@@ -33,22 +33,19 @@ var variants = []variantSpec{
 	{name: VariantThumb, size: 400, quality: 60},
 }
 
-// Startup initialises the govips library. Must be called once at server start
+// Startup initialises the vips library. Must be called once at server start
 // before any imaging functions are used. Shutdown should be deferred alongside it.
 //
 //	imaging.Startup()
 //	defer imaging.Shutdown()
 func Startup() {
-	err := vips.Startup(nil)
-	if err != nil {
-		slog.Error("starting vips", "error", err)
-	}
-
 	// Suppress operational noise (resize decisions, mask sizes, vector paths, etc.).
 	// Only forward warnings and above to slog so real problems surface.
-	vips.LoggingSettings(func(domain string, level vips.LogLevel, msg string) {
+	vips.SetLogging(func(domain string, level vips.LogLevel, msg string) {
 		slog.Warn("vips", "domain", domain, "msg", msg)
 	}, vips.LogLevelWarning)
+
+	vips.Startup(nil)
 }
 
 func Shutdown() {
@@ -125,13 +122,13 @@ func coverFromFile(srcPath, webpPath string, widthRatio, heightRatio int) error 
 		return fmt.Errorf("mkdir cover dir: %w", err)
 	}
 
-	img, err := vips.NewImageFromFile(srcPath)
+	img, err := vips.NewImageFromFile(srcPath, nil)
 	if err != nil {
 		return fmt.Errorf("load image: %w", err)
 	}
 	defer img.Close()
 
-	if err := img.AutoRotate(); err != nil {
+	if err := img.Autorot(nil); err != nil {
 		return fmt.Errorf("auto-rotate: %w", err)
 	}
 
@@ -155,12 +152,12 @@ func coverFromFile(srcPath, webpPath string, widthRatio, heightRatio int) error 
 	// Resize to 400px wide
 	if img.Width() != 400 {
 		scale := 400.0 / float64(img.Width())
-		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+		if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelLanczos3}); err != nil {
 			return fmt.Errorf("resize cover: %w", err)
 		}
 	}
 
-	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{Quality: 60, Lossless: false, StripMetadata: true})
+	webpBytes, err := img.WebpsaveBuffer(&vips.WebpsaveBufferOptions{Q: 60, Keep: vips.KeepNone})
 	if err != nil {
 		return fmt.Errorf("export webp: %w", err)
 	}
@@ -184,13 +181,13 @@ func largeCoverFromFile(srcPath, webpPath string) error {
 		return fmt.Errorf("mkdir cover dir: %w", err)
 	}
 
-	img, err := vips.NewImageFromFile(srcPath)
+	img, err := vips.NewImageFromFile(srcPath, nil)
 	if err != nil {
 		return fmt.Errorf("load image: %w", err)
 	}
 	defer img.Close()
 
-	if err := img.AutoRotate(); err != nil {
+	if err := img.Autorot(nil); err != nil {
 		return fmt.Errorf("auto-rotate: %w", err)
 	}
 
@@ -212,12 +209,12 @@ func largeCoverFromFile(srcPath, webpPath string) error {
 	const maxSize = 1280
 	if img.Width() > maxSize {
 		scale := float64(maxSize) / float64(img.Width())
-		if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+		if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelLanczos3}); err != nil {
 			return fmt.Errorf("resize cover: %w", err)
 		}
 	}
 
-	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{Quality: 70, Lossless: false, StripMetadata: true})
+	webpBytes, err := img.WebpsaveBuffer(&vips.WebpsaveBufferOptions{Q: 70, Keep: vips.KeepNone})
 	if err != nil {
 		return fmt.Errorf("export webp: %w", err)
 	}
@@ -402,7 +399,7 @@ func DZIExists(dataPath string, hash string) bool {
 // generateVariant writes one WebP image variant into outDir.
 // Thumb is always last in the variants slice, making thumb.webp the final
 // file written and therefore the completion sentinel for the entire variant set.
-func generateVariant(outDir string, spec variantSpec, src *vips.ImageRef, srcLongestEdge int) error {
+func generateVariant(outDir string, spec variantSpec, src *vips.Image, srcLongestEdge int) error {
 	// Skip variants at or above source resolution — no point upscaling.
 	if spec.size >= srcLongestEdge {
 		slog.Debug("skipping variant — source too small",
@@ -414,7 +411,7 @@ func generateVariant(outDir string, spec variantSpec, src *vips.ImageRef, srcLon
 	}
 
 	// Copy source so we can resize independently for each variant.
-	img, err := src.Copy()
+	img, err := src.Copy(nil)
 	if err != nil {
 		return fmt.Errorf("copy source for %s: %w", spec.name, err)
 	}
@@ -422,14 +419,13 @@ func generateVariant(outDir string, spec variantSpec, src *vips.ImageRef, srcLon
 
 	// Scale by longest edge, preserving aspect ratio.
 	scale := float64(spec.size) / float64(srcLongestEdge)
-	if err := img.Resize(scale, vips.KernelLanczos3); err != nil {
+	if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelLanczos3}); err != nil {
 		return fmt.Errorf("resize %s: %w", spec.name, err)
 	}
 
-	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
-		Quality:       spec.quality,
-		Lossless:      false,
-		StripMetadata: true,
+	webpBytes, err := img.WebpsaveBuffer(&vips.WebpsaveBufferOptions{
+		Q:    spec.quality,
+		Keep: vips.KeepNone,
 	})
 	if err != nil {
 		return fmt.Errorf("export %s webp: %w", spec.name, err)
@@ -444,14 +440,14 @@ func generateVariant(outDir string, spec variantSpec, src *vips.ImageRef, srcLon
 // generateAllVariants writes all WebP variants into outDir.
 // outDir must already exist.
 func generateAllVariants(srcPath string, outDir string) error {
-	src, err := vips.NewImageFromFile(srcPath)
+	src, err := vips.NewImageFromFile(srcPath, nil)
 	if err != nil {
 		return fmt.Errorf("load source: %w", err)
 	}
 	defer src.Close()
 
 	// Apply EXIF orientation before any resizing so all variants are correctly rotated.
-	if err := src.AutoRotate(); err != nil {
+	if err := src.Autorot(nil); err != nil {
 		return fmt.Errorf("auto-rotate: %w", err)
 	}
 
@@ -464,41 +460,34 @@ func generateAllVariants(srcPath string, outDir string) error {
 	return nil
 }
 
-// generateDZI creates a Deep Zoom Image tile pyramid via the vips CLI.
+// generateDZI creates a Deep Zoom Image tile pyramid using vipsgen's native Dzsave.
 // Tiles are encoded as WebP at quality 85.
 // Output: {tilesDir}/image.dzi + {tilesDir}/image_files/
 // tilesDir must already exist.
-//
-// NOTE: govips does not support dzsave, so we shell out to the CLI.
-// TODO: Implement this into govips and remove the CLI dependency.
 func generateDZI(srcPath string, tilesDir string) error {
-	// Auto-rotate source before tiling so EXIF orientation is baked in.
-	// vips dzsave doesn't honor EXIF rotation, so we create a temp
-	// pre-rotated file and tile from that.
-	rotTmpDir, err := os.MkdirTemp("", "bokeh-dzi-rot-*")
+	img, err := vips.NewImageFromFile(srcPath, nil)
 	if err != nil {
-		return fmt.Errorf("create rot temp dir: %w", err)
+		return fmt.Errorf("load source for dzi: %w", err)
 	}
-	defer os.RemoveAll(rotTmpDir)
+	defer img.Close()
 
-	rotatedPath, err := autoRotateToTemp(srcPath, rotTmpDir)
-	if err != nil {
-		return fmt.Errorf("pre-rotate for dzi: %w", err)
+	// Apply EXIF orientation before tiling so tiles are correctly rotated.
+	if err := img.Autorot(nil); err != nil {
+		return fmt.Errorf("auto-rotate for dzi: %w", err)
 	}
 
-	// vips dzsave writes two outputs:
+	// Dzsave writes two outputs relative to the base name:
 	//   {output}.dzi          — the manifest
 	//   {output}_files/       — the tile pyramid
 	output := filepath.Join(tilesDir, "image")
-	cmd := exec.Command("vips", "dzsave",
-		rotatedPath,
-		output,
-		"--tile-size", "252",
-		"--overlap", "2",
-		"--suffix", ".webp[Q=85]",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("vips dzsave: %w\n%s", err, out)
+	if err := img.Dzsave(output, &vips.DzsaveOptions{
+		TileSize: 252,
+		Overlap:  2,
+		Suffix:   ".webp",
+		Q:        85,
+		Keep:     vips.KeepNone,
+	}); err != nil {
+		return fmt.Errorf("dzsave: %w", err)
 	}
 	return nil
 }
@@ -555,71 +544,33 @@ func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
 	return nil
 }
 
-// autoRotateToTemp loads srcPath, applies EXIF auto-rotation, and writes
-// the result to a temp TIFF file. Returns srcPath unchanged if no rotation
-// was needed (orientation is already normal or absent).
-func autoRotateToTemp(srcPath string, tmpDir string) (string, error) {
-	img, err := vips.NewImageFromFile(srcPath)
-	if err != nil {
-		return "", fmt.Errorf("load for rotation check: %w", err)
-	}
-	defer img.Close()
-
-	// Check if rotation is needed by examining EXIF orientation.
-	// Orientation 1 (or absent) means no rotation required.
-	orient := img.Orientation()
-	if orient <= 1 {
-		return srcPath, nil
-	}
-
-	if err := img.AutoRotate(); err != nil {
-		return "", fmt.Errorf("auto-rotate: %w", err)
-	}
-
-	tmpPath := filepath.Join(tmpDir, "rotated.tif")
-
-	params := vips.NewTiffExportParams()
-	params.Compression = vips.TiffCompressionNone
-	tiffBytes, _, err := img.ExportTiff(params)
-	if err != nil {
-		return "", fmt.Errorf("export rotated tiff: %w", err)
-	}
-
-	if err := os.WriteFile(tmpPath, tiffBytes, 0o644); err != nil {
-		return "", fmt.Errorf("write rotated tiff: %w", err)
-	}
-
-	return tmpPath, nil
-}
-
 // GeneratePlaceholder creates a tiny 32x32 WebP and returns it as a
 // base64-encoded string for embedding directly in API responses.
 // The client renders it as: <img src="data:image/webp;base64,{value}" />
 // WebP is used instead of JPEG because at this size the JPEG header alone
 // is ~600 bytes, while the entire WebP is ~200 bytes.
 func GeneratePlaceholder(srcPath string) (string, error) {
-	img, err := vips.NewImageFromFile(srcPath)
+	img, err := vips.NewImageFromFile(srcPath, nil)
 	if err != nil {
 		return "", fmt.Errorf("load source for placeholder: %w", err)
 	}
 	defer img.Close()
 
 	// Apply EXIF orientation before resizing so the placeholder matches variant orientation.
-	if err := img.AutoRotate(); err != nil {
+	if err := img.Autorot(nil); err != nil {
 		return "", fmt.Errorf("auto-rotate placeholder: %w", err)
 	}
 
 	// Scale to fit within 32x32, preserving aspect ratio.
 	srcLongest := max(img.Height(), img.Width())
 	scale := float64(32) / float64(srcLongest)
-	if err := img.Resize(scale, vips.KernelNearest); err != nil {
+	if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelNearest}); err != nil {
 		return "", fmt.Errorf("resize placeholder: %w", err)
 	}
 
-	webpBytes, _, err := img.ExportWebp(&vips.WebpExportParams{
-		Quality:       10,
-		Lossless:      false,
-		StripMetadata: true,
+	webpBytes, err := img.WebpsaveBuffer(&vips.WebpsaveBufferOptions{
+		Q:    10,
+		Keep: vips.KeepNone,
 	})
 	if err != nil {
 		return "", fmt.Errorf("export placeholder: %w", err)
@@ -703,15 +654,15 @@ func GenerateVideoCoverFromFrame(srcPath, dataPath, hash string, durationSecs, w
 // GenerateJPEG transcodes a WebP file to JPEG on the fly.
 // Not cached — called per-request for legacy clients that don't support WebP.
 func GenerateJPEG(webpPath string) ([]byte, error) {
-	img, err := vips.NewImageFromFile(webpPath)
+	img, err := vips.NewImageFromFile(webpPath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load webp: %w", err)
 	}
 	defer img.Close()
 
-	jpegBytes, _, err := img.ExportJpeg(&vips.JpegExportParams{
-		Quality:       80,
-		StripMetadata: true,
+	jpegBytes, err := img.JpegsaveBuffer(&vips.JpegsaveBufferOptions{
+		Q:    80,
+		Keep: vips.KeepNone,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("transcode to jpeg: %w", err)
