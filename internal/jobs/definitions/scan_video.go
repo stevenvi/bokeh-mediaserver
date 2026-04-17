@@ -148,7 +148,7 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		// Skip cover generation entirely if a cover already exists.
 		notManual, err := repository.VideoHasManualThumbnail(ctx, db, itemID)
 		if err == nil && notManual {
-			coverPath := imaging.VariantPath(dataPath, fileHash, "cover", "avif")
+			coverPath := imaging.VariantPath(dataPath, fileHash, "cover", "webp")
 			if !fileExists(coverPath) {
 				if len(coverArtBytes) > 0 {
 					if err := imaging.GenerateVideoCoverFromBytes(coverArtBytes, dataPath, fileHash, coverWidthRatio, coverHeightRatio); err != nil {

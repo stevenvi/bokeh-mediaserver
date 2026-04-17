@@ -430,7 +430,7 @@ func (h *adminHandler) uploadCollectionCover(w http.ResponseWriter, r *http.Requ
 	}
 	defer os.Remove(tmpPath)
 
-	// Load, crop to square, resize to 400x400, export AVIF + WebP
+	// Load, crop to square, resize to 400x400, export WebP
 	if err := imaging.GenerateCollectionThumbnailFromUpload(tmpPath, h.dataPath, collectionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process cover image")
 		return

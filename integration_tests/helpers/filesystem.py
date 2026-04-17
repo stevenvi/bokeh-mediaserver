@@ -11,7 +11,7 @@ def item_data_path(data_path: str, file_hash: str) -> str:
     return os.path.join(data_path, "derived_media", file_hash[0:2], file_hash[2:4], file_hash[4:])
 
 
-def variant_path(data_path: str, file_hash: str, variant: str, fmt: str = "avif") -> str:
+def variant_path(data_path: str, file_hash: str, variant: str, fmt: str = "webp") -> str:
     """Return the expected filesystem path for a named image variant."""
     return os.path.join(item_data_path(data_path, file_hash), f"{variant}.{fmt}")
 

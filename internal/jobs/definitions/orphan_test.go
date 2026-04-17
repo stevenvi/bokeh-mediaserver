@@ -33,7 +33,7 @@ func TestOrphanCleanup(t *testing.T) {
 		// Create derived files at a hash-based path with no corresponding DB item
 		orphanDir := imaging.ItemDataPath(dataPath, orphanHash)
 		require.NoError(t, os.MkdirAll(orphanDir, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(orphanDir, "thumb.avif"), []byte("fake"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(orphanDir, "thumb.webp"), []byte("fake"), 0o644))
 
 		// Create a job
 		var jobID int64
@@ -65,7 +65,7 @@ func TestOrphanCleanup(t *testing.T) {
 		// Create derived files at the stub hash path
 		itemDir := imaging.ItemDataPath(dataPath, stubHash)
 		require.NoError(t, os.MkdirAll(itemDir, 0o755))
-		thumbPath := filepath.Join(itemDir, "thumb.avif")
+		thumbPath := filepath.Join(itemDir, "thumb.webp")
 		require.NoError(t, os.WriteFile(thumbPath, []byte("real"), 0o644))
 
 		// Run orphan cleanup
@@ -103,7 +103,7 @@ func TestIntegrityCheck(t *testing.T) {
 		// Create derived files at the stub hash path (InsertMediaItem uses stubHash as file_hash)
 		itemDir := imaging.ItemDataPath(dataPath, stubHash)
 		require.NoError(t, os.MkdirAll(itemDir, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(itemDir, "thumb.avif"), []byte("stale"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(itemDir, "thumb.webp"), []byte("stale"), 0o644))
 
 		// Run integrity check
 		var jobID int64

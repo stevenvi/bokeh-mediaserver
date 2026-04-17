@@ -70,7 +70,7 @@ func (h *photosHandler) getItemHashAndPath(id int64, r *http.Request) (hash, fsP
 }
 
 // GET /images/:id/:variant
-// Content-negotiated: serves AVIF natively, WebP or JPEG on-the-fly from AVIF.
+// Serves WebP variants directly. Falls back to JPEG on-the-fly for legacy clients.
 func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
@@ -93,61 +93,31 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 
 	// ?format= query param overrides Accept header negotiation (used by Roku Poster nodes).
 	accept := resolveAccept(r)
-	acceptsAVIF := strings.Contains(accept, "image/avif")
-	acceptsWebP := strings.Contains(accept, "image/webp")
 
 	// Walk the fallback chain until we find a variant that exists on disk.
 	// Variants are ordered largest to smallest — the requested variant is
 	// tried first, then each smaller one, then the source file as last resort.
 	fallbackChain := variantFallbackChain(variant)
 
-	if acceptsAVIF {
-		for _, v := range fallbackChain {
-			if v == variantOriginal {
-				http.ServeFile(w, r, fsPath)
-				return
-			}
-			path := imaging.VariantPath(h.dataPath, hash, v, "avif")
-			if fileExists(path) {
-				http.ServeFile(w, r, path)
-				return
-			}
-		}
-		return
-	}
-
-	// Non-AVIF path: transcode from the best available AVIF on disk.
-	// Check for pre-generated JPEG thumb first (always exists on disk).
 	for _, v := range fallbackChain {
 		if v == variantOriginal {
 			http.ServeFile(w, r, fsPath)
 			return
 		}
 
-		jpegPath := imaging.VariantPath(h.dataPath, hash, v, "jpg")
-		if fileExists(jpegPath) {
-			http.ServeFile(w, r, jpegPath)
-			return
-		}
-
-		avifPath := imaging.VariantPath(h.dataPath, hash, v, "avif")
-		if !fileExists(avifPath) {
+		webpPath := imaging.VariantPath(h.dataPath, hash, v, "webp")
+		if !fileExists(webpPath) {
 			continue
 		}
 
-		if acceptsWebP {
-			webpBytes, err := imaging.GenerateWebP(avifPath)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "image conversion failed")
-				return
-			}
-			w.Header().Set("Content-Type", "image/webp")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(webpBytes)
+		// Serve WebP directly unless client only accepts JPEG.
+		if !strings.Contains(accept, "image/jpeg") || strings.Contains(accept, "image/webp") {
+			http.ServeFile(w, r, webpPath)
 			return
 		}
 
-		jpegBytes, err := imaging.GenerateJPEG(avifPath)
+		// JPEG on-the-fly fallback for legacy clients.
+		jpegBytes, err := imaging.GenerateJPEG(webpPath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "image conversion failed")
 			return
@@ -158,7 +128,6 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Couldn't get any image data, fail
 	writeError(w, http.StatusNotFound, "variant not found")
 }
 
@@ -180,7 +149,7 @@ func (h *photosHandler) serveDZIManifest(w http.ResponseWriter, r *http.Request)
 }
 
 // GET /images/:id/tiles/*
-// Serves DZI tile files. The wildcard captures the level/col_row.avif path.
+// Serves DZI tile files. The wildcard captures the level/col_row.webp path.
 func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
@@ -209,7 +178,6 @@ func (h *photosHandler) serveDZITile(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /images/collections/{id}/cover
-// Content-negotiated: serves AVIF if accepted, else WebP.
 func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
@@ -217,7 +185,6 @@ func (h *photosHandler) serveCollectionCover(w http.ResponseWriter, r *http.Requ
 	}
 
 	serveStoredImage(w, r,
-		imaging.CollectionThumbnailPath(h.dataPath, id, "avif"),
 		imaging.CollectionThumbnailPath(h.dataPath, id, "webp"),
 		"cover not found",
 	)
@@ -237,31 +204,31 @@ func resolveAccept(r *http.Request) string {
 	}
 }
 
-// serveStoredImage serves an image file with AVIF-first content negotiation.
-// It prefers AVIF when the client accepts it, falls back to WebP, then AVIF
-// regardless of Accept (as a last resort), and returns 404 if neither exists.
-func serveStoredImage(w http.ResponseWriter, r *http.Request, avifPath, webpPath, notFoundMsg string) {
+// serveStoredImage serves a WebP image file. Falls back to JPEG on-the-fly
+// for legacy clients that explicitly request JPEG and don't accept WebP.
+// Returns 404 if the file doesn't exist.
+func serveStoredImage(w http.ResponseWriter, r *http.Request, webpPath, notFoundMsg string) {
+	if !fileExists(webpPath) {
+		writeError(w, http.StatusNotFound, notFoundMsg)
+		return
+	}
+
 	accept := resolveAccept(r)
 
-	if strings.Contains(accept, "image/avif") && fileExists(avifPath) {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
+	// Serve JPEG on-the-fly only when client explicitly requests JPEG and doesn't accept WebP.
+	if strings.Contains(accept, "image/jpeg") && !strings.Contains(accept, "image/webp") {
+		jpegBytes, err := imaging.GenerateJPEG(webpPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "image conversion failed")
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(jpegBytes)
 		return
 	}
 
-	if fileExists(webpPath) {
-		w.Header().Set("Content-Type", "image/webp")
-		http.ServeFile(w, r, webpPath)
-		return
-	}
-
-	if fileExists(avifPath) {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
-		return
-	}
-
-	writeError(w, http.StatusNotFound, notFoundMsg)
+	http.ServeFile(w, r, webpPath)
 }
 
 // variantOriginal is a sentinel value in a fallback chain representing the source file.

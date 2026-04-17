@@ -187,7 +187,7 @@ func HandleScanAudio(mediaPath, dataPath string) jobs.JobHandler {
 			if err == nil && !artistRow.ManualThumbnail {
 				if !imaging.ArtistThumbnailExists(dataPath, artistID) {
 					if imaging.AlbumThumbnailExists(dataPath, *albumID) {
-						srcPath := imaging.AlbumThumbnailPath(dataPath, *albumID, "avif")
+						srcPath := imaging.AlbumThumbnailPath(dataPath, *albumID, "webp")
 						if err := imaging.GenerateArtistThumbnail(srcPath, dataPath, artistID); err != nil {
 							slog.Warn("generate artist thumbnail from album art", "artist_id", artistID, "err", err)
 						}

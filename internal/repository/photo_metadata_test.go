@@ -181,7 +181,7 @@ func TestPhotoUpdateVariants(t *testing.T) {
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
 
-		placeholder := "base64encodedavif"
+		placeholder := "base64encodedwebp"
 		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, &placeholder))
 
 		var variantsAt *time.Time

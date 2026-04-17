@@ -279,23 +279,18 @@ class TestSingleTierCollection:
             TestSingleTierCollection.item_map[item.title] = item
 
     def test_04_filesystem_variants_exist(self, data_path):
-        """Images should have AVIF variants and DZI tiles for sizes that fit within source dimensions."""
+        """Images should have WebP variants and DZI tiles for sizes that fit within source dimensions."""
         for name, info in PHOTO_ALBUM_1_FILES.items():
             h = info["hash"]
             w, ht = info["width_px"], info["height_px"]
             for variant in ("thumb", "small", "preview"):
                 if should_variant_exist(w, ht, variant):
-                    path = variant_path(data_path, h, variant, "avif")
-                    assert os.path.isfile(path), f"missing {variant}.avif for {name}"
+                    path = variant_path(data_path, h, variant, "webp")
+                    assert os.path.isfile(path), f"missing {variant}.webp for {name}"
 
-            # thumb JPEG is only pre-generated when thumb itself is generated
-            if should_variant_exist(w, ht, "thumb"):
-                jpeg = variant_path(data_path, h, "thumb", "jpg")
-                assert os.path.isfile(jpeg), f"missing thumb.jpg for {name}"
-            
             # DZI manifest
             assert os.path.isfile(dzi_manifest_path(data_path, h)), f"missing DZI for {name}"
-            
+
             # At least one tile level directory
             tiles_dir = dzi_tiles_dir(data_path, h)
             assert os.path.isdir(tiles_dir), f"missing tiles dir for {name}"
@@ -333,11 +328,7 @@ class TestSingleTierCollection:
             w, h = expected["width_px"], expected["height_px"]
             for variant in ("thumb", "small", "preview"):
                 if should_variant_exist(w, h, variant):
-                    assert image_variant_exists(admin_token, item_id, variant, "image/avif"), f"{variant} AVIF for {name} not served"
-
-            # thumb JPEG is only pre-generated when thumb itself is generated
-            if should_variant_exist(w, h, "thumb"):
-                assert image_variant_exists(admin_token, item_id, "thumb", "image/jpeg"), f"thumb JPEG for {name} not served"
+                    assert image_variant_exists(admin_token, item_id, variant, "image/webp"), f"{variant} WebP for {name} not served"
 
     def test_07_exif_endpoint(self, admin_token):
         """GET /images/:id/exif should return JSON EXIF data."""
@@ -518,7 +509,7 @@ class TestMultiTierCollection:
             get_media_item(TestMultiTierCollection.token, item_id)
         assert exc_info.value.response.status_code == 404
 
-        assert False == image_variant_exists(TestMultiTierCollection.token, item_id, 'thumb', 'image/avif')
+        assert False == image_variant_exists(TestMultiTierCollection.token, item_id, 'thumb', 'image/webp')
 
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             get_image_exif(TestMultiTierCollection.token, item_id)

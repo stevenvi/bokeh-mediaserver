@@ -226,7 +226,6 @@ func (h *videoHandler) liveSegment(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /images/videos/{id}/cover
-// Content-negotiated: serves AVIF if accepted, else WebP. 404 if neither exists.
 func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
@@ -240,7 +239,6 @@ func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serveStoredImage(w, r,
-		imaging.VariantPath(h.dataPath, fileHash, "cover", "avif"),
 		imaging.VariantPath(h.dataPath, fileHash, "cover", "webp"),
 		"cover not found",
 	)

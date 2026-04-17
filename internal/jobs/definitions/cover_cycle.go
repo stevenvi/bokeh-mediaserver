@@ -75,7 +75,7 @@ func HandleCoverCycle(dataPath string) jobs.JobHandler {
 }
 
 // GenerateThumbnailForArtist picks a random non-compilation album for the given artist,
-// checks that an album thumbnail AVIF exists on disk, and generates the artist thumbnail from it.
+// checks that an album thumbnail exists on disk, and generates the artist thumbnail from it.
 // Returns nil silently if no eligible album or thumbnail exists.
 func GenerateThumbnailForArtist(ctx context.Context, db utils.DBTX, dataPath string, artistID int64) error {
 	albumID, err := repository.AlbumGetRandomNonCompilationIDByArtist(ctx, db, artistID, 0)
@@ -90,7 +90,7 @@ func GenerateThumbnailForArtist(ctx context.Context, db utils.DBTX, dataPath str
 		return nil // album thumbnail not generated yet
 	}
 
-	srcPath := imaging.AlbumThumbnailPath(dataPath, albumID, "avif")
+	srcPath := imaging.AlbumThumbnailPath(dataPath, albumID, "webp")
 	if err := imaging.GenerateArtistThumbnail(srcPath, dataPath, artistID); err != nil {
 		return fmt.Errorf("generate artist thumbnail: %w", err)
 	}
@@ -110,7 +110,7 @@ func GenerateThumbnailForCollection(ctx context.Context, db utils.DBTX, dataPath
 		return fmt.Errorf("pick random item: %w", err)
 	}
 
-	thumbPath := imaging.VariantPath(dataPath, hash, imaging.VariantThumb, "avif")
+	thumbPath := imaging.VariantPath(dataPath, hash, imaging.VariantThumb, "webp")
 	if err := imaging.GenerateCollectionThumbnail(thumbPath, dataPath, collectionID); err != nil {
 		return fmt.Errorf("generate thumbnail: %w", err)
 	}

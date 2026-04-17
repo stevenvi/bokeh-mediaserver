@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
@@ -142,7 +141,6 @@ func (h *musicHandler) serveArtistImage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	serveStoredImage(w, r,
-		imaging.ArtistThumbnailPath(h.dataPath, id, "avif"),
 		imaging.ArtistThumbnailPath(h.dataPath, id, "webp"),
 		"artist image not found",
 	)
@@ -156,56 +154,23 @@ func (h *musicHandler) serveAlbumThumbnail(w http.ResponseWriter, r *http.Reques
 	}
 
 	serveStoredImage(w, r,
-		imaging.AlbumThumbnailPath(h.dataPath, id, "avif"),
 		imaging.AlbumThumbnailPath(h.dataPath, id, "webp"),
 		"album thumbnail not found",
 	)
 }
 
 // GET /images/albums/{albumId}/cover
-// Serves the 1280px album cover. Stored as AVIF; converted on-the-fly for clients
-// that don't accept AVIF.
+// Serves the 1280px album cover (WebP). Falls back to JPEG on-the-fly for legacy clients.
 func (h *musicHandler) serveAlbumCover(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "albumId")
 	if !ok {
 		return
 	}
 
-	avifPath := imaging.AlbumCoverPath(h.dataPath, id, "avif")
-	if !fileExists(avifPath) {
-		writeError(w, http.StatusNotFound, "album cover not found")
-		return
-	}
-
-	// ?format= query param overrides Accept header negotiation.
-	accept := resolveAccept(r)
-
-	if strings.Contains(accept, "image/avif") {
-		w.Header().Set("Content-Type", "image/avif")
-		http.ServeFile(w, r, avifPath)
-		return
-	}
-
-	if strings.Contains(accept, "image/webp") {
-		webpBytes, err := imaging.GenerateWebP(avifPath)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "image conversion failed")
-			return
-		}
-		w.Header().Set("Content-Type", "image/webp")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(webpBytes)
-		return
-	}
-
-	jpegBytes, err := imaging.GenerateJPEG(avifPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "image conversion failed")
-		return
-	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(jpegBytes)
+	serveStoredImage(w, r,
+		imaging.AlbumCoverPath(h.dataPath, id, "webp"),
+		"album cover not found",
+	)
 }
 
 // POST /api/v1/admin/artists/{id}/image
@@ -248,11 +213,7 @@ func (h *musicHandler) deleteArtistImage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Remove files
-	for _, ext := range []string{"avif", "webp"} {
-		path := imaging.ArtistThumbnailPath(h.dataPath, id, ext)
-		_ = os.Remove(path)
-	}
+	_ = os.Remove(imaging.ArtistThumbnailPath(h.dataPath, id, "webp"))
 
 	if err := repository.ArtistSetManualThumbnail(r.Context(), h.db, id, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update artist")
@@ -304,10 +265,8 @@ func (h *musicHandler) deleteAlbumCover(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	for _, ext := range []string{"avif", "webp"} {
-		_ = os.Remove(imaging.AlbumThumbnailPath(h.dataPath, id, ext))
-	}
-	_ = os.Remove(imaging.AlbumCoverPath(h.dataPath, id, "avif"))
+	_ = os.Remove(imaging.AlbumThumbnailPath(h.dataPath, id, "webp"))
+	_ = os.Remove(imaging.AlbumCoverPath(h.dataPath, id, "webp"))
 
 	if err := repository.AlbumSetManualCover(r.Context(), h.db, id, false); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update album")
