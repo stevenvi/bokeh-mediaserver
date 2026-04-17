@@ -57,7 +57,6 @@ type PhotoMetadata struct {
 	FocalLength35mmEquiv *float64   `json:"focal_length_35mm_equiv,omitempty"`
 	ColorSpace           *string    `json:"color_space,omitempty"`
 	Description          *string    `json:"description,omitempty"`
-	Placeholder          *string    `json:"placeholder,omitempty"` // base64 32x32 AVIF
 	VariantsGeneratedAt  *time.Time `json:"variants_generated_at,omitempty"`
 }
 
@@ -122,13 +121,12 @@ type MediaItemView struct {
 
 // SlideshowItem is a projection used by the slideshow endpoint.
 type SlideshowItem struct {
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	Placeholder *string    `json:"placeholder,omitempty"`
-	WidthPx     *int       `json:"width_px,omitempty"`
-	HeightPx    *int       `json:"height_px,omitempty"`
-	Title       string     `json:"title"`
-	MimeType    string     `json:"mime_type"`
-	ID          int64      `json:"id"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	WidthPx   *int       `json:"width_px,omitempty"`
+	HeightPx  *int       `json:"height_px,omitempty"`
+	Title     string     `json:"title"`
+	MimeType  string     `json:"mime_type"`
+	ID        int64      `json:"id"`
 }
 
 // SlideshowMonthCount is one row of the slideshow metadata aggregation.

@@ -138,7 +138,6 @@ CREATE TABLE photo_metadata (
     focal_length_35mm_equiv     numeric(6,1),
     color_space                 text,
     description                 text,
-    placeholder                 text,
     variants_generated_at       timestamptz DEFAULT NULL,
     exif_raw                    jsonb
 );

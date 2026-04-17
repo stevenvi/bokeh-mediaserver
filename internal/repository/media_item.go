@@ -73,8 +73,7 @@ func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models
 		        pm.camera_make, pm.camera_model, pm.lens_model,
 		        pm.shutter_speed, pm.aperture, pm.iso,
 		        pm.focal_length_mm, pm.focal_length_35mm_equiv,
-		        pm.color_space,
-		        pm.placeholder
+		        pm.color_space
 		 FROM media_items m
 		 JOIN collections c ON c.id = m.collection_id
 		 JOIN collection_access ca ON ca.collection_id = c.root_collection_id AND ca.user_id = $2
@@ -88,7 +87,6 @@ func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models
 		&photo.ShutterSpeed, &photo.Aperture, &photo.ISO,
 		&photo.FocalLengthMM, &photo.FocalLength35mmEquiv,
 		&photo.ColorSpace,
-		&photo.Placeholder,
 	)
 	if err != nil {
 		return nil, err
@@ -142,7 +140,7 @@ func MediaItemUpdateTitle(ctx context.Context, db utils.DBTX, id int64, title st
 func MediaItemsByCollectionPaginated(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
 	rows, err := db.Query(ctx,
 		`SELECT m.id, m.title, m.mime_type, m.ordinal,
-		        pm.placeholder, pm.variants_generated_at
+		        pm.variants_generated_at
 		 FROM media_items m
 		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
 		 JOIN collections c ON c.id = m.collection_id
@@ -157,16 +155,14 @@ func MediaItemsByCollectionPaginated(ctx context.Context, db utils.DBTX, collect
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.MediaItemView, error) {
 		var item models.MediaItemView
-		var placeholder *string
 		var variantsGeneratedAt *time.Time
 		err := row.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
-			&placeholder, &variantsGeneratedAt)
+			&variantsGeneratedAt)
 		if err != nil {
 			return item, err
 		}
-		if placeholder != nil || variantsGeneratedAt != nil {
+		if variantsGeneratedAt != nil {
 			item.Photo = &models.PhotoMetadata{
-				Placeholder:         placeholder,
 				VariantsGeneratedAt: variantsGeneratedAt,
 			}
 		}
@@ -511,7 +507,6 @@ func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]mod
 		%s
 		SELECT
 		    pm.created_at,
-		    pm.placeholder,
 		    pm.width_px,
 		    pm.height_px,
 		    mi.title,

@@ -66,13 +66,13 @@ func PhotoCountPendingVariants(ctx context.Context, db utils.DBTX) (int, error) 
 	return count, err
 }
 
-// PhotoUpdateVariants marks variants as generated and stores the placeholder.
-func PhotoUpdateVariants(ctx context.Context, db utils.DBTX, itemID int64, placeholder *string) error {
+// PhotoUpdateVariants marks variants as generated.
+func PhotoUpdateVariants(ctx context.Context, db utils.DBTX, itemID int64) error {
 	_, err := db.Exec(ctx,
 		`UPDATE photo_metadata
-		 SET placeholder = $2, variants_generated_at = now()
+		 SET variants_generated_at = now()
 		 WHERE media_item_id = $1`,
-		itemID, placeholder,
+		itemID,
 	)
 	return err
 }
@@ -86,7 +86,7 @@ func PhotoClearVariantsGenerated(ctx context.Context, db utils.DBTX, collectionI
 			UNION ALL
 			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 		)
-		UPDATE photo_metadata SET variants_generated_at = NULL, placeholder = NULL
+		UPDATE photo_metadata SET variants_generated_at = NULL
 		WHERE media_item_id IN (
 			SELECT mi.id FROM media_items mi JOIN tree t ON mi.collection_id = t.id
 		)`,

@@ -163,8 +163,7 @@ func TestPhotoCountPendingVariants(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
-		placeholder := "base64data"
-		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, &placeholder))
+		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID))
 
 		// This item now has variants; it should not appear in the pending count.
 		// We can only verify that count doesn't increase after marking as generated.
@@ -175,33 +174,13 @@ func TestPhotoCountPendingVariants(t *testing.T) {
 }
 
 func TestPhotoUpdateVariants(t *testing.T) {
-	t.Run("sets_variants_generated_at_and_placeholder", func(t *testing.T) {
+	t.Run("sets_variants_generated_at", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
 
-		placeholder := "base64encodedwebp"
-		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, &placeholder))
-
-		var variantsAt *time.Time
-		var gotPlaceholder *string
-		err := db.QueryRow(bg(),
-			`SELECT variants_generated_at, placeholder FROM photo_metadata WHERE media_item_id = $1`, itemID,
-		).Scan(&variantsAt, &gotPlaceholder)
-		require.NoError(t, err)
-		assert.NotNil(t, variantsAt)
-		require.NotNil(t, gotPlaceholder)
-		assert.Equal(t, placeholder, *gotPlaceholder)
-	})
-
-	t.Run("accepts_nil_placeholder", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
-		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		itemID := createMediaItem(t, db, collID)
-		createPhotoMetadata(t, db, itemID)
-
-		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, nil))
+		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID))
 
 		var variantsAt *time.Time
 		err := db.QueryRow(bg(),
@@ -218,8 +197,7 @@ func TestPhotoClearVariantsGenerated(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
-		placeholder := "placeholder"
-		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, &placeholder))
+		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID))
 
 		require.NoError(t, repository.PhotoClearVariantsGenerated(bg(), db, collID))
 

@@ -107,14 +107,7 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 			}
 		}
 
-		// Generate placeholder and update variants_generated_at
-		var placeholder *string
-		if p, err := imaging.GeneratePlaceholder(fsPath); err != nil {
-			slog.Warn("placeholder generation failed", "path", fsPath, "err", err)
-		} else {
-			placeholder = &p
-		}
-		if err := repository.PhotoUpdateVariants(ctx, db, itemID, placeholder); err != nil {
+		if err := repository.PhotoUpdateVariants(ctx, db, itemID); err != nil {
 			return fmt.Errorf("update variants_generated_at: %w", err)
 		}
 

@@ -1,7 +1,6 @@
 package imaging
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -542,41 +541,6 @@ func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
 	}
 	success = true
 	return nil
-}
-
-// GeneratePlaceholder creates a tiny 32x32 WebP and returns it as a
-// base64-encoded string for embedding directly in API responses.
-// The client renders it as: <img src="data:image/webp;base64,{value}" />
-// WebP is used instead of JPEG because at this size the JPEG header alone
-// is ~600 bytes, while the entire WebP is ~200 bytes.
-func GeneratePlaceholder(srcPath string) (string, error) {
-	img, err := vips.NewImageFromFile(srcPath, nil)
-	if err != nil {
-		return "", fmt.Errorf("load source for placeholder: %w", err)
-	}
-	defer img.Close()
-
-	// Apply EXIF orientation before resizing so the placeholder matches variant orientation.
-	if err := img.Autorot(nil); err != nil {
-		return "", fmt.Errorf("auto-rotate placeholder: %w", err)
-	}
-
-	// Scale to fit within 32x32, preserving aspect ratio.
-	srcLongest := max(img.Height(), img.Width())
-	scale := float64(32) / float64(srcLongest)
-	if err := img.Resize(scale, &vips.ResizeOptions{Kernel: vips.KernelNearest}); err != nil {
-		return "", fmt.Errorf("resize placeholder: %w", err)
-	}
-
-	webpBytes, err := img.WebpsaveBuffer(&vips.WebpsaveBufferOptions{
-		Q:    10,
-		Keep: vips.KeepNone,
-	})
-	if err != nil {
-		return "", fmt.Errorf("export placeholder: %w", err)
-	}
-
-	return base64.StdEncoding.EncodeToString(webpBytes), nil
 }
 
 // VideoHLSDir returns the directory for a video item's stored HLS transcode.

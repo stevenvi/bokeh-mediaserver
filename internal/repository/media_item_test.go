@@ -307,8 +307,7 @@ func TestMediaItemRandomHashWithVariants(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
-		placeholder := "ph"
-		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID, &placeholder))
+		require.NoError(t, repository.PhotoUpdateVariants(bg(), db, itemID))
 
 		hash, err := repository.MediaItemRandomHashWithVariants(bg(), db, collID)
 		require.NoError(t, err)
