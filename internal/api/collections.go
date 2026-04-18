@@ -75,6 +75,15 @@ func (h *collectionsHandler) listChildren(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Extract date prefixes from collection names
+	for i := range collections {
+		strippedName, date, _ := utils.ExtractDatePrefix(collections[i].Name)
+		if date != nil {
+			collections[i].Name = strippedName
+			collections[i].Date = date
+		}
+	}
+
 	writeJSON(w, http.StatusOK, collections)
 }
 

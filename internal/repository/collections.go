@@ -159,7 +159,7 @@ func CollectionsListAccessibleByUser(ctx context.Context, db utils.DBTX, userID 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionView])
+	return pgx.CollectRows(rows, scanCollectionView)
 }
 
 // CollectionGetChildCollections returns direct enabled children of a collection.
@@ -174,7 +174,15 @@ func CollectionGetChildCollections(ctx context.Context, db utils.DBTX, parentID 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.CollectionView])
+	return pgx.CollectRows(rows, scanCollectionView)
+}
+
+// scanCollectionView is a custom row collector for CollectionView that maps only
+// the columns that exist in the DB (Date is derived at the API layer from the name).
+func scanCollectionView(row pgx.CollectableRow) (models.CollectionView, error) {
+	var c models.CollectionView
+	err := row.Scan(&c.ParentCollectionID, &c.Name, &c.Type, &c.ID)
+	return c, err
 }
 
 // CollectionExistsAndAccessible checks both that a collection exists+enabled and that the user

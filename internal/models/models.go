@@ -13,6 +13,7 @@ type Collection struct {
 	RelativePath       *string    `json:"relative_path,omitempty"`
 	LastScannedAt      *time.Time `json:"last_scanned_at,omitempty"`
 	MissingSince       *time.Time `json:"missing_since,omitempty"`
+	Date               *time.Time `json:"date,omitempty"`
 	Name               string     `json:"name"`
 	Type               string     `json:"type"`
 	ID                 int64      `json:"id"`
@@ -23,6 +24,7 @@ type Collection struct {
 // CollectionView is the user-facing detail view of a single collection.
 type CollectionView struct {
 	ParentCollectionID *int64                   `json:"parent_collection_id,omitempty"`
+	Date               *time.Time               `json:"date,omitempty"`
 	Name               string                   `json:"name"`
 	Type               constants.CollectionType `json:"type"`
 	ID                 int64                    `json:"id"`

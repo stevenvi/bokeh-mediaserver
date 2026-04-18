@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
 	jobsutils "github.com/stevenvi/bokeh-mediaserver/internal/jobs/utils"
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
+	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
 
 // ScanVideoMeta describes the scan_video sub-job type.
@@ -25,9 +25,6 @@ var ScanVideoMeta = jobs.JobMeta{
 	TotalSteps:  1,
 }
 
-// homemovieFilenameRe matches home movie filenames with the pattern:
-// YYYY.MM[.DD[-DD]] title
-var homemovieFilenameRe = regexp.MustCompile(`^(\d{4})\.(\d{2})(?:\.(\d{2})(?:-(\d{2}))?)?[ _](.+)$`)
 
 // HandleScanVideo returns a job handler that processes a single video file.
 func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.JobHandler {
@@ -108,16 +105,16 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 
 		if collType == constants.CollectionTypeHomeMovie {
 			basename := strings.TrimSuffix(filepath.Base(fsPath), filepath.Ext(fsPath))
-			parsed := parseHomemovieFilename(basename)
-			if parsed != nil {
-				if finalTitle == nil && parsed.title != "" {
-					finalTitle = &parsed.title
+			strippedName, date, endDateParsed := utils.ExtractDatePrefix(basename)
+			if date != nil {
+				if finalTitle == nil && strippedName != "" {
+					finalTitle = &strippedName
 				}
-				if finalDate == nil && parsed.date != nil {
-					finalDate = parsed.date
+				if finalDate == nil {
+					finalDate = date
 				}
-				if parsed.endDate != nil {
-					endDate = parsed.endDate
+				if endDateParsed != nil {
+					endDate = endDateParsed
 				}
 			}
 		}
@@ -186,46 +183,6 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		slog.Debug("finished processing video file", "item_id", itemID)
 		return nil
 	}
-}
-
-// homemovieFilenameResult holds parsed fields from a home movie filename.
-type homemovieFilenameResult struct {
-	date    *time.Time
-	endDate *time.Time
-	title   string
-}
-
-// parseHomemovieFilename parses filenames like:
-//
-//	2023.07.15-18 Summer vacation
-//	2023.07 Beach trip
-func parseHomemovieFilename(basename string) *homemovieFilenameResult {
-	m := homemovieFilenameRe.FindStringSubmatch(basename)
-	if m == nil {
-		return nil
-	}
-
-	year, _ := strconv.Atoi(m[1])
-	month, _ := strconv.Atoi(m[2])
-
-	startDay := 1
-	if m[3] != "" {
-		startDay, _ = strconv.Atoi(m[3])
-	}
-
-	startTime := time.Date(year, time.Month(month), startDay, 0, 0, 0, 0, time.UTC)
-	result := &homemovieFilenameResult{
-		date:  &startTime,
-		title: strings.TrimSpace(m[5]),
-	}
-
-	if m[4] != "" {
-		endDay, _ := strconv.Atoi(m[4])
-		endTime := time.Date(year, time.Month(month), endDay, 0, 0, 0, 0, time.UTC)
-		result.endDate = &endTime
-	}
-
-	return result
 }
 
 // extractBinaryTag runs exiftool with -b to extract a binary tag.
