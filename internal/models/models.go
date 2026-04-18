@@ -67,15 +67,21 @@ func (pm *PhotoMetadata) RemapLensModel() {
 	var model string = *pm.LensModel
 	switch *pm.LensModel {
 	// Ambiguous
+	// TODO: This is not strong enough to reliably identify these lenses, look at more exif to verify!!
 	case "18.0-55.0 mm f/3.5-5.6":
 		if *pm.CameraMake == "NIKON CORPORATION" {
-			model = "NIKKOR 18-55mm F3.5-5.6 ??"
+			model = "NIKKOR 18-55mm F3.5-5.6 DC Macro OS HSM"
+		}
+	case "18.0-300.0 mm f/3.5-6.3":
+		if *pm.CameraMake == "NIKON CORPORATION" {
+			model = "Sigma Contemporary 18-300mm F3.5-6.3 DC Macro OS HSM"
 		}
 
 	// Apple
 	case "iPhone 14 Pro back triple camera 2.22mm f/2.2":
 		model = "Ultra Wide Camera 14mm F2.2"
-	case "iPhone 14 Pro back triple camera 6.86mm f/1.78":
+	case "iPhone 14 Pro back triple camera 6.86mm f/1.78", 
+		 "iPhone 15 Pro Max back triple camera 6.86mm f/1.78":
 		model = "Wide Camera 24mm F1.8"
 	case "iPhone 14 Pro back triple camera 9mm f/2.8":
 		model = "Telephoto Camera 77mm F2.8"
@@ -88,17 +94,16 @@ func (pm *PhotoMetadata) RemapLensModel() {
 		model = "Nikkor 28-70mm F??"
 
 	// Rokinon
-	
+
 	// Sigma
-	case "sdf":
-		model = "Sigma Contemporary 18-300mm F3.5-6.3 ???"
 	case "YYY":
 		model = "Sigma Art 18-35mm F1.8 DC HSM"
 	case "zzz":
 		model = "Sigma Art 14-24mm F2.8 DG DN"
 	case "Sigma 35mm F1.4 DG DN | A (Sony E)":
 		model = "Sigma Art 35mm F1.4 DG DN"
-	case "Sigma 85mm F1.4 DG DN | A (Sony E)":
+	case "85mm F1.4 DG DN | Art 020",
+		 "Sigma 85mm F1.4 DG DN | A (Sony E)":
 		model = "Sigma Art 85mm F1.4 DG DN"
 
 	// Sony
