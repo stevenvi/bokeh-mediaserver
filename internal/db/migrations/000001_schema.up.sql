@@ -284,3 +284,17 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER video_bookmark_cull
 AFTER INSERT OR UPDATE ON video_bookmarks
 FOR EACH ROW EXECUTE FUNCTION cull_old_bookmarks();
+
+-- Audio show bookmarks track a user's position within an audio:show collection.
+-- One bookmark per (user, show): records which episode they are on and how far in.
+-- Bookmarks are never deleted — they remain valid if new episodes are added later.
+CREATE TABLE audio_show_bookmarks (
+    user_id          bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    artist_id        bigint NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+    media_item_id    bigint NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+    position_seconds int NOT NULL DEFAULT 0,
+    last_listened_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, artist_id)
+);
+
+CREATE INDEX idx_audio_show_bookmarks_artist ON audio_show_bookmarks(artist_id);

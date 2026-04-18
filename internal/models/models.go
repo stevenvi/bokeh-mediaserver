@@ -294,6 +294,37 @@ type AlbumSummary struct {
 	TotalDuration float64 `json:"total_duration"`
 }
 
+// ShowSummary is the lightweight listing row returned when browsing an audio:show collection.
+// ShowID is the artist ID — the artist represents the show, albums represent groupings.
+// Field order must match ShowsInCollection SELECT for pgx.RowToStructByPos.
+type ShowSummary struct {
+	ShowID          int64  `json:"show_id"`
+	Name            string `json:"name"`
+	ManualThumbnail bool   `json:"manual_thumbnail"`
+}
+
+// EpisodeView is the user-facing projection of a show episode.
+// It extends TrackView with the album (grouping) name so the client can render
+// multi-level grouping (album → disc → track) without a separate request.
+// Field order must match ShowEpisodesByArtist SELECT for pgx.RowToStructByPos.
+type EpisodeView struct {
+	TrackNumber     *int16   `json:"track_number,omitempty"`
+	DiscNumber      *int16   `json:"disc_number,omitempty"`
+	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
+	ArtistName      *string  `json:"artist_name,omitempty"`
+	Title           string   `json:"title"`
+	MimeType        string   `json:"mime_type"`
+	ID              int64    `json:"id"`
+	AlbumName       string   `json:"album_name"`
+}
+
+// ShowBookmark records a user's current position within an audio show.
+type ShowBookmark struct {
+	LastListenedAt  time.Time `json:"last_listened_at"`
+	MediaItemID     int64     `json:"media_item_id"`
+	PositionSeconds int       `json:"position_seconds"`
+}
+
 // TrackView is the user-facing projection of a track in an album listing.
 type TrackView struct {
 	TrackNumber     *int16   `json:"track_number,omitempty"`

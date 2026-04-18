@@ -40,6 +40,7 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 	authHandler := newAuthHandler(db, guard, rateLimiter, jwtSecret, authPlugins, production)
 	collections := &collectionsHandler{db: db}
 	music := &musicHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
+	radio := &radioHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	video := &videoHandler{db: db, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
 	admin := &adminHandler{
@@ -111,6 +112,11 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 		r.Get("/api/v1/collections/{collectionId}/artists", music.listArtists)
 		r.Get("/api/v1/collections/{collectionId}/artists/{artistId}/albums", music.listArtistAlbums)
 		r.Get("/api/v1/collections/{collectionId}/albums/{albumId}/tracks", music.listAlbumTracks)
+
+		// Radio shows (audio:show collections)
+		r.Get("/api/v1/collections/{collectionId}/shows", radio.listShows)
+		r.Get("/api/v1/collections/{collectionId}/shows/{artistId}/episodes", radio.listShowEpisodes)
+		r.Put("/api/v1/audio-shows/{artistId}/bookmark", radio.upsertShowBookmark)
 
 		// Audio streaming
 		r.Get("/audio/{id}/stream", music.stream)
