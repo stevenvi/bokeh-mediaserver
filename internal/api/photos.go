@@ -38,6 +38,11 @@ func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if item.Photo != nil {
+		item.Photo.RemapCameraModel()
+		item.Photo.RemapLensModel()
+	}
+
 	writeJSON(w, http.StatusOK, item)
 }
 

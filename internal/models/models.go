@@ -60,6 +60,76 @@ type PhotoMetadata struct {
 	VariantsGeneratedAt  *time.Time `json:"variants_generated_at,omitempty"`
 }
 
+func (pm *PhotoMetadata) RemapLensModel() {
+	// handle specific lens model names to specific remapped values
+	var model string = *pm.LensModel
+	switch *pm.LensModel {
+	// Ambiguous
+	case "18.0-55.0 mm f/3.5-5.6":
+		if *pm.CameraMake == "NIKON CORPORATION" {
+			model = "NIKKOR 18-55mm F3.5-5.6 ??"
+		}
+
+	// Apple
+	case "iPhone 14 Pro back triple camera 2.22mm f/2.2":
+		model = "Ultra Wide Camera 14mm F2.2"
+	case "iPhone 14 Pro back triple camera 6.86mm f/1.78":
+		model = "Wide Camera 24mm F1.8"
+	case "iPhone 14 Pro back triple camera 9mm f/2.8":
+		model = "Telephoto Camera 77mm F2.8"
+	case "iPhone 14 Pro front camera 2.69mm f/1.9":
+		model = "Front Camera 30mm F1.9"
+
+	// Nikon/Nikkor
+	case "AF-S DX Nikkor 35mm f/1.8G":
+		// This is a mismatched identification from exiftool
+		model = "Nikkor 28-70mm F??"
+
+	// Rokinon
+	
+	// Sigma
+	case "sdf":
+		model = "Sigma Contemporary 18-300mm F3.5-6.3 ???"
+	case "YYY":
+		model = "Sigma Art 18-35mm F1.8 DC HSM"
+	case "zzz":
+		model = "Sigma Art 14-24mm F2.8 DG DN"
+	case "Sigma 35mm F1.4 DG DN | A (Sony E)":
+		model = "Sigma Art 35mm F1.4 DG DN"
+	case "Sigma 85mm F1.4 DG DN | A (Sony E)":
+		model = "Sigma Art 85mm F1.4 DG DN"
+
+	// Sony
+
+	// TAMRON
+	case "XXX":
+		model = "TAMRON 28-200mm F2.8-5.6 Di III RXD"
+	case "E 70-180mm F2.8 A065":
+		model = "TAMRON 70-180mm F2.8 Di III VC VXD G2"
+	default:
+		return
+	}
+
+	pm.LensModel = &model
+}
+
+func (pm *PhotoMetadata) RemapCameraModel() {
+	var model string
+	switch *pm.CameraModel {
+	// Sony/Alpha
+	case "ILCE-7R3":
+		model = "Sony A7 III"
+	case "ILCE-7RM3":
+		model = "Sony A7R III"
+	case "ILCE-7C":
+		model = "Sony A7C"
+	default:
+		model = *pm.CameraModel
+	}
+
+	pm.CameraModel = &model
+}
+
 type Job struct {
 	QueuedAt        time.Time  `json:"queued_at"`
 	RelatedID       *int64     `json:"related_id,omitempty"`
