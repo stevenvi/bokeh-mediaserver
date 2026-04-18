@@ -115,16 +115,17 @@ func CollectionGetRelativePath(ctx context.Context, db utils.DBTX, id int64) (st
 // CollectionsTopLevel returns all top-level collections (admin view).
 func CollectionsTopLevel(ctx context.Context, db utils.DBTX) ([]models.Collection, error) {
 	rows, err := db.Query(ctx,
-		`SELECT 
+		`SELECT
 			created_at,
 			parent_collection_id,
 			relative_path,
-			last_scanned_at, 
+			last_scanned_at,
 			missing_since,
+			NULL::timestamptz,
 			name,
-			type, 
-			id, 
-			is_enabled, 
+			type,
+			id,
+			is_enabled,
 			manual_thumbnail
 		 FROM collections WHERE parent_collection_id IS NULL ORDER BY name`,
 	)
