@@ -80,8 +80,8 @@ func (pm *PhotoMetadata) RemapLensModel() {
 	// Apple
 	case "iPhone 14 Pro back triple camera 2.22mm f/2.2":
 		model = "Ultra Wide Camera 14mm F2.2"
-	case "iPhone 14 Pro back triple camera 6.86mm f/1.78", 
-		 "iPhone 15 Pro Max back triple camera 6.86mm f/1.78":
+	case "iPhone 14 Pro back triple camera 6.86mm f/1.78",
+		"iPhone 15 Pro Max back triple camera 6.86mm f/1.78":
 		model = "Wide Camera 24mm F1.8"
 	case "iPhone 14 Pro back triple camera 9mm f/2.8":
 		model = "Telephoto Camera 77mm F2.8"
@@ -98,18 +98,20 @@ func (pm *PhotoMetadata) RemapLensModel() {
 	// Sigma
 	case "YYY":
 		model = "Sigma Art 18-35mm F1.8 DC HSM"
-	case "zzz":
+	case "14-24mm F2.8 DG DN | Art 019":
 		model = "Sigma Art 14-24mm F2.8 DG DN"
 	case "Sigma 35mm F1.4 DG DN | A (Sony E)":
 		model = "Sigma Art 35mm F1.4 DG DN"
 	case "85mm F1.4 DG DN | Art 020",
-		 "Sigma 85mm F1.4 DG DN | A (Sony E)":
+		"Sigma 85mm F1.4 DG DN | A (Sony E)":
 		model = "Sigma Art 85mm F1.4 DG DN"
 
 	// Sony
+	case "Sony FE 200–600mm F5.6–6.3 G OSS (SEL200600G)":
+		model = "Sony 200–600mm F5.6–6.3 G OSS"
 
 	// TAMRON
-	case "XXX":
+	case "E 28-200mm F2.8-5.6 A071":
 		model = "TAMRON 28-200mm F2.8-5.6 Di III RXD"
 	case "E 70-180mm F2.8 A065":
 		model = "TAMRON 70-180mm F2.8 Di III VC VXD G2"
