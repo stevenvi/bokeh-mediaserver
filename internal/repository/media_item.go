@@ -221,6 +221,27 @@ func MediaItemsStale(ctx context.Context, db utils.DBTX) ([]StaleMediaItem, erro
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[StaleMediaItem])
 }
 
+// PhotoItemIDsByCollection returns IDs of all image (MIME prefix "image/") media items
+// in a collection and its sub-collections (recursive), excluding missing items.
+func PhotoItemIDsByCollection(ctx context.Context, db utils.DBTX, collectionID int64) ([]int64, error) {
+	rows, err := db.Query(ctx,
+		`WITH RECURSIVE tree AS (
+			SELECT id FROM collections WHERE id = $1
+			UNION ALL
+			SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+		)
+		SELECT mi.id
+		FROM media_items mi
+		JOIN tree t ON mi.collection_id = t.id
+		WHERE mi.missing_since IS NULL AND mi.mime_type LIKE 'image/%'`,
+		collectionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
 // MediaItemHashesByCollection returns all file hashes for non-missing items in a collection
 // and its sub-collections (recursive).
 func MediaItemHashesByCollection(ctx context.Context, db utils.DBTX, collectionID int64) ([]string, error) {

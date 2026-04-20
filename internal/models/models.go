@@ -63,6 +63,10 @@ type PhotoMetadata struct {
 }
 
 func (pm *PhotoMetadata) RemapLensModel() {
+	if pm.LensModel == nil {
+		return
+	}
+
 	// handle specific lens model names to specific remapped values
 	var model string = *pm.LensModel
 	switch *pm.LensModel {
@@ -107,8 +111,8 @@ func (pm *PhotoMetadata) RemapLensModel() {
 		model = "Sigma Art 85mm F1.4 DG DN"
 
 	// Sony
-	case "Sony FE 200–600mm F5.6–6.3 G OSS (SEL200600G)":
-		model = "Sony 200–600mm F5.6–6.3 G OSS"
+	case "Sony FE 200-600mm F5.6-6.3 G OSS (SEL200600G)", "FE 200-600mm F5.6-6.3 G OSS":
+		model = "Sony 200-600mm F5.6-6.3 G OSS"
 
 	// TAMRON
 	case "E 28-200mm F2.8-5.6 A071":
@@ -123,6 +127,10 @@ func (pm *PhotoMetadata) RemapLensModel() {
 }
 
 func (pm *PhotoMetadata) RemapCameraModel() {
+	if (pm.CameraModel == nil) {
+		return
+	}
+
 	var model string
 	switch *pm.CameraModel {
 	// Sony/Alpha

@@ -107,6 +107,8 @@ func run() error {
 	dispatcher.Register("integrity_check", job_definitions.IntegrityCheckMeta, job_definitions.HandleIntegrityCheck(cfg.DataPath, dispatcher))
 	dispatcher.Register("device_cleanup", job_definitions.DeviceCleanupMeta, job_definitions.HandleDeviceCleanup())
 	dispatcher.Register("cover_cycle", job_definitions.CoverCycleMeta, job_definitions.HandleCoverCycle(cfg.DataPath))
+	dispatcher.Register("dzi_gen", job_definitions.DZIGenMeta, job_definitions.HandleDZIGen(cfg.MediaPath, cfg.DataPath))
+	dispatcher.Register("dzi_gen_item", job_definitions.DZIGenItemMeta, job_definitions.HandleDZIGenItem(cfg.MediaPath, cfg.DataPath))
 
 	// ── Streaming idle sweeper ─────────────────────────────────────────────────
 	streaming.StartIdleSweeper(ctx)

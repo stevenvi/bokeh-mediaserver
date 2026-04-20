@@ -389,12 +389,6 @@ func VariantsExist(dataPath string, hash string) bool {
 	return err == nil
 }
 
-// DZIExists returns true if the DZI manifest file exists on disk.
-func DZIExists(dataPath string, hash string) bool {
-	_, err := os.Stat(filepath.Join(TilesPath(dataPath, hash), "image.dzi"))
-	return err == nil
-}
-
 // generateVariant writes one WebP image variant into outDir.
 // Thumb is always last in the variants slice, making thumb.webp the final
 // file written and therefore the completion sentinel for the entire variant set.
@@ -491,15 +485,14 @@ func generateDZI(srcPath string, tilesDir string) error {
 	return nil
 }
 
-// GenerateItemDerivedData generates all derived files for a photo item — image
-// variants (WebP) and DZI tile pyramid — atomically.
+// GenerateItemVariants generates WebP image variants for a photo item atomically.
 //
 // All output is written to a temporary directory adjacent to the final
 // ItemDataPath. On success the temp directory is renamed to the final
 // path in a single syscall, so the derived-data directory either contains
 // the complete set of files or does not exist at all. Any partial output
 // from an interrupted prior run is discarded before the rename.
-func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
+func GenerateItemVariants(srcPath, dataPath, hash string) error {
 	finalDir := ItemDataPath(dataPath, hash)
 	parentDir := filepath.Dir(finalDir)
 	if err := os.MkdirAll(parentDir, 0o755); err != nil {
@@ -523,14 +516,6 @@ func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
 		return err
 	}
 
-	tilesDir := filepath.Join(tmpDir, "tiles")
-	if err := os.Mkdir(tilesDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir tiles: %w", err)
-	}
-	if err := generateDZI(srcPath, tilesDir); err != nil {
-		return err
-	}
-
 	// Discard any stale partial directory from a previous failed run, then
 	// atomically replace it with the newly generated content.
 	if err := os.RemoveAll(finalDir); err != nil {
@@ -541,6 +526,30 @@ func GenerateItemDerivedData(srcPath, dataPath, hash string) error {
 	}
 	success = true
 	return nil
+}
+
+// GenerateDZIIfNotPresent generates DZI tiles for a photo item into its existing
+// ItemDataPath directory. The DZI manifest (image.dzi) serves as the
+// completion sentinel — if it exists, generation is skipped.
+// Returns true if tiles were generated, false if they already existed.
+func GenerateDZIIfNotPresent(srcPath, dataPath, hash string) (bool, error) {
+	tilesDir := TilesPath(dataPath, hash)
+	manifestPath := filepath.Join(tilesDir, "image.dzi")
+
+	// Already generated — nothing to do.
+	if _, err := os.Stat(manifestPath); err == nil {
+		return false, nil
+	}
+
+	if err := os.MkdirAll(tilesDir, 0o755); err != nil {
+		return false, fmt.Errorf("mkdir tiles: %w", err)
+	}
+	if err := generateDZI(srcPath, tilesDir); err != nil {
+		// Clean up partial output on failure.
+		os.RemoveAll(tilesDir)
+		return false, err
+	}
+	return true, nil
 }
 
 // VideoHLSDir returns the directory for a video item's stored HLS transcode.

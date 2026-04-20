@@ -145,6 +145,7 @@ var subJobTypes = map[string]bool{
 	"scan_video":           true,
 	"scan_audio":           true,
 	"video_transcode_item": true,
+	"dzi_gen_item":         true,
 }
 
 // jobResponse is the consistent shape returned for all job API responses.

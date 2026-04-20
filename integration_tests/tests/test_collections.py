@@ -204,8 +204,8 @@ PHOTO_ALBUM_1_FILES = {
         "title": "moon",
         "mime_type": "image/avif",
         "camera_make": "SONY",
-        "camera_model": "ILCE-7RM3",
-        "lens_model": "FE 200-600mm F5.6-6.3 G OSS",
+        "camera_model": "Sony A7R III",
+        "lens_model": "Sony 200-600mm F5.6-6.3 G OSS",
         "width_px": 395,
         "height_px": 395,
         "taken_at_prefix": None,  # no DateTimeOriginal in this file
@@ -279,7 +279,8 @@ class TestSingleTierCollection:
             TestSingleTierCollection.item_map[item.title] = item
 
     def test_04_filesystem_variants_exist(self, data_path):
-        """Images should have WebP variants and DZI tiles for sizes that fit within source dimensions."""
+        """Images should have WebP variants for sizes that fit within source dimensions.
+        DZI tiles are NOT generated at scan time — they are generated on-demand."""
         for name, info in PHOTO_ALBUM_1_FILES.items():
             h = info["hash"]
             w, ht = info["width_px"], info["height_px"]
@@ -288,15 +289,73 @@ class TestSingleTierCollection:
                     path = variant_path(data_path, h, variant, "webp")
                     assert os.path.isfile(path), f"missing {variant}.webp for {name}"
 
-            # DZI manifest
-            assert os.path.isfile(dzi_manifest_path(data_path, h)), f"missing DZI for {name}"
+            # DZI tiles should NOT exist after scanning (lazy generation)
+            assert not os.path.isfile(dzi_manifest_path(data_path, h)), \
+                f"DZI should not exist after scan for {name}"
 
-            # At least one tile level directory
-            tiles_dir = dzi_tiles_dir(data_path, h)
-            assert os.path.isdir(tiles_dir), f"missing tiles dir for {name}"
-            assert len(os.listdir(tiles_dir)) > 0, f"tiles dir empty for {name}"
+    def test_05_dzi_on_demand_generation(self, admin_token, data_path):
+        """DZI tiles are generated on-demand when the manifest is first requested."""
+        item_map = TestSingleTierCollection.item_map
+        if not item_map:
+            pytest.fail("item_map empty — test_03 must have failed")
 
-    def test_05_exif_data_matches_expectations(self, admin_token):
+        item_id = item_map["sunflower"].id
+        h = PHOTO_ALBUM_1_FILES["sunflower"]["hash"]
+
+        # 1. Tiles should not exist on disk yet
+        assert not os.path.isfile(dzi_manifest_path(data_path, h)), \
+            "DZI manifest should not exist before first request"
+
+        # 2. Requesting a tile before manifest generation should 404
+        r = httpx.get(
+            f"{BASE_URL}/images/{item_id}/tiles/image_files/0/0_0.webp",
+            headers=bearer(admin_token),
+        )
+        assert r.status_code == 404, \
+            f"expected 404 for tile before DZI generation, got {r.status_code}"
+
+        # 3. Request the manifest — should trigger on-demand generation
+        r = httpx.get(
+            f"{BASE_URL}/images/{item_id}/tiles/image.dzi",
+            headers=bearer(admin_token),
+            timeout=60,
+        )
+        assert r.status_code == 200, \
+            f"expected 200 from DZI manifest, got {r.status_code}"
+        assert r.headers.get("X-DZI-Generated") == "true", \
+            "expected X-DZI-Generated: true on first request"
+
+        # 4. Tiles should now exist on disk
+        assert os.path.isfile(dzi_manifest_path(data_path, h)), \
+            "DZI manifest should exist after on-demand generation"
+        tiles_dir = dzi_tiles_dir(data_path, h)
+        assert os.path.isdir(tiles_dir), "tiles dir should exist after generation"
+
+        # 5. Requesting a tile should now succeed
+        tiles_base = os.path.join(tiles_dir, "image_files")
+        levels = sorted(int(d) for d in os.listdir(tiles_base) if d.isdigit())
+        assert len(levels) > 0, "no tile levels found"
+        lowest = levels[0]
+        tiles = os.listdir(os.path.join(tiles_base, str(lowest)))
+        assert len(tiles) > 0, f"no tiles in level {lowest}"
+        tile_name = tiles[0]
+        r = httpx.get(
+            f"{BASE_URL}/images/{item_id}/tiles/image_files/{lowest}/{tile_name}",
+            headers=bearer(admin_token),
+        )
+        assert r.status_code == 200, \
+            f"expected 200 for tile after generation, got {r.status_code}"
+
+        # 6. Second manifest request should NOT regenerate tiles
+        r = httpx.get(
+            f"{BASE_URL}/images/{item_id}/tiles/image.dzi",
+            headers=bearer(admin_token),
+        )
+        assert r.status_code == 200
+        assert r.headers.get("X-DZI-Generated") == "false", \
+            "expected X-DZI-Generated: false on subsequent request (tiles already exist)"
+
+    def test_06_exif_data_matches_expectations(self, admin_token):
         """GET /media/:id should return EXIF values that match known-good hardcoded values."""
         for name, expected in PHOTO_ALBUM_1_FILES.items():
             item_id = TestSingleTierCollection.item_map[expected["title"]].id
@@ -317,7 +376,7 @@ class TestSingleTierCollection:
             if expected["taken_at_prefix"] is not None:
                 assert photo.created_at.isoformat().startswith(expected["taken_at_prefix"]), name
 
-    def test_06_image_variants_served(self, admin_token):
+    def test_07_image_variants_served(self, admin_token):
         """GET /images/:id/{variant} should return image data."""
         item_map = TestSingleTierCollection.item_map
         if not item_map:
@@ -330,7 +389,7 @@ class TestSingleTierCollection:
                 if should_variant_exist(w, h, variant):
                     assert image_variant_exists(admin_token, item_id, variant, "image/webp"), f"{variant} WebP for {name} not served"
 
-    def test_07_exif_endpoint(self, admin_token):
+    def test_08_exif_endpoint(self, admin_token):
         """GET /images/:id/exif should return JSON EXIF data."""
         item_map = TestSingleTierCollection.item_map
         if not item_map:
@@ -342,7 +401,7 @@ class TestSingleTierCollection:
 
         # TODO: This test is possibly inadequate
 
-    def test_08_dzi_manifest(self, admin_token):
+    def test_09_dzi_manifest(self, admin_token):
         """GET /images/:id/tiles/image.dzi should return an XML manifest."""
         item_map = TestSingleTierCollection.item_map
         if not item_map:
@@ -355,7 +414,7 @@ class TestSingleTierCollection:
 
         # TODO: This test is inadequate
 
-    def test_09_dzi_tiles_served(self, admin_token, data_path):
+    def test_10_dzi_tiles_served(self, admin_token, data_path):
         """GET /images/:id/tiles/* should serve tile files."""
         item_map = TestSingleTierCollection.item_map
         if not item_map:
@@ -381,7 +440,7 @@ class TestSingleTierCollection:
 
         # TODO: This test is inadequate
 
-    def test_10_hide_item(self, admin_token, db_dsn):
+    def test_11_hide_item(self, admin_token, db_dsn):
         item_map = TestSingleTierCollection.item_map
         if not item_map:
             pytest.fail("item_map empty — test_05 must have failed")

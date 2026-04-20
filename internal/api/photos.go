@@ -137,16 +137,29 @@ func (h *photosHandler) serveVariant(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /images/:id/tiles/image.dzi
+// Generates DZI tiles on-demand if they don't already exist.
 func (h *photosHandler) serveDZIManifest(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
 		return
 	}
 
-	hash, _, err := h.getItemHashAndPath(id, r)
+	hash, fsPath, err := h.getItemHashAndPath(id, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "media item not found")
 		return
+	}
+
+	generated, err := imaging.GenerateDZIIfNotPresent(fsPath, h.dataPath, hash)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate DZI tiles")
+		return
+	}
+
+	if generated {
+		w.Header().Set("X-DZI-Generated", "true")
+	} else {
+		w.Header().Set("X-DZI-Generated", "false")
 	}
 
 	dziPath := filepath.Join(imaging.TilesPath(h.dataPath, hash), "image.dzi")

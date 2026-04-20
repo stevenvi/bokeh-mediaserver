@@ -98,12 +98,13 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 			return fmt.Errorf("upsert photo_metadata: %w", err)
 		}
 
-		// Generate variants and DZI tiles if not already present.
+		// Generate WebP variants if not already present.
 		// All derived files for the item are written to a temp directory and
 		// moved into place atomically, so existing data is never partially overwritten.
-		if !imaging.VariantsExist(dataPath, fileHash) || !imaging.DZIExists(dataPath, fileHash) {
-			if err := imaging.GenerateItemDerivedData(fsPath, dataPath, fileHash); err != nil {
-				return fmt.Errorf("generate derived data: %w", err)
+		// DZI tiles are generated on-demand when first requested.
+		if !imaging.VariantsExist(dataPath, fileHash) {
+			if err := imaging.GenerateItemVariants(fsPath, dataPath, fileHash); err != nil {
+				return fmt.Errorf("generate variants: %w", err)
 			}
 		}
 
