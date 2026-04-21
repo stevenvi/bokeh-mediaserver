@@ -477,7 +477,7 @@ func generateDZI(srcPath string, tilesDir string) error {
 		TileSize: 252,
 		Overlap:  2,
 		Suffix:   ".webp",
-		Q:        85,
+		Q:        98,
 		Keep:     vips.KeepNone,
 	}); err != nil {
 		return fmt.Errorf("dzsave: %w", err)
