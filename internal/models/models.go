@@ -82,9 +82,18 @@ func (pm *PhotoMetadata) RemapLensModel() {
 		}
 
 	// Apple
+	case "iPad mini back camera 3mm f/1.8":
+		model = "Wide Camera 29mm F1.8"
+	case "iPhone 13 mini back dual wide camera 1.54mm f/2.4":
+		model = "Ultra Wide Camera 14mm F2.4"
+	case "iPhone 13 mini back dual wide camera 5.1mm f/1.6":
+		model = "Wide Camera 26mm F1.6"
+	case "iPhone 13 mini front camera 2.71mm f/2.2":
+		model = "Front Camera 23mm F2.2"
 	case "iPhone 14 Pro back triple camera 2.22mm f/2.2":
 		model = "Ultra Wide Camera 14mm F2.2"
 	case "iPhone 14 Pro back triple camera 6.86mm f/1.78",
+		"iPhone 14 Pro back camera 6.86mm f/1.78",
 		"iPhone 15 Pro Max back triple camera 6.86mm f/1.78":
 		model = "Wide Camera 24mm F1.8"
 	case "iPhone 14 Pro back triple camera 9mm f/2.8":
@@ -111,7 +120,8 @@ func (pm *PhotoMetadata) RemapLensModel() {
 		model = "Sigma Art 85mm F1.4 DG DN"
 
 	// Sony
-	case "Sony FE 200-600mm F5.6-6.3 G OSS (SEL200600G)", "FE 200-600mm F5.6-6.3 G OSS":
+	case "Sony FE 200–600mm F5.6–6.3 G OSS (SEL200600G)", 
+		"FE 200-600mm F5.6-6.3 G OSS":
 		model = "Sony 200-600mm F5.6-6.3 G OSS"
 
 	// TAMRON
