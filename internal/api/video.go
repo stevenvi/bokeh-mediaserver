@@ -244,9 +244,71 @@ func (h *videoHandler) cover(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
-// PUT /api/v1/media/{id}/bookmark
-func (h *videoHandler) upsertBookmark(w http.ResponseWriter, r *http.Request) {
+// GET /api/v1/collections/{id}/videos
+func (h *videoHandler) listVideos(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	userID := userIDFromRequest(r)
+
+	col, err := repository.CollectionGetForUser(r.Context(), h.db, id, userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 200)
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+	offset := (page - 1) * pageSize
+
+	items, err := repository.MediaItemVideosByCollection(r.Context(), h.db, id, userID, col.Type, pageSize+1, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	var nextPage *int
+	if len(items) > pageSize {
+		items = items[:pageSize]
+		np := page + 1
+		nextPage = &np
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"page":      page,
+		"next_page": nextPage,
+		"page_size": pageSize,
+	})
+}
+
+// GET /api/v1/collections/{id}/items/{item_id}
+func (h *videoHandler) getVideoItem(w http.ResponseWriter, r *http.Request) {
+	collectionID, ok := urlIntParam(w, r, "id")
+	if !ok {
+		return
+	}
+	itemID, ok := urlIntParam(w, r, "item_id")
+	if !ok {
+		return
+	}
+
+	item, err := repository.MediaItemVideoGet(r.Context(), h.db, collectionID, itemID, userIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "video item not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+// PUT /api/v1/collections/{id}/items/{item_id}/bookmark
+func (h *videoHandler) upsertBookmark(w http.ResponseWriter, r *http.Request) {
+	id, ok := urlIntParam(w, r, "item_id")
 	if !ok {
 		return
 	}
@@ -267,9 +329,9 @@ func (h *videoHandler) upsertBookmark(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /api/v1/media/{id}/bookmark
+// DELETE /api/v1/collections/{id}/items/{item_id}/bookmark
 func (h *videoHandler) deleteBookmark(w http.ResponseWriter, r *http.Request) {
-	id, ok := urlIntParam(w, r, "id")
+	id, ok := urlIntParam(w, r, "item_id")
 	if !ok {
 		return
 	}

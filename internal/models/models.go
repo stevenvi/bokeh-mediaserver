@@ -216,6 +216,137 @@ type MediaItemView struct {
 	ID       int64  `json:"id"`
 }
 
+// PhotoItem is the user-facing projection of a photo item with full EXIF data.
+type PhotoItem struct {
+	// Fetched from DB but never serialized — needed for RemapLensModel() disambiguation
+	CameraMake *string `json:"-"`
+
+	CreatedAt            *time.Time `json:"created_at,omitempty"`
+	VariantsGeneratedAt  *time.Time `json:"variants_generated_at,omitempty"`
+	CameraModel          *string    `json:"camera_model,omitempty"`
+	LensModel            *string    `json:"lens_model,omitempty"`
+	ShutterSpeed         *string    `json:"shutter_speed,omitempty"`
+	Aperture             *float64   `json:"aperture,omitempty"`
+	ISO                  *int       `json:"iso,omitempty"`
+	FocalLengthMM        *float64   `json:"focal_length_mm,omitempty"`
+	FocalLength35mmEquiv *float64   `json:"focal_length_35mm_equiv,omitempty"`
+	WidthPx              *int       `json:"width_px,omitempty"`
+	HeightPx             *int       `json:"height_px,omitempty"`
+	Title                string     `json:"title"`
+	MimeType             string     `json:"mime_type"`
+	ID                   int64      `json:"id"`
+	Ordinal              int64      `json:"ordinal"`
+}
+
+func (item *PhotoItem) RemapLensModel() {
+	if item.LensModel == nil {
+		return
+	}
+
+	var model string = *item.LensModel
+	switch *item.LensModel {
+	// Ambiguous
+	case "18.0-55.0 mm f/3.5-5.6":
+		if item.CameraMake != nil && *item.CameraMake == "NIKON CORPORATION" {
+			model = "NIKKOR 18-55mm F3.5-5.6 DC Macro OS HSM"
+		}
+	case "18.0-300.0 mm f/3.5-6.3":
+		if item.CameraMake != nil && *item.CameraMake == "NIKON CORPORATION" {
+			model = "Sigma Contemporary 18-300mm F3.5-6.3 DC Macro OS HSM"
+		}
+
+	// Apple
+	case "iPad mini back camera 3mm f/1.8":
+		model = "Wide Camera 29mm F1.8"
+	case "iPhone 13 mini back dual wide camera 1.54mm f/2.4":
+		model = "Ultra Wide Camera 14mm F2.4"
+	case "iPhone 13 mini back dual wide camera 5.1mm f/1.6":
+		model = "Wide Camera 26mm F1.6"
+	case "iPhone 13 mini front camera 2.71mm f/2.2":
+		model = "Front Camera 23mm F2.2"
+	case "iPhone 14 Pro back triple camera 2.22mm f/2.2":
+		model = "Ultra Wide Camera 14mm F2.2"
+	case "iPhone 14 Pro back triple camera 6.86mm f/1.78",
+		"iPhone 14 Pro back camera 6.86mm f/1.78",
+		"iPhone 15 Pro Max back triple camera 6.86mm f/1.78":
+		model = "Wide Camera 24mm F1.8"
+	case "iPhone 14 Pro back triple camera 9mm f/2.8":
+		model = "Telephoto Camera 77mm F2.8"
+	case "iPhone 14 Pro front camera 2.69mm f/1.9":
+		model = "Front Camera 30mm F1.9"
+
+	// Nikon/Nikkor
+	case "AF-S DX Nikkor 35mm f/1.8G":
+		model = "Nikkor 28-70mm F??"
+
+	// Sigma
+	case "YYY":
+		model = "Sigma Art 18-35mm F1.8 DC HSM"
+	case "14-24mm F2.8 DG DN | Art 019":
+		model = "Sigma Art 14-24mm F2.8 DG DN"
+	case "Sigma 35mm F1.4 DG DN | A (Sony E)":
+		model = "Sigma Art 35mm F1.4 DG DN"
+	case "85mm F1.4 DG DN | Art 020",
+		"Sigma 85mm F1.4 DG DN | A (Sony E)":
+		model = "Sigma Art 85mm F1.4 DG DN"
+
+	// Sony
+	case "Sony FE 200–600mm F5.6–6.3 G OSS (SEL200600G)",
+		"FE 200-600mm F5.6-6.3 G OSS":
+		model = "Sony 200-600mm F5.6-6.3 G OSS"
+
+	// TAMRON
+	case "E 28-200mm F2.8-5.6 A071":
+		model = "TAMRON 28-200mm F2.8-5.6 Di III RXD"
+	case "E 70-180mm F2.8 A065":
+		model = "TAMRON 70-180mm F2.8 Di III VC VXD G2"
+	default:
+		return
+	}
+
+	item.LensModel = &model
+}
+
+func (item *PhotoItem) RemapCameraModel() {
+	if item.CameraModel == nil {
+		return
+	}
+
+	var model string
+	switch *item.CameraModel {
+	// Sony/Alpha
+	case "ILCE-7R3":
+		model = "Sony A7 III"
+	case "ILCE-7RM3":
+		model = "Sony A7R III"
+	case "ILCE-7C":
+		model = "Sony A7C"
+	default:
+		model = *item.CameraModel
+	}
+
+	item.CameraModel = &model
+}
+
+// VideoItemView is the user-facing projection of a video item in a collection listing.
+type VideoItemView struct {
+	TranscodedAt    *time.Time `json:"transcoded_at,omitempty"`
+	Date            *time.Time `json:"date,omitempty"`
+	EndDate         *time.Time `json:"end_date,omitempty"`
+	Author          *string    `json:"author,omitempty"`
+	VideoCodec      *string    `json:"video_codec,omitempty"`
+	AudioCodec      *string    `json:"audio_codec,omitempty"`
+	Title           string     `json:"title"`
+	MimeType        string     `json:"mime_type"`
+	DurationSeconds *int       `json:"duration_seconds,omitempty"`
+	Width           *int       `json:"width,omitempty"`
+	Height          *int       `json:"height,omitempty"`
+	BitrateKbps     *int       `json:"bitrate_kbps,omitempty"`
+	BookmarkSeconds *int       `json:"bookmark_seconds,omitempty"`
+	ID              int64      `json:"id"`
+	ManualThumbnail bool       `json:"manual_thumbnail"`
+}
+
 // SlideshowItem is a projection used by the slideshow endpoint.
 type SlideshowItem struct {
 	CreatedAt *time.Time `json:"created_at,omitempty"`

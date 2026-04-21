@@ -40,19 +40,18 @@ class TrackView(BaseModel):
     duration_seconds: float | None = None
     artist_name: str | None = None
 
-class VideoMetadataView(BaseModel):
+class VideoItemView(BaseModel):
+    id: int
+    title: str
+    mime_type: str
     duration_seconds: int | None = None
     width: int | None = None
     height: int | None = None
     video_codec: str | None = None
     audio_codec: str | None = None
-
-class VideoItemView(BaseModel):
-    id: int
-    title: str
-    mime_type: str
-    ordinal: int | None = None
-    video: VideoMetadataView | None = None
+    bitrate_kbps: int | None = None
+    bookmark_seconds: int | None = None
+    manual_thumbnail: bool = False
 
 class CollectionView(BaseModel):
     id: int
@@ -107,7 +106,7 @@ def list_album_tracks(token: str, collection_id: int, album_id: int) -> tuple[li
 
 
 def list_video_items(token: str, collection_id: int) -> list[VideoItemView]:
-    r = httpx.get(f"{BASE_URL}/api/v1/collections/{collection_id}/items", headers=bearer(token))
+    r = httpx.get(f"{BASE_URL}/api/v1/collections/{collection_id}/videos", headers=bearer(token))
     r.raise_for_status()
     return [VideoItemView(**item) for item in r.json()["items"]]
 
@@ -266,10 +265,9 @@ class TestMovieCollection:
         items = list_video_items(admin_token, TestMovieCollection.collection_id)
         for item in items:
             assert item.mime_type == "video/mp4"
-            assert item.video is not None, f"item {item.title!r} has no video metadata"
-            assert item.video.duration_seconds is not None, f"item {item.title!r} has no duration"
-            assert item.video.width == 320
-            assert item.video.height == 240
+            assert item.duration_seconds is not None, f"item {item.title!r} has no duration"
+            assert item.width == 320
+            assert item.height == 240
 
 
 # ── Home movies: video:home_movie ─────────────────────────────────────────────

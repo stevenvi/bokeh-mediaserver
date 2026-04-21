@@ -32,10 +32,13 @@ class CollectionAdmin(CollectionUser):
     created_at: AwareDatetime
 
 class PhotoItem(BaseModel):
-    width_px: int
-    height_px: int
+    id: int
+    title: str
+    mime_type: str
+    ordinal: int = 0
+    width_px: int | None = None
+    height_px: int | None = None
     created_at: AwareDatetime | None = None
-    camera_make: str | None = None
     camera_model: str | None = None
     lens_model: str | None = None
     shutter_speed: str | None = None
@@ -43,14 +46,6 @@ class PhotoItem(BaseModel):
     iso: int | None = None
     focal_length_mm: float | None = None
     focal_length_35mm_equiv: float | None = None
-
-class MediaItemSummary(BaseModel):
-    id: int
-    title: str
-    mime_type: str
-
-class MediaItem(MediaItemSummary):
-    photo: PhotoItem | None
 
 def get_collections(token: str) -> list[CollectionUser]:
     r = httpx.get(f"{BASE_URL}/api/v1/collections", headers=bearer(token))
@@ -72,15 +67,10 @@ def get_collection_by_id(token: str, collection_id: int) -> CollectionUser:
     r.raise_for_status()
     return CollectionUser(**r.json())
 
-def get_collection_items(token: str, collection_id: int) -> list[MediaItemSummary]:
-    r = httpx.get(f"{BASE_URL}/api/v1/collections/{collection_id}/items", headers=bearer(token))
+def get_collection_items(token: str, collection_id: int) -> list[PhotoItem]:
+    r = httpx.get(f"{BASE_URL}/api/v1/collections/{collection_id}/photos", headers=bearer(token))
     r.raise_for_status()
-    return [MediaItemSummary(**item) for item in r.json().get("items")]
-
-def get_media_item(token: str, item_id: int) -> MediaItem:
-    r = httpx.get(f"{BASE_URL}/api/v1/media/{item_id}", headers=bearer(token))
-    r.raise_for_status()
-    return MediaItem(**r.json())
+    return [PhotoItem(**item) for item in r.json().get("items")]
 
 def image_variant_exists(token: str, item_id: int, variant: str, mime_type: str) -> bool:
     r = httpx.head(f"{BASE_URL}/images/{item_id}/{variant}", headers={**bearer(token), "Accept": mime_type})
@@ -249,7 +239,7 @@ class TestInitialState:
 class TestSingleTierCollection:
     collection_id: int = None
     scan_job_id: int = None
-    item_map: dict[str, MediaItem] = {}  # title → item dict (populated after grant access)
+    item_map: dict[str, PhotoItem] = {}  # title → item dict (populated after grant access)
 
     def test_01_create_collection(self, admin_token, db_dsn):
         # Create collection
@@ -356,14 +346,9 @@ class TestSingleTierCollection:
             "expected X-DZI-Generated: false on subsequent request (tiles already exist)"
 
     def test_06_exif_data_matches_expectations(self, admin_token):
-        """GET /media/:id should return EXIF values that match known-good hardcoded values."""
+        """Collection photo items should include EXIF values matching known-good hardcoded values."""
         for name, expected in PHOTO_ALBUM_1_FILES.items():
-            item_id = TestSingleTierCollection.item_map[expected["title"]].id
-            media_item = get_media_item(admin_token, item_id)
-            assert media_item.photo is not None, f"no photo metadata for {name}"
-
-            photo: PhotoItem = media_item.photo
-            assert photo.camera_make == expected["camera_make"], name
+            photo: PhotoItem = TestSingleTierCollection.item_map[expected["title"]]
             assert photo.camera_model == expected["camera_model"], name
             assert photo.lens_model == expected["lens_model"], name
             assert photo.width_px == expected["width_px"], name
@@ -459,14 +444,14 @@ class TestSingleTierCollection:
         assert item_id not in [i.id for i in collection_items], "hidden item reappeared after rescan"
         assert len(collection_items) == 2
 
-        # Hidden items should be fully hidden
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            get_media_item(admin_token, item_id)
-        assert exc_info.value.response.status_code == 404
+        # Hidden items should be fully hidden (exif endpoint enforces item visibility)
+        r = httpx.get(f"{BASE_URL}/images/{item_id}/exif", headers=bearer(admin_token))
+        assert r.status_code == 404
 
         # Unhide it and it should show up again
         unhide_item(admin_token, item_id)
-        get_media_item(admin_token, item_id)  # should succeed now
+        r = httpx.get(f"{BASE_URL}/images/{item_id}/exif", headers=bearer(admin_token))
+        assert r.status_code == 200
         collection_items = get_collection_items(admin_token, TestSingleTierCollection.collection_id)
         item_ids = [i.id for i in collection_items]
         assert item_id in item_ids
@@ -527,8 +512,8 @@ class TestMultiTierCollection:
         Walk the entire collection tree recursively via API and confirm all
         media items are reachable.
         """
-        def collect_items(collection_id) -> list[MediaItem]:
-            items: list[MediaItem] = []
+        def collect_items(collection_id) -> list[PhotoItem]:
+            items: list[PhotoItem] = []
             
             # Items in this collection
             r = get_collection_items(admin_token, collection_id)
@@ -564,9 +549,8 @@ class TestMultiTierCollection:
         assert len(items) == 2
         item_id = items[0].id
 
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            get_media_item(TestMultiTierCollection.token, item_id)
-        assert exc_info.value.response.status_code == 404
+        r = httpx.get(f"{BASE_URL}/images/{item_id}/exif", headers=bearer(TestMultiTierCollection.token))
+        assert r.status_code == 404
 
         assert False == image_variant_exists(TestMultiTierCollection.token, item_id, 'thumb', 'image/webp')
 

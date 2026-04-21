@@ -43,31 +43,6 @@ func TestMediaItemUpsert(t *testing.T) {
 	})
 }
 
-func TestMediaItemGet(t *testing.T) {
-	t.Run("returns_item_for_user_with_access", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
-		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		grantAccess(t, db, userID, collID)
-		itemID := createMediaItem(t, db, collID)
-		createPhotoMetadata(t, db, itemID)
-
-		item, err := repository.MediaItemGet(bg(), db, itemID, userID)
-		require.NoError(t, err)
-		assert.Equal(t, itemID, item.ID)
-		assert.NotNil(t, item.Photo)
-	})
-
-	t.Run("error_without_access", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
-		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		itemID := createMediaItem(t, db, collID)
-
-		_, err := repository.MediaItemGet(bg(), db, itemID, userID)
-		assert.Error(t, err)
-	})
-}
 
 func TestMediaItemForProcessing(t *testing.T) {
 	t.Run("returns_path_and_hash", func(t *testing.T) {
@@ -158,65 +133,35 @@ func TestMediaItemUpdateTitle(t *testing.T) {
 	})
 }
 
-func TestMediaItemsByCollectionPaginated(t *testing.T) {
-	t.Run("returns_items_for_user_with_access", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
-		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		grantAccess(t, db, userID, collID)
-		id1 := createMediaItem(t, db, collID)
-		id2 := createMediaItem(t, db, collID)
-
-		items, err := repository.MediaItemsByCollectionPaginated(bg(), db, collID, userID, 10, 0)
-		require.NoError(t, err)
-		ids := make([]int64, len(items))
-		for i, it := range items {
-			ids[i] = it.ID
-		}
-		assert.Contains(t, ids, id1)
-		assert.Contains(t, ids, id2)
-	})
-
-	t.Run("empty_without_access", func(t *testing.T) {
-		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
-		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		createMediaItem(t, db, collID)
-
-		items, err := repository.MediaItemsByCollectionPaginated(bg(), db, collID, userID, 10, 0)
-		require.NoError(t, err)
-		assert.Empty(t, items)
-	})
-}
 
 func TestMediaItemSetHidden(t *testing.T) {
 	t.Run("hides_item", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		grantAccess(t, db, userID, collID)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
 
 		require.NoError(t, repository.MediaItemSetHidden(bg(), db, itemID, true))
 
-		_, err := repository.MediaItemGet(bg(), db, itemID, userID)
-		assert.Error(t, err) // hidden items are excluded
+		var hiddenAt *time.Time
+		err := db.QueryRow(bg(), `SELECT hidden_at FROM media_items WHERE id = $1`, itemID).Scan(&hiddenAt)
+		require.NoError(t, err)
+		assert.NotNil(t, hiddenAt) // hidden_at should be set
 	})
 
 	t.Run("unhides_item", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
-		userID := createUser(t, db)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		grantAccess(t, db, userID, collID)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
 		require.NoError(t, repository.MediaItemSetHidden(bg(), db, itemID, true))
 
 		require.NoError(t, repository.MediaItemSetHidden(bg(), db, itemID, false))
-		item, err := repository.MediaItemGet(bg(), db, itemID, userID)
+
+		var hiddenAt *time.Time
+		err := db.QueryRow(bg(), `SELECT hidden_at FROM media_items WHERE id = $1`, itemID).Scan(&hiddenAt)
 		require.NoError(t, err)
-		assert.Equal(t, itemID, item.ID)
+		assert.Nil(t, hiddenAt) // hidden_at should be cleared
 	})
 }
 
@@ -461,7 +406,7 @@ func TestMediaItemVideosByCollection(t *testing.T) {
 	})
 }
 
-func TestSlideshowItems(t *testing.T) {
+func TestPhotoItems(t *testing.T) {
 	t.Run("returns_items_with_photo_metadata", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
@@ -469,12 +414,12 @@ func TestSlideshowItems(t *testing.T) {
 		ts := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
 		createPhotoMetadataWithDate(t, db, itemID, ts)
 
-		q := repository.SlideshowQuery{
+		q := repository.PhotoQuery{
 			CollectionID: collID,
-			PageSize:     10,
+			Limit:        10,
 			Ascending:    true,
 		}
-		items, err := repository.SlideshowItems(bg(), db, q)
+		items, err := repository.PhotoItems(bg(), db, q)
 		require.NoError(t, err)
 		ids := make([]int64, len(items))
 		for i, it := range items {
@@ -486,39 +431,71 @@ func TestSlideshowItems(t *testing.T) {
 	t.Run("empty_for_collection_with_no_photo_metadata", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
-		// Item without photo_metadata is not returned.
+		// Item without photo_metadata is not returned (PhotoItems JOINs on photo_metadata).
 		createMediaItem(t, db, collID)
 
-		q := repository.SlideshowQuery{CollectionID: collID, PageSize: 10, Ascending: true}
-		items, err := repository.SlideshowItems(bg(), db, q)
+		q := repository.PhotoQuery{CollectionID: collID, Limit: 10, Ascending: true}
+		items, err := repository.PhotoItems(bg(), db, q)
 		require.NoError(t, err)
 		assert.Empty(t, items)
 	})
-}
 
-func TestSlideshowItemPosition(t *testing.T) {
-	t.Run("returns_position_for_existing_item", func(t *testing.T) {
+	t.Run("ordinal_is_zero_from_repository", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID)
 
-		pos, err := repository.SlideshowItemPosition(bg(), db, itemID)
+		q := repository.PhotoQuery{CollectionID: collID, Limit: 10, Ascending: true}
+		items, err := repository.PhotoItems(bg(), db, q)
 		require.NoError(t, err)
-		require.NotNil(t, pos)
-		assert.Equal(t, itemID, pos.ID)
-		assert.Equal(t, collID, pos.CollectionID)
+		require.Len(t, items, 1)
+		// Ordinal is set by the handler, not the repository.
+		assert.Equal(t, int64(0), items[0].Ordinal)
 	})
 
-	t.Run("returns_nil_for_missing_item", func(t *testing.T) {
+	t.Run("recursive_false_excludes_subcollection_items", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
-		pos, err := repository.SlideshowItemPosition(bg(), db, 999999)
+		rootID := createCollection(t, db, constants.CollectionTypePhoto)
+		subID := createSubCollection(t, db, rootID, constants.CollectionTypePhoto)
+		itemInRoot := createMediaItem(t, db, rootID)
+		itemInSub := createMediaItem(t, db, subID)
+		createPhotoMetadata(t, db, itemInRoot)
+		createPhotoMetadata(t, db, itemInSub)
+
+		q := repository.PhotoQuery{CollectionID: rootID, Limit: 10, Ascending: true, Recursive: false}
+		items, err := repository.PhotoItems(bg(), db, q)
 		require.NoError(t, err)
-		assert.Nil(t, pos)
+		ids := make([]int64, len(items))
+		for i, it := range items {
+			ids[i] = it.ID
+		}
+		assert.Contains(t, ids, itemInRoot)
+		assert.NotContains(t, ids, itemInSub)
+	})
+
+	t.Run("recursive_true_includes_subcollection_items", func(t *testing.T) {
+		db := testutil.NewTx(t, testPool)
+		rootID := createCollection(t, db, constants.CollectionTypePhoto)
+		subID := createSubCollection(t, db, rootID, constants.CollectionTypePhoto)
+		itemInRoot := createMediaItem(t, db, rootID)
+		itemInSub := createMediaItem(t, db, subID)
+		createPhotoMetadata(t, db, itemInRoot)
+		createPhotoMetadata(t, db, itemInSub)
+
+		q := repository.PhotoQuery{CollectionID: rootID, Limit: 10, Ascending: true, Recursive: true}
+		items, err := repository.PhotoItems(bg(), db, q)
+		require.NoError(t, err)
+		ids := make([]int64, len(items))
+		for i, it := range items {
+			ids[i] = it.ID
+		}
+		assert.Contains(t, ids, itemInRoot)
+		assert.Contains(t, ids, itemInSub)
 	})
 }
 
-func TestSlideshowMetadata(t *testing.T) {
+func TestPhotoStatistics(t *testing.T) {
 	t.Run("returns_month_counts", func(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
@@ -526,7 +503,7 @@ func TestSlideshowMetadata(t *testing.T) {
 		ts := time.Date(2022, 3, 15, 0, 0, 0, 0, time.UTC)
 		createPhotoMetadataWithDate(t, db, itemID, ts)
 
-		counts, err := repository.SlideshowMetadata(bg(), db, collID, false)
+		counts, err := repository.PhotoStatistics(bg(), db, collID, false)
 		require.NoError(t, err)
 		require.Len(t, counts, 1)
 		assert.Equal(t, 2022, counts[0].Year)
@@ -541,7 +518,7 @@ func TestSlideshowMetadata(t *testing.T) {
 		itemID := createMediaItem(t, db, collID)
 		createPhotoMetadata(t, db, itemID) // created_at is nil
 
-		counts, err := repository.SlideshowMetadata(bg(), db, collID, false)
+		counts, err := repository.PhotoStatistics(bg(), db, collID, false)
 		require.NoError(t, err)
 		assert.Empty(t, counts)
 	})

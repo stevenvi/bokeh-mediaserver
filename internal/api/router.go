@@ -90,12 +90,14 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 		r.Get("/api/v1/collections", collections.list)
 		r.Get("/api/v1/collections/{id}", collections.get)
 		r.Get("/api/v1/collections/{id}/collections", collections.listChildren)
-		r.Get("/api/v1/collections/{id}/items", collections.listItems)
-		r.Get("/api/v1/collections/{id}/slideshow", collections.slideshow)
-		r.Get("/api/v1/collections/{id}/slideshow/metadata", collections.slideshowMetadata)
 
-		// Media items and photos
-		r.Get("/api/v1/media/{id}", photos.getItem)
+		// Photo endpoints
+		r.Get("/api/v1/collections/{id}/photos", photos.listPhotos)
+		r.Get("/api/v1/collections/{id}/photos/stats", photos.photoStats)
+
+		// Video endpoints
+		r.Get("/api/v1/collections/{id}/videos", video.listVideos)
+		r.Get("/api/v1/collections/{id}/items/{item_id}", video.getVideoItem)
 
 		// Image serving
 		r.Get("/images/{id}/{variant}", photos.serveVariant)
@@ -135,8 +137,8 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 		r.Get("/images/videos/{id}/cover", video.cover)
 
 		// Video bookmarks
-		r.Put("/api/v1/media/{id}/bookmark", video.upsertBookmark)
-		r.Delete("/api/v1/media/{id}/bookmark", video.deleteBookmark)
+		r.Put("/api/v1/collections/{id}/items/{item_id}/bookmark", video.upsertBookmark)
+		r.Delete("/api/v1/collections/{id}/items/{item_id}/bookmark", video.deleteBookmark)
 	})
 
 	// ── Admin ─────────────────────────────────────────────────────────────────

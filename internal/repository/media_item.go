@@ -59,43 +59,6 @@ func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, tit
 	return
 }
 
-// MediaItemGet returns a media item by ID with photo metadata, enforcing that the given user
-// has access to the collection it belongs to. Returns an error (→ 404) if the item does
-// not exist, is hidden, or the user lacks collection_access.
-func MediaItemGet(ctx context.Context, db utils.DBTX, id, userID int64) (*models.MediaItemView, error) {
-	var item models.MediaItemView
-	var photo models.PhotoMetadata
-	var hasPhoto bool
-	err := db.QueryRow(ctx,
-		`SELECT m.id, m.title, m.mime_type, m.ordinal,
-		        pm.media_item_id IS NOT NULL,
-		        pm.width_px, pm.height_px, pm.created_at,
-		        pm.camera_make, pm.camera_model, pm.lens_model,
-		        pm.shutter_speed, pm.aperture, pm.iso,
-		        pm.focal_length_mm, pm.focal_length_35mm_equiv,
-		        pm.color_space
-		 FROM media_items m
-		 JOIN collections c ON c.id = m.collection_id
-		 JOIN collection_access ca ON ca.collection_id = c.root_collection_id AND ca.user_id = $2
-		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
-		 WHERE m.id = $1 AND m.hidden_at IS NULL AND m.missing_since IS NULL`,
-		id, userID,
-	).Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
-		&hasPhoto,
-		&photo.WidthPx, &photo.HeightPx, &photo.CreatedAt,
-		&photo.CameraMake, &photo.CameraModel, &photo.LensModel,
-		&photo.ShutterSpeed, &photo.Aperture, &photo.ISO,
-		&photo.FocalLengthMM, &photo.FocalLength35mmEquiv,
-		&photo.ColorSpace,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if hasPhoto {
-		item.Photo = &photo
-	}
-	return &item, nil
-}
 
 // MediaItemForProcessing returns fields needed for media processing. Only returns non-missing items.
 func MediaItemForProcessing(ctx context.Context, db utils.DBTX, id int64) (relativePath, mimeType, fileHash string, err error) {
@@ -134,41 +97,6 @@ func MediaItemUpdateTitle(ctx context.Context, db utils.DBTX, id int64, title st
 	return err
 }
 
-// MediaItemsByCollectionPaginated returns paginated media items for a collection.
-// Access is checked against the root ancestor collection, so sub-collections
-// are accessible if the user has access to the top-level parent.
-func MediaItemsByCollectionPaginated(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, limit, offset int) ([]models.MediaItemView, error) {
-	rows, err := db.Query(ctx,
-		`SELECT m.id, m.title, m.mime_type, m.ordinal,
-		        pm.variants_generated_at
-		 FROM media_items m
-		 LEFT JOIN photo_metadata pm ON pm.media_item_id = m.id
-		 JOIN collections c ON c.id = m.collection_id
-		 WHERE m.collection_id = $1 AND m.missing_since IS NULL AND m.hidden_at IS NULL
-		   AND `+collectionAccessExists+`
-		 ORDER BY m.ordinal ASC NULLS LAST, m.title ASC
-		 LIMIT $3 OFFSET $4`,
-		collectionID, userID, limit, offset,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.MediaItemView, error) {
-		var item models.MediaItemView
-		var variantsGeneratedAt *time.Time
-		err := row.Scan(&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
-			&variantsGeneratedAt)
-		if err != nil {
-			return item, err
-		}
-		if variantsGeneratedAt != nil {
-			item.Photo = &models.PhotoMetadata{
-				VariantsGeneratedAt: variantsGeneratedAt,
-			}
-		}
-		return item, nil
-	})
-}
 
 // MediaItemSetHidden marks an item as hidden or visible in the database. This is effectively a soft delete,
 // which prevents removed items from showing back up after a collection scan.
@@ -387,7 +315,7 @@ type VideoIntegrityItem struct {
 // For video:movie collections it recurses into sub-collections (ordered by title).
 // For video:home_movie collections it returns only the direct collection (ordered by relative_path).
 // BookmarkSeconds is populated per-user.
-func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, collectionType constants.CollectionType, limit, offset int) ([]models.MediaItemView, error) {
+func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionID int64, userID int64, collectionType constants.CollectionType, limit, offset int) ([]models.VideoItemView, error) {
 	var rows pgx.Rows
 	var err error
 
@@ -437,79 +365,74 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.MediaItemView, error) {
-		var item models.MediaItemView
-		var vm models.VideoMetadata
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.VideoItemView, error) {
+		var item models.VideoItemView
+		var dummy *int
 		err := row.Scan(
-			&item.ID, &item.Title, &item.MimeType, &item.Ordinal,
-			&vm.DurationSeconds, &vm.Width, &vm.Height, &vm.BitrateKbps,
-			&vm.VideoCodec, &vm.AudioCodec, &vm.TranscodedAt,
-			&vm.Date, &vm.EndDate, &vm.Author, &vm.ManualThumbnail,
-			&vm.BookmarkSeconds,
+			&item.ID, &item.Title, &item.MimeType, &dummy,
+			&item.DurationSeconds, &item.Width, &item.Height, &item.BitrateKbps,
+			&item.VideoCodec, &item.AudioCodec, &item.TranscodedAt,
+			&item.Date, &item.EndDate, &item.Author, &item.ManualThumbnail,
+			&item.BookmarkSeconds,
 		)
-		item.Video = &vm
 		return item, err
 	})
 }
 
-// SlideshowQuery holds parameters for a slideshow page fetch.
-type SlideshowQuery struct {
-	CursorTime    *time.Time
-	CollectionID  int64
-	PageSize      int // the repository adds +1 internally
-	CursorID      int64
-	Ascending     bool
-	Recursive     bool
-	HasCursor     bool
-	IncludeCursor bool // include the item the cursor points to in results (inclusive/exclusive)
+// MediaItemVideoGet returns a single video item by ID, scoped to a collection tree.
+// Returns an error (→ 404) if the item does not exist, is hidden/missing, does not belong
+// to the given collection's tree, or the user lacks collection_access.
+func MediaItemVideoGet(ctx context.Context, db utils.DBTX, collectionID, itemID, userID int64) (*models.VideoItemView, error) {
+	var item models.VideoItemView
+	err := db.QueryRow(ctx,
+		`WITH RECURSIVE tree AS (
+		     SELECT id FROM collections WHERE id = $1
+		     UNION ALL
+		     SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
+		 )
+		 SELECT m.id, m.title, m.mime_type,
+		        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
+		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
+		        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
+		        vb.position_seconds
+		 FROM media_items m
+		 JOIN tree t ON t.id = m.collection_id
+		 LEFT JOIN video_metadata vm ON vm.media_item_id = m.id
+		 LEFT JOIN video_bookmarks vb ON vb.media_item_id = m.id AND vb.user_id = $3
+		 WHERE m.id = $2
+		   AND m.hidden_at IS NULL AND m.missing_since IS NULL
+		   AND `+collectionAccessExistsFromParam,
+		collectionID, itemID, userID,
+	).Scan(
+		&item.ID, &item.Title, &item.MimeType,
+		&item.DurationSeconds, &item.Width, &item.Height, &item.BitrateKbps,
+		&item.VideoCodec, &item.AudioCodec, &item.TranscodedAt,
+		&item.Date, &item.EndDate, &item.Author, &item.ManualThumbnail,
+		&item.BookmarkSeconds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
-// SlideshowItems returns a page of photo items via keyset pagination.
+// PhotoQuery holds parameters for a photo items page fetch.
+type PhotoQuery struct {
+	CollectionID int64
+	Offset       int
+	Limit        int
+	Ascending    bool
+	Recursive    bool
+}
+
+// PhotoItems returns a page of photo items with full EXIF data, ordered by created_at.
 // When Recursive is true, items from all descendant collections are included.
-// The caller receives pageSize+1 rows and must trim to detect whether a next page exists.
-func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]models.SlideshowItem, error) {
-	args := []any{q.CollectionID, q.PageSize + 1}
-	addArg := func(v any) string {
-		args = append(args, v)
-		return fmt.Sprintf("$%d", len(args))
-	}
-
-	// Build cursor clause
-	var cursorClause string
-	if q.HasCursor {
-		gt, lt := ">", "<"
-		if q.IncludeCursor {
-			gt, lt = ">=", "<="
-		}
-		if q.Ascending {
-			if q.CursorTime != nil {
-				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
-				cursorClause = fmt.Sprintf(
-					`AND (pm.created_at > %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
-					ts, ts, gt, id)
-			} else {
-				id := addArg(q.CursorID)
-				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, gt, id)
-			}
-		} else {
-			if q.CursorTime != nil {
-				ts, id := addArg(*q.CursorTime), addArg(q.CursorID)
-				cursorClause = fmt.Sprintf(
-					`AND (pm.created_at < %s OR (pm.created_at = %s AND mi.id %s %s) OR pm.created_at IS NULL)`,
-					ts, ts, lt, id)
-			} else {
-				id := addArg(q.CursorID)
-				cursorClause = fmt.Sprintf(`AND (pm.created_at IS NULL AND mi.id %s %s)`, lt, id)
-			}
-		}
-	}
-
+func PhotoItems(ctx context.Context, db utils.DBTX, q PhotoQuery) ([]models.PhotoItem, error) {
 	dir := "ASC"
 	if !q.Ascending {
 		dir = "DESC"
 	}
 
-	// Build collection filter: recursive CTE or direct match
 	var cte, collectionFilter string
 	if q.Recursive {
 		cte = `WITH RECURSIVE collection_tree AS (
@@ -526,64 +449,43 @@ func SlideshowItems(ctx context.Context, db utils.DBTX, q SlideshowQuery) ([]mod
 
 	query := fmt.Sprintf(`
 		%s
-		SELECT
-		    pm.created_at,
-		    pm.width_px,
-		    pm.height_px,
-		    mi.title,
-		    mi.mime_type,
-		    mi.id
+		SELECT mi.id, mi.title, mi.mime_type,
+		       pm.created_at, pm.width_px, pm.height_px,
+		       pm.camera_make, pm.camera_model, pm.lens_model,
+		       pm.shutter_speed, pm.aperture, pm.iso,
+		       pm.focal_length_mm, pm.focal_length_35mm_equiv,
+		       pm.variants_generated_at
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
 		WHERE %s
 		  AND mi.missing_since IS NULL
 		  AND mi.hidden_at IS NULL
-		  %s
 		ORDER BY pm.created_at %s NULLS LAST, mi.id %s
-		LIMIT $2`,
-		cte, collectionFilter, cursorClause, dir, dir,
+		LIMIT $2 OFFSET $3`,
+		cte, collectionFilter, dir, dir,
 	)
 
-	rows, err := db.Query(ctx, query, args...)
+	rows, err := db.Query(ctx, query, q.CollectionID, q.Limit, q.Offset)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowItem])
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.PhotoItem, error) {
+		var item models.PhotoItem
+		err := row.Scan(
+			&item.ID, &item.Title, &item.MimeType,
+			&item.CreatedAt, &item.WidthPx, &item.HeightPx,
+			&item.CameraMake, &item.CameraModel, &item.LensModel,
+			&item.ShutterSpeed, &item.Aperture, &item.ISO,
+			&item.FocalLengthMM, &item.FocalLength35mmEquiv,
+			&item.VariantsGeneratedAt,
+		)
+		return item, err
+	})
 }
 
-// SlideshowItemPositionObj holds the sort-key fields needed to construct a cursor for a given item.
-type SlideshowItemPositionObj struct {
-	CreatedAt    *time.Time
-	ID           int64
-	CollectionID int64
-}
-
-// SlideshowItemPosition returns the sort-key fields for a media item, used to construct
-// a cursor when the client specifies a start item. Returns nil if the item does not exist
-// or is hidden/missing.
-func SlideshowItemPosition(ctx context.Context, db utils.DBTX, itemID int64) (*SlideshowItemPositionObj, error) {
-	var pos SlideshowItemPositionObj
-	err := db.QueryRow(ctx, `
-		SELECT mi.id, mi.collection_id, pm.created_at
-		FROM media_items mi
-		JOIN photo_metadata pm ON pm.media_item_id = mi.id
-		WHERE mi.id = $1
-		  AND mi.missing_since IS NULL
-		  AND mi.hidden_at IS NULL`,
-		itemID,
-	).Scan(&pos.ID, &pos.CollectionID, &pos.CreatedAt)
-	if err == pgx.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &pos, nil
-}
-
-// SlideshowMetadata returns per-month item counts for the slideshow scrollbar.
+// PhotoStatistics returns per-month item counts for a photo collection.
 // Items with NULL created_at are excluded.
-func SlideshowMetadata(ctx context.Context, db utils.DBTX, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
+func PhotoStatistics(ctx context.Context, db utils.DBTX, collectionID int64, recursive bool) ([]models.SlideshowMonthCount, error) {
 	var cte, collectionFilter string
 	if recursive {
 		cte = `WITH RECURSIVE collection_tree AS (
@@ -621,6 +523,8 @@ func SlideshowMetadata(ctx context.Context, db utils.DBTX, collectionID int64, r
 	}
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[models.SlideshowMonthCount])
 }
+
+
 
 // ScanItem holds the fields needed to check a media item against the filesystem.
 type ScanItem struct {

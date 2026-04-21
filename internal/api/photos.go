@@ -25,25 +25,89 @@ type photosHandler struct {
 	mediaPath string
 }
 
-// GET /api/v1/media/:id
-func (h *photosHandler) getItem(w http.ResponseWriter, r *http.Request) {
+// GET /api/v1/collections/{id}/photos
+func (h *photosHandler) listPhotos(w http.ResponseWriter, r *http.Request) {
 	id, ok := urlIntParam(w, r, "id")
 	if !ok {
 		return
 	}
 
-	item, err := repository.MediaItemGet(r.Context(), h.db, id, userIDFromRequest(r))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "media item not found")
+	userID := userIDFromRequest(r)
+	accessible, err := repository.CollectionExistsAndAccessible(r.Context(), h.db, id, userID)
+	if err != nil || !accessible {
+		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
 
-	if item.Photo != nil {
-		item.Photo.RemapCameraModel()
-		item.Photo.RemapLensModel()
+	sortOrder := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort_order")))
+	ascending := sortOrder != "desc"
+
+	recursiveParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("recursive")))
+	recursive := recursiveParam == "true"
+
+	offset := queryInt(r, "offset", 0)
+	limit := queryInt(r, "limit", 200)
+	if limit > 1000 {
+		limit = 1000
 	}
 
-	writeJSON(w, http.StatusOK, item)
+	items, err := repository.PhotoItems(r.Context(), h.db, repository.PhotoQuery{
+		CollectionID: id,
+		Offset:       offset,
+		Limit:        limit,
+		Ascending:    ascending,
+		Recursive:    recursive,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	for i := range items {
+		items[i].Ordinal = int64(offset + i)
+		items[i].RemapCameraModel()
+		items[i].RemapLensModel()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"offset": offset,
+		"limit":  limit,
+	})
+}
+
+// GET /api/v1/collections/{id}/photos/stats
+func (h *photosHandler) photoStats(w http.ResponseWriter, r *http.Request) {
+	id, ok := urlIntParam(w, r, "id")
+	if !ok {
+		return
+	}
+
+	userID := userIDFromRequest(r)
+	accessible, err := repository.CollectionExistsAndAccessible(r.Context(), h.db, id, userID)
+	if err != nil || !accessible {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	recursiveParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("recursive")))
+	recursive := recursiveParam == "true"
+
+	counts, err := repository.PhotoStatistics(r.Context(), h.db, id, recursive)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	total := 0
+	for _, c := range counts {
+		total += c.Count
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"months": counts,
+	})
 }
 
 // GET /images/:id/exif

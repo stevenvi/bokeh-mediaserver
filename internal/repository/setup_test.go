@@ -62,6 +62,17 @@ func createCollection(t *testing.T, db utils.DBTX, colType constants.CollectionT
 	)
 }
 
+func createSubCollection(t *testing.T, db utils.DBTX, parentID int64, colType constants.CollectionType) int64 {
+	t.Helper()
+	n := atomic.AddInt64(&collectionCounter, 1)
+	id, err := repository.CollectionUpsertSubCollection(bg(), db, parentID, parentID,
+		fmt.Sprintf("Sub Collection %d", n),
+		fmt.Sprintf("test/path-%d/sub", n),
+	)
+	require.NoError(t, err)
+	return id
+}
+
 func grantAccess(t *testing.T, db utils.DBTX, userID, collectionID int64) {
 	t.Helper()
 	err := repository.CollectionGrantAccessToUser(bg(), db, userID, []int64{collectionID})
