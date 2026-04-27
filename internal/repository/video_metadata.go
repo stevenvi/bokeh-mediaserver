@@ -17,14 +17,14 @@ func VideoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	width, height *int,
 	bitrateKbps *int,
 	videoCodec, audioCodec *string,
-	date, endDate *time.Time,
+	dateString *string,
 	author *string,
 ) error {
 	_, err := db.Exec(ctx,
 		`INSERT INTO video_metadata
 		    (media_item_id, duration_seconds, width, height, bitrate_kbps,
-		     video_codec, audio_codec, date, end_date, author)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		     video_codec, audio_codec, date_string, author)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 ON CONFLICT (media_item_id) DO UPDATE SET
 		    duration_seconds = EXCLUDED.duration_seconds,
 		    width             = EXCLUDED.width,
@@ -32,11 +32,10 @@ func VideoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 		    bitrate_kbps      = EXCLUDED.bitrate_kbps,
 		    video_codec       = EXCLUDED.video_codec,
 		    audio_codec       = EXCLUDED.audio_codec,
-		    date              = EXCLUDED.date,
-		    end_date          = EXCLUDED.end_date,
+		    date_string       = EXCLUDED.date_string,
 		    author            = EXCLUDED.author`,
 		itemID, durationSeconds, width, height, bitrateKbps,
-		videoCodec, audioCodec, date, endDate, author,
+		videoCodec, audioCodec, dateString, author,
 	)
 	return err
 }
@@ -48,7 +47,7 @@ func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID 
 	err := db.QueryRow(ctx,
 		`SELECT vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-		        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
+		        vm.date_string, vm.author, vm.manual_thumbnail,
 		        vb.position_seconds
 		 FROM video_metadata vm
 		 LEFT JOIN video_bookmarks vb
@@ -58,7 +57,7 @@ func VideoWithBookmark(ctx context.Context, db utils.DBTX, itemID int64, userID 
 	).Scan(
 		&m.DurationSeconds, &m.Width, &m.Height, &m.BitrateKbps,
 		&m.VideoCodec, &m.AudioCodec, &m.TranscodedAt,
-		&m.Date, &m.EndDate, &m.Author, &m.ManualThumbnail,
+		&m.DateString, &m.Author, &m.ManualThumbnail,
 		&m.BookmarkSeconds,
 	)
 	if err != nil {

@@ -255,8 +255,7 @@ CREATE TABLE video_metadata (
     video_codec                 text,
     audio_codec                 text,
     transcoded_at               timestamptz,
-    date                        date,       -- release date (movies) or start date (home movies)
-    end_date                    date,       -- home movies only
+    date_string                 text,       -- raw date string, parsed at query time
     author                      text,       -- home movies only
     manual_thumbnail            bool NOT NULL DEFAULT false
 );

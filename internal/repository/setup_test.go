@@ -143,7 +143,7 @@ func createVideoMetadata(t *testing.T, db utils.DBTX, itemID int64) {
 	t.Helper()
 	dur, w, h, bitrate := 120, 1920, 1080, 4000
 	vc, ac := "h264", "aac"
-	err := repository.VideoUpsert(bg(), db, itemID, &dur, &w, &h, &bitrate, &vc, &ac, nil, nil, nil)
+	err := repository.VideoUpsert(bg(), db, itemID, &dur, &w, &h, &bitrate, &vc, &ac, nil, nil)
 	require.NoError(t, err)
 }
 

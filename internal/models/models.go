@@ -24,7 +24,7 @@ type Collection struct {
 // CollectionView is the user-facing detail view of a single collection.
 type CollectionView struct {
 	ParentCollectionID *int64                   `json:"parent_collection_id,omitempty"`
-	Date               *time.Time               `json:"date,omitempty"`
+	Date               *string                  `json:"date,omitempty"`
 	Name               string                   `json:"name"`
 	Type               constants.CollectionType `json:"type"`
 	ID                 int64                    `json:"id"`
@@ -189,8 +189,7 @@ type VideoMetadata struct {
 	VideoCodec      *string    `json:"video_codec,omitempty"`
 	AudioCodec      *string    `json:"audio_codec,omitempty"`
 	TranscodedAt    *time.Time `json:"transcoded_at,omitempty"`
-	Date            *time.Time `json:"date,omitempty"`
-	EndDate         *time.Time `json:"end_date,omitempty"`
+	DateString      *string    `json:"-"` // raw stored string, converted at query time
 	Author          *string    `json:"author,omitempty"`
 	BookmarkSeconds *int       `json:"bookmark_seconds,omitempty"` // populated per-user at query time; nil means no bookmark
 	ManualThumbnail bool       `json:"manual_thumbnail"`
@@ -331,8 +330,7 @@ func (item *PhotoItem) RemapCameraModel() {
 // VideoItemView is the user-facing projection of a video item in a collection listing.
 type VideoItemView struct {
 	TranscodedAt    *time.Time `json:"transcoded_at,omitempty"`
-	Date            *time.Time `json:"date,omitempty"`
-	EndDate         *time.Time `json:"end_date,omitempty"`
+	Date            *string    `json:"date,omitempty"`
 	Author          *string    `json:"author,omitempty"`
 	VideoCodec      *string    `json:"video_codec,omitempty"`
 	AudioCodec      *string    `json:"audio_codec,omitempty"`

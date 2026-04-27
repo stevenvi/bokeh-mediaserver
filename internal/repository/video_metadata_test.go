@@ -18,17 +18,16 @@ func TestVideoUpsert(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypeMovie)
 		itemID := createVideoMediaItem(t, db, collID)
 
-		err := repository.VideoUpsert(bg(), db, itemID, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		err := repository.VideoUpsert(bg(), db, itemID, nil, nil, nil, nil, nil, nil, nil, nil)
 		require.NoError(t, err)
 
 		var dur, w, h, bitrate *int
-		var vc, ac, author *string
-		var date, endDate *time.Time
+		var vc, ac, author, dateStr *string
 		err = db.QueryRow(bg(),
 			`SELECT duration_seconds, width, height, bitrate_kbps,
-			        video_codec, audio_codec, date, end_date, author
+			        video_codec, audio_codec, date_string, author
 			 FROM video_metadata WHERE media_item_id = $1`, itemID,
-		).Scan(&dur, &w, &h, &bitrate, &vc, &ac, &date, &endDate, &author)
+		).Scan(&dur, &w, &h, &bitrate, &vc, &ac, &dateStr, &author)
 		require.NoError(t, err)
 		assert.Nil(t, dur)
 		assert.Nil(t, w)
@@ -36,8 +35,7 @@ func TestVideoUpsert(t *testing.T) {
 		assert.Nil(t, bitrate)
 		assert.Nil(t, vc)
 		assert.Nil(t, ac)
-		assert.Nil(t, date)
-		assert.Nil(t, endDate)
+		assert.Nil(t, dateStr)
 		assert.Nil(t, author)
 	})
 
@@ -48,22 +46,20 @@ func TestVideoUpsert(t *testing.T) {
 
 		dur, w, h, bitrate := 5400, 3840, 2160, 50000
 		vc, ac := "hevc", "eac3"
-		date := time.Date(2021, 7, 4, 0, 0, 0, 0, time.UTC)
-		endDate := time.Date(2021, 7, 5, 0, 0, 0, 0, time.UTC)
+		dateStr := "2021.07.04-05"
 		author := "Jane Smith"
 		err := repository.VideoUpsert(bg(), db, itemID,
-			&dur, &w, &h, &bitrate, &vc, &ac, &date, &endDate, &author,
+			&dur, &w, &h, &bitrate, &vc, &ac, &dateStr, &author,
 		)
 		require.NoError(t, err)
 
 		var gotDur, gotW, gotH, gotBitrate *int
-		var gotVC, gotAC, gotAuthor *string
-		var gotDate, gotEndDate *time.Time
+		var gotVC, gotAC, gotAuthor, gotDateStr *string
 		err = db.QueryRow(bg(),
 			`SELECT duration_seconds, width, height, bitrate_kbps,
-			        video_codec, audio_codec, date, end_date, author
+			        video_codec, audio_codec, date_string, author
 			 FROM video_metadata WHERE media_item_id = $1`, itemID,
-		).Scan(&gotDur, &gotW, &gotH, &gotBitrate, &gotVC, &gotAC, &gotDate, &gotEndDate, &gotAuthor)
+		).Scan(&gotDur, &gotW, &gotH, &gotBitrate, &gotVC, &gotAC, &gotDateStr, &gotAuthor)
 		require.NoError(t, err)
 
 		require.NotNil(t, gotDur)
@@ -78,10 +74,8 @@ func TestVideoUpsert(t *testing.T) {
 		assert.Equal(t, "hevc", *gotVC)
 		require.NotNil(t, gotAC)
 		assert.Equal(t, "eac3", *gotAC)
-		require.NotNil(t, gotDate)
-		assert.Equal(t, date.UTC(), gotDate.UTC())
-		require.NotNil(t, gotEndDate)
-		assert.Equal(t, endDate.UTC(), gotEndDate.UTC())
+		require.NotNil(t, gotDateStr)
+		assert.Equal(t, "2021.07.04-05", *gotDateStr)
 		require.NotNil(t, gotAuthor)
 		assert.Equal(t, "Jane Smith", *gotAuthor)
 	})
@@ -99,7 +93,7 @@ func TestVideoUpsert(t *testing.T) {
 		// Re-process with different dimensions.
 		dur, w, h, bitrate := 200, 3840, 2160, 20000
 		vc, ac := "av1", "opus"
-		require.NoError(t, repository.VideoUpsert(bg(), db, itemID, &dur, &w, &h, &bitrate, &vc, &ac, nil, nil, nil))
+		require.NoError(t, repository.VideoUpsert(bg(), db, itemID, &dur, &w, &h, &bitrate, &vc, &ac, nil, nil))
 
 		vm, err := repository.VideoMetadataForTranscode(bg(), db, itemID)
 		require.NoError(t, err)

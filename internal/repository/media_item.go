@@ -331,7 +331,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			 SELECT m.id, m.title, m.mime_type, m.ordinal,
 			        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 			        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-			        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
+			        vm.date_string, vm.author, vm.manual_thumbnail,
 			        vb.position_seconds
 			 FROM media_items m
 			 JOIN descendants d ON d.id = m.collection_id
@@ -349,7 +349,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 			`SELECT m.id, m.title, m.mime_type, m.ordinal,
 			        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 			        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-			        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
+			        vm.date_string, vm.author, vm.manual_thumbnail,
 			        vb.position_seconds
 			 FROM media_items m
 			 LEFT JOIN video_metadata vm ON vm.media_item_id = m.id
@@ -368,13 +368,17 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.VideoItemView, error) {
 		var item models.VideoItemView
 		var dummy *int
+		var dateString *string
 		err := row.Scan(
 			&item.ID, &item.Title, &item.MimeType, &dummy,
 			&item.DurationSeconds, &item.Width, &item.Height, &item.BitrateKbps,
 			&item.VideoCodec, &item.AudioCodec, &item.TranscodedAt,
-			&item.Date, &item.EndDate, &item.Author, &item.ManualThumbnail,
+			&dateString, &item.Author, &item.ManualThumbnail,
 			&item.BookmarkSeconds,
 		)
+		if dateString != nil {
+			item.Date = utils.ParseDateString(*dateString)
+		}
 		return item, err
 	})
 }
@@ -384,6 +388,7 @@ func MediaItemVideosByCollection(ctx context.Context, db utils.DBTX, collectionI
 // to the given collection's tree, or the user lacks collection_access.
 func MediaItemVideoGet(ctx context.Context, db utils.DBTX, collectionID, itemID, userID int64) (*models.VideoItemView, error) {
 	var item models.VideoItemView
+	var dateString *string
 	err := db.QueryRow(ctx,
 		`WITH RECURSIVE tree AS (
 		     SELECT id FROM collections WHERE id = $1
@@ -393,7 +398,7 @@ func MediaItemVideoGet(ctx context.Context, db utils.DBTX, collectionID, itemID,
 		 SELECT m.id, m.title, m.mime_type,
 		        vm.duration_seconds, vm.width, vm.height, vm.bitrate_kbps,
 		        vm.video_codec, vm.audio_codec, vm.transcoded_at,
-		        vm.date, vm.end_date, vm.author, vm.manual_thumbnail,
+		        vm.date_string, vm.author, vm.manual_thumbnail,
 		        vb.position_seconds
 		 FROM media_items m
 		 JOIN tree t ON t.id = m.collection_id
@@ -407,11 +412,14 @@ func MediaItemVideoGet(ctx context.Context, db utils.DBTX, collectionID, itemID,
 		&item.ID, &item.Title, &item.MimeType,
 		&item.DurationSeconds, &item.Width, &item.Height, &item.BitrateKbps,
 		&item.VideoCodec, &item.AudioCodec, &item.TranscodedAt,
-		&item.Date, &item.EndDate, &item.Author, &item.ManualThumbnail,
+		&dateString, &item.Author, &item.ManualThumbnail,
 		&item.BookmarkSeconds,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if dateString != nil {
+		item.Date = utils.ParseDateString(*dateString)
 	}
 	return &item, nil
 }

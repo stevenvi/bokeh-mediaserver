@@ -7,9 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/constants"
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
@@ -18,6 +18,10 @@ import (
 	"github.com/stevenvi/bokeh-mediaserver/internal/repository"
 	"github.com/stevenvi/bokeh-mediaserver/internal/utils"
 )
+
+// yearSuffixRegex matches a 4-digit year in parentheses at the end of a filename,
+// e.g. "The Matrix (1999)".
+var yearSuffixRegex = regexp.MustCompile(`\((\d{4})\)\s*$`)
 
 // ScanVideoMeta describes the scan_video sub-job type.
 var ScanVideoMeta = jobs.JobMeta{
@@ -73,7 +77,7 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		// Title
 		exifTitle := jobsutils.ExifStr(exifData, "Title")
 
-		// Date
+		// Date from metadata/file timestamp (fallback)
 		exifDate := createdAt(fsPath, exifData)
 
 		// Cover art bytes — extracted separately via exiftool -b
@@ -94,29 +98,34 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		}
 
 		var finalTitle *string
-		var finalDate *time.Time
-		var endDate *time.Time
+		var dateString *string
 		var author *string
 
 		if exifTitle != nil && strings.TrimSpace(*exifTitle) != "" {
 			finalTitle = exifTitle
 		}
-		finalDate = exifDate
 
-		if collType == constants.CollectionTypeHomeMovie {
-			basename := strings.TrimSuffix(filepath.Base(fsPath), filepath.Ext(fsPath))
-			strippedName, date, endDateParsed := utils.ExtractDatePrefix(basename)
-			if date != nil {
-				if finalTitle == nil && strippedName != "" {
-					finalTitle = &strippedName
-				}
-				if finalDate == nil {
-					finalDate = date
-				}
-				if endDateParsed != nil {
-					endDate = endDateParsed
-				}
+		basename := strings.TrimSuffix(filepath.Base(fsPath), filepath.Ext(fsPath))
+
+		// Priority 1: date prefix from front of filename (e.g. "2024.06.02-04 Trip")
+		if strippedName, rawPrefix := utils.ExtractDatePrefixStr(basename); rawPrefix != nil {
+			dateString = rawPrefix
+			if finalTitle == nil && strippedName != "" {
+				finalTitle = &strippedName
 			}
+		}
+
+		// Priority 2: year in parens at end of filename, e.g. "The Matrix (1999)"
+		if dateString == nil {
+			if m := yearSuffixRegex.FindStringSubmatch(basename); m != nil {
+				dateString = &m[1]
+			}
+		}
+
+		// Priority 3: metadata/file timestamp
+		if dateString == nil && exifDate != nil {
+			s := exifDate.UTC().Format("2006.01.02")
+			dateString = &s
 		}
 
 		// Apply title to media_items
@@ -130,7 +139,7 @@ func HandleScanVideo(mediaPath, dataPath string, transcodeBitrateKbps int) jobs.
 		if err := repository.VideoUpsert(ctx, db, itemID,
 			durationSeconds, width, height, bitrateKbps,
 			videoCodec, audioCodec,
-			finalDate, endDate, author,
+			dateString, author,
 		); err != nil {
 			return fmt.Errorf("upsert video_metadata: %w", err)
 		}
