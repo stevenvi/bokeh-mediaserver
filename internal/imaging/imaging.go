@@ -27,9 +27,9 @@ type variantSpec struct {
 // Thumb is last because it is the final file written and serves as the sentinel
 // checked by VariantsExist — if it exists, all variants completed.
 var variants = []variantSpec{
-	{name: VariantPreview, size: 1920, quality: 75},
-	{name: VariantSmall, size: 1280, quality: 70},
-	{name: VariantThumb, size: 400, quality: 60},
+	{name: VariantPreview, size: 1920, quality: 85},
+	{name: VariantSmall, size: 1280, quality: 80},
+	{name: VariantThumb, size: 400, quality: 75},
 }
 
 // Startup initialises the vips library. Must be called once at server start
@@ -477,7 +477,7 @@ func generateDZI(srcPath string, tilesDir string) error {
 		TileSize: 252,
 		Overlap:  2,
 		Suffix:   ".webp",
-		Q:        98,
+		Q:        100,
 		Keep:     vips.KeepNone,
 	}); err != nil {
 		return fmt.Errorf("dzsave: %w", err)
