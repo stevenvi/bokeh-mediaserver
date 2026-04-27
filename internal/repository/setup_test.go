@@ -87,7 +87,7 @@ func createMediaItem(t *testing.T, db utils.DBTX, collectionID int64) int64 {
 	id, _, err := repository.MediaItemUpsert(bg(), db, collectionID,
 		fmt.Sprintf("Test Item %d", n),
 		fmt.Sprintf("test/item-%d.jpg", n),
-		1024, fmt.Sprintf("hash-%d", n), "image/jpeg",
+		1024, fmt.Sprintf("hash-%d", n), "image/jpeg", time.Time{},
 	)
 	require.NoError(t, err)
 	return id
@@ -99,7 +99,7 @@ func createVideoMediaItem(t *testing.T, db utils.DBTX, collectionID int64) int64
 	id, _, err := repository.MediaItemUpsert(bg(), db, collectionID,
 		fmt.Sprintf("Test Video %d", n),
 		fmt.Sprintf("test/video-%d.mp4", n),
-		1024*1024, fmt.Sprintf("vhash-%d", n), "video/mp4",
+		1024*1024, fmt.Sprintf("vhash-%d", n), "video/mp4", time.Time{},
 	)
 	require.NoError(t, err)
 	return id
@@ -111,7 +111,7 @@ func createAudioMediaItem(t *testing.T, db utils.DBTX, collectionID int64) int64
 	id, _, err := repository.MediaItemUpsert(bg(), db, collectionID,
 		fmt.Sprintf("Test Track %d", n),
 		fmt.Sprintf("test/track-%d.mp3", n),
-		5*1024*1024, fmt.Sprintf("ahash-%d", n), "audio/mpeg",
+		5*1024*1024, fmt.Sprintf("ahash-%d", n), "audio/mpeg", time.Time{},
 	)
 	require.NoError(t, err)
 	return id

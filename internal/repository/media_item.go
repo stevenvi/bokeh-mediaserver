@@ -30,7 +30,7 @@ const collectionAccessExistsFromParam = `EXISTS (
 
 // MediaItemUpsert inserts or updates a media item, returning the ID and whether the file was unchanged.
 // Uses a CTE to capture pre-existing state for change detection in a single round-trip.
-func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, title, relativePath string, fileSizeBytes int64, fileHash, mimeType string) (id int64, wasUnchanged bool, err error) {
+func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, title, relativePath string, fileSizeBytes int64, fileHash, mimeType string, fileModifiedAt time.Time) (id int64, wasUnchanged bool, err error) {
 	err = db.QueryRow(ctx, `
 		WITH prev AS (
 			SELECT id, file_size_bytes, file_hash
@@ -38,15 +38,16 @@ func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, tit
 			WHERE relative_path = $3 AND collection_id = $1
 		),
 		upserted AS (
-			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			INSERT INTO media_items (collection_id, title, relative_path, file_size_bytes, file_hash, mime_type, file_modified_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (relative_path, collection_id) DO UPDATE SET
-				indexed_at      = now(),
-				missing_since   = NULL,
-				collection_id   = EXCLUDED.collection_id,
-				file_size_bytes = EXCLUDED.file_size_bytes,
-				file_hash       = EXCLUDED.file_hash,
-				mime_type       = EXCLUDED.mime_type
+				indexed_at       = now(),
+				missing_since    = NULL,
+				collection_id    = EXCLUDED.collection_id,
+				file_size_bytes  = EXCLUDED.file_size_bytes,
+				file_hash        = EXCLUDED.file_hash,
+				mime_type        = EXCLUDED.mime_type,
+				file_modified_at = EXCLUDED.file_modified_at
 			RETURNING id
 		)
 		SELECT
@@ -54,7 +55,7 @@ func MediaItemUpsert(ctx context.Context, db utils.DBTX, collectionID int64, tit
 			(p.id IS NOT NULL AND p.file_size_bytes = $4 AND p.file_hash = $5) AS was_unchanged
 		FROM upserted u
 		LEFT JOIN prev p ON true`,
-		collectionID, title, relativePath, fileSizeBytes, fileHash, mimeType,
+		collectionID, title, relativePath, fileSizeBytes, fileHash, mimeType, fileModifiedAt,
 	).Scan(&id, &wasUnchanged)
 	return
 }
@@ -545,10 +546,12 @@ type ScanItem struct {
 
 // KnownScanItem holds the scan-relevant fields for a known media item.
 type KnownScanItem struct {
-	FileHash    string
-	ID          int64
-	HasMetadata bool
-	IsMissing   bool
+	FileHash       string
+	ID             int64
+	FileSizeBytes  int64
+	HasMetadata    bool
+	IsMissing      bool
+	FileModifiedAt *time.Time
 }
 
 // MediaItemsKnownForScan returns all media items (including missing) in a collection
@@ -573,7 +576,8 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 				UNION ALL
 				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 			)
-			SELECT mi.relative_path, mi.id, (meta.media_item_id IS NOT NULL) AS has_metadata,
+			SELECT mi.relative_path, mi.id, mi.file_size_bytes, mi.file_modified_at,
+			       (meta.media_item_id IS NOT NULL) AS has_metadata,
 			       (mi.missing_since IS NOT NULL) AS is_missing, mi.file_hash
 			FROM media_items mi
 			JOIN tree t ON mi.collection_id = t.id
@@ -586,7 +590,8 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 				UNION ALL
 				SELECT c.id FROM collections c JOIN tree t ON c.parent_collection_id = t.id
 			)
-			SELECT mi.relative_path, mi.id, true AS has_metadata,
+			SELECT mi.relative_path, mi.id, mi.file_size_bytes, mi.file_modified_at,
+			       true AS has_metadata,
 			       (mi.missing_since IS NOT NULL) AS is_missing, mi.file_hash
 			FROM media_items mi
 			JOIN tree t ON mi.collection_id = t.id`
@@ -602,7 +607,7 @@ func MediaItemsKnownForScan(ctx context.Context, db utils.DBTX, collectionID int
 	for rows.Next() {
 		var path string
 		var item KnownScanItem
-		if err := rows.Scan(&path, &item.ID, &item.HasMetadata, &item.IsMissing, &item.FileHash); err != nil {
+		if err := rows.Scan(&path, &item.ID, &item.FileSizeBytes, &item.FileModifiedAt, &item.HasMetadata, &item.IsMissing, &item.FileHash); err != nil {
 			return nil, err
 		}
 		items[path] = item
@@ -631,12 +636,22 @@ func MediaItemsForScan(ctx context.Context, db utils.DBTX, collectionID int64) (
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[ScanItem])
 }
 
-// MediaItemUpdateFileInfo updates the file_size_bytes and file_hash for an existing
+// MediaItemUpdateFileInfo updates the file_size_bytes, file_hash, and file_modified_at for an existing
 // media item when the scan detects that the file content has changed.
-func MediaItemUpdateFileInfo(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string) error {
+func MediaItemUpdateFileInfo(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string, fileModifiedAt time.Time) error {
 	_, err := db.Exec(ctx,
-		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3 WHERE id = $1`,
-		itemID, fileSize, fileHash,
+		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3, file_modified_at = $4 WHERE id = $1`,
+		itemID, fileSize, fileHash, fileModifiedAt,
+	)
+	return err
+}
+
+// MediaItemUpdateModifiedAt updates only file_modified_at for an item whose content is confirmed
+// unchanged (same hash) but whose filesystem mtime has changed.
+func MediaItemUpdateModifiedAt(ctx context.Context, db utils.DBTX, itemID int64, fileModifiedAt time.Time) error {
+	_, err := db.Exec(ctx,
+		`UPDATE media_items SET file_modified_at = $2 WHERE id = $1`,
+		itemID, fileModifiedAt,
 	)
 	return err
 }
@@ -661,12 +676,12 @@ func MediaItemClearMissing(ctx context.Context, db utils.DBTX, itemID int64) err
 	return err
 }
 
-// MediaItemUpdateSizeAndHash updates the stored file size and hash for an item
+// MediaItemUpdateSizeAndHash updates the stored file size, hash, and mtime for an item
 // and refreshes indexed_at. Used by the metadata scan when a changed file is detected.
-func MediaItemUpdateSizeAndHash(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string) error {
+func MediaItemUpdateSizeAndHash(ctx context.Context, db utils.DBTX, itemID int64, fileSize int64, fileHash string, fileModifiedAt time.Time) error {
 	_, err := db.Exec(ctx,
-		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3, indexed_at = now() WHERE id = $1`,
-		itemID, fileSize, fileHash,
+		`UPDATE media_items SET file_size_bytes = $2, file_hash = $3, file_modified_at = $4, indexed_at = now() WHERE id = $1`,
+		itemID, fileSize, fileHash, fileModifiedAt,
 	)
 	return err
 }

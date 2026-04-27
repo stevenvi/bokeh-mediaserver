@@ -106,6 +106,7 @@ CREATE TABLE media_items (
     file_hash                   text NOT NULL,
     mime_type                   text NOT NULL,
     ordinal                     integer,
+    file_modified_at            timestamptz,
     missing_since               timestamptz,
     indexed_at                  timestamptz NOT NULL DEFAULT now(),
     created_at                  timestamptz NOT NULL DEFAULT now(),

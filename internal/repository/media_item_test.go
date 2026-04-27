@@ -18,7 +18,7 @@ func TestMediaItemUpsert(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 
 		id, wasUnchanged, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/one.jpg", 2048, "abc123", "image/jpeg",
+			"Photo", "photos/one.jpg", 2048, "abc123", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 		assert.Greater(t, id, int64(0))
@@ -30,12 +30,12 @@ func TestMediaItemUpsert(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 
 		id1, _, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/same.jpg", 2048, "samehash", "image/jpeg",
+			"Photo", "photos/same.jpg", 2048, "samehash", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 
 		id2, wasUnchanged, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/same.jpg", 2048, "samehash", "image/jpeg",
+			"Photo", "photos/same.jpg", 2048, "samehash", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 		assert.Equal(t, id1, id2)
@@ -49,7 +49,7 @@ func TestMediaItemForProcessing(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		id, _, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/proc.jpg", 1024, "proc-hash", "image/jpeg",
+			"Photo", "photos/proc.jpg", 1024, "proc-hash", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 
@@ -92,7 +92,7 @@ func TestMediaItemFileHashAndPath(t *testing.T) {
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		grantAccess(t, db, userID, collID)
 		id, _, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/hashed.jpg", 1024, "my-hash", "image/jpeg",
+			"Photo", "photos/hashed.jpg", 1024, "my-hash", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 
@@ -170,7 +170,7 @@ func TestMediaItemFindExistingHashes(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		_, _, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/findme.jpg", 1024, "unique-hash-abc", "image/jpeg",
+			"Photo", "photos/findme.jpg", 1024, "unique-hash-abc", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 
@@ -228,7 +228,7 @@ func TestMediaItemHashesByCollection(t *testing.T) {
 		db := testutil.NewTx(t, testPool)
 		collID := createCollection(t, db, constants.CollectionTypePhoto)
 		_, _, err := repository.MediaItemUpsert(bg(), db, collID,
-			"Photo", "photos/hashcoll.jpg", 1024, "col-hash-xyz", "image/jpeg",
+			"Photo", "photos/hashcoll.jpg", 1024, "col-hash-xyz", "image/jpeg", time.Time{},
 		)
 		require.NoError(t, err)
 
@@ -522,6 +522,109 @@ func TestPhotoStatistics(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, counts)
 	})
+}
+
+// TestScanChangeDetection exercises the mtime → size → hash cascade used by the
+// collection scan handler. Each subtest creates a stored item, simulates what
+// the scan handler would do for a given on-disk state, then verifies the DB
+// reflects the expected outcome.
+func TestScanChangeDetection(t *testing.T) {
+	baseTime := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	laterTime := baseTime.Add(time.Hour)
+
+	tests := []struct {
+		name        string
+		storedSize  int64
+		storedHash  string
+		fileMtime   time.Time
+		fileSize    int64
+		fileHash    string
+		wantQueued  bool
+		wantSize    int64
+		wantHash    string
+		wantMtime   time.Time
+	}{
+		{
+			name:       "mtime_unchanged_skips",
+			storedSize: 1024, storedHash: "aaa",
+			fileMtime: baseTime, fileSize: 1024, fileHash: "aaa",
+			wantQueued: false, wantSize: 1024, wantHash: "aaa", wantMtime: baseTime,
+		},
+		{
+			name:       "mtime_changed_size_and_hash_same_updates_mtime_only",
+			storedSize: 1024, storedHash: "aaa",
+			fileMtime: laterTime, fileSize: 1024, fileHash: "aaa",
+			wantQueued: false, wantSize: 1024, wantHash: "aaa", wantMtime: laterTime,
+		},
+		{
+			name:       "mtime_and_size_changed_hash_same_queues",
+			storedSize: 1024, storedHash: "aaa",
+			fileMtime: laterTime, fileSize: 2048, fileHash: "aaa",
+			wantQueued: true, wantSize: 2048, wantHash: "aaa", wantMtime: laterTime,
+		},
+		{
+			name:       "mtime_size_and_hash_all_changed_queues",
+			storedSize: 1024, storedHash: "aaa",
+			fileMtime: laterTime, fileSize: 2048, fileHash: "bbb",
+			wantQueued: true, wantSize: 2048, wantHash: "bbb", wantMtime: laterTime,
+		},
+		{
+			name:       "mtime_and_hash_changed_size_same_queues",
+			storedSize: 1024, storedHash: "aaa",
+			fileMtime: laterTime, fileSize: 1024, fileHash: "bbb",
+			wantQueued: true, wantSize: 1024, wantHash: "bbb", wantMtime: laterTime,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewTx(t, testPool)
+			collID := createCollection(t, db, constants.CollectionTypePhoto)
+
+			itemID, _, err := repository.MediaItemUpsert(bg(), db, collID,
+				"Photo", "photos/detect.jpg",
+				tc.storedSize, tc.storedHash, "image/jpeg", baseTime,
+			)
+			require.NoError(t, err)
+			createPhotoMetadata(t, db, itemID)
+
+			knownItems, err := repository.MediaItemsKnownForScan(bg(), db, collID, "image")
+			require.NoError(t, err)
+			known, exists := knownItems["photos/detect.jpg"]
+			require.True(t, exists)
+
+			// Replicate the scan handler's mtime → size → hash cascade.
+			queued := false
+			if known.FileModifiedAt != nil && !tc.fileMtime.After(*known.FileModifiedAt) {
+				// fast path: mtime unchanged
+			} else if tc.fileSize != known.FileSizeBytes {
+				err = repository.MediaItemUpdateFileInfo(bg(), db, known.ID, tc.fileSize, tc.fileHash, tc.fileMtime)
+				require.NoError(t, err)
+				queued = true
+			} else if tc.fileHash != known.FileHash {
+				err = repository.MediaItemUpdateFileInfo(bg(), db, known.ID, tc.fileSize, tc.fileHash, tc.fileMtime)
+				require.NoError(t, err)
+				queued = true
+			} else {
+				err = repository.MediaItemUpdateModifiedAt(bg(), db, known.ID, tc.fileMtime)
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tc.wantQueued, queued)
+
+			var gotSize int64
+			var gotHash string
+			var gotMtime time.Time
+			err = db.QueryRow(bg(),
+				`SELECT file_size_bytes, file_hash, file_modified_at FROM media_items WHERE id = $1`,
+				known.ID,
+			).Scan(&gotSize, &gotHash, &gotMtime)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSize, gotSize)
+			assert.Equal(t, tc.wantHash, gotHash)
+			assert.WithinDuration(t, tc.wantMtime, gotMtime, time.Second)
+		})
+	}
 }
 
 func TestMediaItemMarkMissingSince(t *testing.T) {

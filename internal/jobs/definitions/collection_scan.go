@@ -137,15 +137,9 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 				return nil
 			}
 			fileSize := stat.Size()
+			fileModTime := stat.ModTime()
 
-			fileHash, hashErr := computeFileHash(path, fileSize)
-			if hashErr != nil {
-				slog.Warn("hash failed", "path", path, "err", hashErr)
-				errCount++
-				return nil
-			}
-
-			// Known file (present or previously missing): compare hash to decide if re-processing is needed.
+			// Known file (present or previously missing): use mtime → size → hash cascade.
 			if known, exists := knownItems[relPath]; exists {
 				if known.IsMissing {
 					if e := repository.MediaItemClearMissing(ctx, db, known.ID); e != nil {
@@ -154,22 +148,75 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 						return nil
 					}
 				}
-				if fileHash == known.FileHash && known.HasMetadata {
-					return nil // unchanged and fully processed
+
+				// Fast path: mtime unchanged → file definitely not modified.
+				if known.FileModifiedAt != nil && !fileModTime.After(*known.FileModifiedAt) {
+					if known.HasMetadata {
+						return nil // fully processed, nothing to do
+					}
+					// Missing metadata — queue without touching file info.
+					jc.AddSubJob(scanJobType, &known.ID, &relatedType)
+					filesQueued++
+					return nil
 				}
-				if fileHash != known.FileHash {
-					if e := repository.MediaItemUpdateFileInfo(ctx, db, known.ID, fileSize, fileHash); e != nil {
+
+				// mtime changed — check size.
+				if fileSize != known.FileSizeBytes {
+					// Size differs → content has changed; compute hash and update.
+					fileHash, hashErr := computeFileHash(path, fileSize)
+					if hashErr != nil {
+						slog.Warn("hash failed", "path", path, "err", hashErr)
+						errCount++
+						return nil
+					}
+					if e := repository.MediaItemUpdateFileInfo(ctx, db, known.ID, fileSize, fileHash, fileModTime); e != nil {
 						slog.Warn("update file info failed", "item_id", known.ID, "err", e)
 						errCount++
 						return nil
 					}
+					jc.AddSubJob(scanJobType, &known.ID, &relatedType)
+					filesQueued++
+					return nil
 				}
-				jc.AddSubJob(scanJobType, &known.ID, &relatedType)
-				filesQueued++
+
+				// Size same → verify with hash.
+				fileHash, hashErr := computeFileHash(path, fileSize)
+				if hashErr != nil {
+					slog.Warn("hash failed", "path", path, "err", hashErr)
+					errCount++
+					return nil
+				}
+				if fileHash != known.FileHash {
+					// Hash differs despite same size → content changed.
+					if e := repository.MediaItemUpdateFileInfo(ctx, db, known.ID, fileSize, fileHash, fileModTime); e != nil {
+						slog.Warn("update file info failed", "item_id", known.ID, "err", e)
+						errCount++
+						return nil
+					}
+					jc.AddSubJob(scanJobType, &known.ID, &relatedType)
+					filesQueued++
+					return nil
+				}
+
+				// Hash same → content unchanged; update stored mtime so future scans skip the hash.
+				if e := repository.MediaItemUpdateModifiedAt(ctx, db, known.ID, fileModTime); e != nil {
+					slog.Warn("update modified_at failed", "item_id", known.ID, "err", e)
+				}
+				if !known.HasMetadata {
+					jc.AddSubJob(scanJobType, &known.ID, &relatedType)
+					filesQueued++
+				}
 				return nil
 			}
 
-			// New file: upsert and queue.
+			// New file: compute hash, upsert, and queue.
+			fileHash, hashErr := computeFileHash(path, fileSize)
+			if hashErr != nil {
+				slog.Warn("hash failed", "path", path, "err", hashErr)
+				errCount++
+				return nil
+			}
+
 			dirPath := filepath.Dir(path)
 			folderCollectionID, ok := pathToID[dirPath]
 			if !ok {
@@ -180,7 +227,7 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 
 			title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 
-			itemID, _, upsertErr := repository.MediaItemUpsert(ctx, db, folderCollectionID, title, relPath, fileSize, fileHash, mimeType)
+			itemID, _, upsertErr := repository.MediaItemUpsert(ctx, db, folderCollectionID, title, relPath, fileSize, fileHash, mimeType, fileModTime)
 			if upsertErr != nil {
 				slog.Warn("upsert media_item failed", "path", path, "err", upsertErr)
 				errCount++

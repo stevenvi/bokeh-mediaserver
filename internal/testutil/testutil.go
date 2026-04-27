@@ -141,7 +141,7 @@ func InsertCollection(t *testing.T, db utils.DBTX, name string, colType constant
 // InsertMediaItem is a test helper that creates a media_item and returns its ID.
 func InsertMediaItem(t *testing.T, db utils.DBTX, collectionID int64, title, relativePath, mimeType string) int64 {
 	t.Helper()
-	id, _, err := repository.MediaItemUpsert(context.Background(), db, collectionID, title, relativePath, 1024, "abc123", mimeType)
+	id, _, err := repository.MediaItemUpsert(context.Background(), db, collectionID, title, relativePath, 1024, "abc123", mimeType, time.Time{})
 	require.NoError(t, err)
 	return id
 }
