@@ -72,7 +72,7 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 		_ = repository.JobUpdateProgress(ctx, db, job.ID, "Walking directories")
 		slog.Info("collection scan: walking directories", "job_id", job.ID, "collection_id", collectionID, "path", collectionPath)
 
-		pathToID, err := walkFolders(ctx, db, collectionID, collectionPath, mediaPath)
+		pathToID, err := walkFolders(ctx, db, collectionID, collection.RootCollectionID, collectionPath, mediaPath)
 		if err != nil {
 			return fmt.Errorf("walk folders: %w", err)
 		}
@@ -292,8 +292,8 @@ func HandleCollectionScan(mediaPath, dataPath string) jobs.JobHandler {
 
 // walkFolders upserts a sub-collection row for each directory under rootPath.
 // Returns a map from absolute directory path to collection ID.
-func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
-	pathToID := map[string]int64{rootPath: rootCollectionID}
+func walkFolders(ctx context.Context, db utils.DBTX, scanCollectionID, rootCollectionID int64, rootPath string, mediaPath string) (map[string]int64, error) {
+	pathToID := map[string]int64{rootPath: scanCollectionID}
 
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, walkErr error) error {
 		slog.Debug("walk folder", "path", path)
@@ -309,7 +309,7 @@ func walkFolders(ctx context.Context, db utils.DBTX, rootCollectionID int64, roo
 		parentPath := filepath.Dir(path)
 		parentID, ok := pathToID[parentPath]
 		if !ok {
-			parentID = rootCollectionID
+			parentID = scanCollectionID
 		}
 
 		name := filepath.Base(path)

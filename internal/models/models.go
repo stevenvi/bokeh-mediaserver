@@ -17,6 +17,7 @@ type Collection struct {
 	Name               string     `json:"name"`
 	Type               string     `json:"type"`
 	ID                 int64      `json:"id"`
+	RootCollectionID   int64      `json:"root_collection_id"`
 	IsEnabled          bool       `json:"is_enabled"`
 	ManualThumbnail    bool       `json:"manual_thumbnail"`
 }
