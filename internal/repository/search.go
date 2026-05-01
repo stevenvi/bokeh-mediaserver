@@ -36,8 +36,8 @@ type VideoSearchHit struct {
 	Title          string  `json:"title"`
 	CollectionName string  `json:"collection_name"`
 	collectionType string  // not exposed; used for partitioning in Go
+	CollectionPath []int64 `json:"collection_path"`
 	ID             int64   `json:"id"`
-	CollectionID   int64   `json:"collection_id"`
 }
 
 // SearchVideos searches video titles across both video:movie and video:home_movie
@@ -45,10 +45,22 @@ type VideoSearchHit struct {
 // collection type.
 func SearchVideos(ctx context.Context, db utils.DBTX, userID int64, p SearchParams) (movies, homeMovies []VideoSearchHit, err error) {
 	rows, err := db.Query(ctx, `
-		SELECT mi.id, mi.title, mi.collection_id, c.name, c.type, vm.date_string
+		SELECT mi.id, mi.title, c.name, c.type, vm.date_string, cpath.path
 		FROM media_items mi
 		JOIN collections c ON c.id = mi.collection_id
 		LEFT JOIN video_metadata vm ON vm.media_item_id = mi.id
+		JOIN LATERAL (
+		    WITH RECURSIVE anc AS (
+		        SELECT c2.id, c2.parent_collection_id, ARRAY[c2.id]::bigint[] AS path
+		        FROM collections c2
+		        WHERE c2.id = mi.collection_id
+		        UNION ALL
+		        SELECT p.id, p.parent_collection_id, ARRAY[p.id] || anc.path
+		        FROM collections p
+		        JOIN anc ON p.id = anc.parent_collection_id
+		    )
+		    SELECT path FROM anc WHERE parent_collection_id IS NULL
+		) cpath ON true
 		WHERE mi.search_vector @@ websearch_to_tsquery('english', $1)
 		  AND c.type IN ($4, $5)
 		  AND EXISTS (
@@ -67,7 +79,7 @@ func SearchVideos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 	}
 	hits, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (VideoSearchHit, error) {
 		var h VideoSearchHit
-		err := row.Scan(&h.ID, &h.Title, &h.CollectionID, &h.CollectionName, &h.collectionType, &h.Date)
+		err := row.Scan(&h.ID, &h.Title, &h.CollectionName, &h.collectionType, &h.Date, &h.CollectionPath)
 		return h, err
 	})
 	if err != nil {
@@ -99,10 +111,23 @@ func SearchPhotos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 		       pm.camera_make, pm.camera_model, pm.lens_model,
 		       pm.shutter_speed, pm.aperture, pm.iso,
 		       pm.focal_length_mm, pm.focal_length_35mm_equiv,
-		       pm.variants_generated_at
+		       pm.variants_generated_at,
+		       cpath.path
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
 		JOIN collections c ON c.id = mi.collection_id
+		JOIN LATERAL (
+		    WITH RECURSIVE anc AS (
+		        SELECT c2.id, c2.parent_collection_id, ARRAY[c2.id]::bigint[] AS path
+		        FROM collections c2
+		        WHERE c2.id = c.id
+		        UNION ALL
+		        SELECT p.id, p.parent_collection_id, ARRAY[p.id] || anc.path
+		        FROM collections p
+		        JOIN anc ON p.id = anc.parent_collection_id
+		    )
+		    SELECT path FROM anc WHERE parent_collection_id IS NULL
+		) cpath ON true
 		WHERE (mi.search_vector @@ websearch_to_tsquery('english', $1)
 		    OR pm.search_vector @@ websearch_to_tsquery('english', $1))
 		  AND c.type = $4
@@ -130,6 +155,7 @@ func SearchPhotos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 			&item.ShutterSpeed, &item.Aperture, &item.ISO,
 			&item.FocalLengthMM, &item.FocalLength35mmEquiv,
 			&item.VariantsGeneratedAt,
+			&item.CollectionPath,
 		)
 		return item, err
 	})
@@ -222,6 +248,7 @@ func SearchAudioArtists(ctx context.Context, db utils.DBTX, userID int64, p Sear
 // AudioAlbumSearchHit is one row in the album search response.
 type AudioAlbumSearchHit struct {
 	Year         *int16 `json:"year,omitempty"`
+	ArtistID     *int64 `json:"artist_id,omitempty"`
 	Name         string `json:"name"`
 	ID           int64  `json:"id"`
 	CollectionID int64  `json:"collection_id"`
@@ -231,7 +258,7 @@ type AudioAlbumSearchHit struct {
 // collections, so no partitioning is needed.
 func SearchAudioAlbums(ctx context.Context, db utils.DBTX, userID int64, p SearchParams) ([]AudioAlbumSearchHit, error) {
 	rows, err := db.Query(ctx, `
-		SELECT al.year, al.name, al.id, al.root_collection_id
+		SELECT al.year, al.artist_id, al.name, al.id, al.root_collection_id
 		FROM audio_albums al
 		WHERE al.search_vector @@ websearch_to_tsquery('simple', $1)
 		  AND EXISTS (
@@ -253,6 +280,7 @@ func SearchAudioAlbums(ctx context.Context, db utils.DBTX, userID int64, p Searc
 // AudioTrackSearchHit is one row in the track search response.
 type AudioTrackSearchHit struct {
 	AlbumID         *int64   `json:"album_id,omitempty"`
+	ArtistID        *int64   `json:"artist_id,omitempty"`
 	DurationSeconds *float64 `json:"duration_seconds,omitempty"`
 	ArtistName      *string  `json:"artist_name,omitempty"`
 	AlbumName       *string  `json:"album_name,omitempty"`
@@ -266,7 +294,7 @@ type AudioTrackSearchHit struct {
 // audio:music and audio:show collections the user can access.
 func SearchAudioTracks(ctx context.Context, db utils.DBTX, userID int64, p SearchParams) ([]AudioTrackSearchHit, error) {
 	rows, err := db.Query(ctx, `
-		SELECT am.album_id, am.duration_seconds, ar.name, al.name,
+		SELECT am.album_id, am.artist_id, am.duration_seconds, ar.name, al.name,
 		       mi.title, c.type, mi.id, mi.collection_id
 		FROM media_items mi
 		JOIN audio_metadata am ON am.media_item_id = mi.id
