@@ -70,8 +70,8 @@ func (e *ExiftoolProcess) Extract(path string) (map[string]any, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Send filename + -execute sentinel
-	if _, err := fmt.Fprintf(e.stdin, "%s\n-execute\n", path); err != nil {
+	// Pass data to exiftool: exclude binary tags flag, filename, and -execute sentinel
+	if _, err := fmt.Fprintf(e.stdin, "--binary\n%s\n-execute\n", path); err != nil {
 		return nil, fmt.Errorf("write to exiftool: %w", err)
 	}
 
@@ -209,6 +209,37 @@ func ExifFloat(m map[string]any, key string) *float64 {
 			return nil
 		}
 		return &f
+	}
+	return nil
+}
+
+// ExifStrArray pulls a list-valued field (e.g. Keywords, Subject) into []string.
+// Exiftool returns these as a JSON array when multiple values are present, or a
+// single string when only one value exists. Returns an empty slice when absent.
+func ExifStrArray(m map[string]any, key string) []string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch t := v.(type) {
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if e == nil {
+				continue
+			}
+			s := strings.TrimSpace(fmt.Sprintf("%v", e))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
 	}
 	return nil
 }

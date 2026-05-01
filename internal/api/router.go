@@ -43,6 +43,7 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 	radio := &radioHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	photos := &photosHandler{db: db, dataPath: dataPath, mediaPath: mediaPath}
 	video := &videoHandler{db: db, dataPath: dataPath, mediaPath: mediaPath, cfg: cfg, dispatcher: dispatcher}
+	search := &searchHandler{db: db}
 	admin := &adminHandler{
 		db:          db,
 		guard:       guard,
@@ -139,6 +140,13 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 		// Video bookmarks
 		r.Put("/api/v1/collections/{id}/items/{item_id}/bookmark", video.upsertBookmark)
 		r.Delete("/api/v1/collections/{id}/items/{item_id}/bookmark", video.deleteBookmark)
+
+		// Library-wide search
+		r.Get("/api/v1/search/photos", search.searchPhotos)
+		r.Get("/api/v1/search/videos", search.searchVideos)
+		r.Get("/api/v1/search/audio/artists", search.searchAudioArtists)
+		r.Get("/api/v1/search/audio/albums", search.searchAudioAlbums)
+		r.Get("/api/v1/search/audio/tracks", search.searchAudioTracks)
 	})
 
 	// ── Admin ─────────────────────────────────────────────────────────────────

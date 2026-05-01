@@ -124,7 +124,7 @@ func createPhotoMetadata(t *testing.T, db utils.DBTX, itemID int64) {
 	w, h := 1920, 1080
 	err := repository.PhotoUpsert(bg(), db, itemID,
 		&w, &h, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	require.NoError(t, err)
 }
@@ -134,7 +134,7 @@ func createPhotoMetadataWithDate(t *testing.T, db utils.DBTX, itemID int64, crea
 	w, h := 1920, 1080
 	err := repository.PhotoUpsert(bg(), db, itemID,
 		&w, &h, &createdAt,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	require.NoError(t, err)
 }
@@ -175,7 +175,6 @@ func setupAudioData(t *testing.T, db utils.DBTX) (int64, int64, int64, int64) {
 	artistID := createArtist(t, db)
 	albumID := createAlbum(t, db, &artistID, collID)
 	itemID := createAudioMediaItem(t, db, collID)
-	title := "Test Track"
 	trackNum := int16(1)
 	discNum := int16(1)
 	duration := float64(213.5)
@@ -183,7 +182,7 @@ func setupAudioData(t *testing.T, db utils.DBTX) (int64, int64, int64, int64) {
 	year := int16(2005)
 	replayGain := float64(-8.3)
 	err := repository.AudioTrackUpsert(bg(), db, itemID,
-		&artistID, nil, &albumID, &title,
+		&artistID, nil, &albumID,
 		&trackNum, &discNum, &duration, &genre, &year, &replayGain, true,
 	)
 	require.NoError(t, err)

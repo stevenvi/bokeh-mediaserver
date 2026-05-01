@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"github.com/stevenvi/bokeh-mediaserver/internal/imaging"
 	"github.com/stevenvi/bokeh-mediaserver/internal/jobs"
@@ -79,6 +80,22 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 			widthPx, heightPx = heightPx, widthPx
 		}
 
+		// IPTC Keywords (multi-valued) and XMP-dc:Subject (also multi-valued, often
+		// duplicates Keywords). Merge both, dedupe, drop empties.
+		keywords := mergeKeywords(
+			jobsutils.ExifStrArray(exifData, "Keywords"),
+			jobsutils.ExifStrArray(exifData, "Subject"),
+		)
+
+		// Description may live under several tag names depending on writer.
+		description := jobsutils.ExifStr(exifData, "Description")
+		if description == nil {
+			description = jobsutils.ExifStr(exifData, "ImageDescription")
+		}
+		if description == nil {
+			description = jobsutils.ExifStr(exifData, "Caption-Abstract")
+		}
+
 		err = repository.PhotoUpsert(ctx, db, itemID,
 			widthPx, heightPx,
 			createdAt(fsPath, exifData),
@@ -91,7 +108,8 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 			jobsutils.ExifFloat(exifData, "FocalLength"),
 			focalLength35mm,
 			jobsutils.ExifStr(exifData, "ColorSpace"),
-			jobsutils.ExifStr(exifData, "Description"),
+			description,
+			keywords,
 			rawJSON,
 		)
 		if err != nil {
@@ -124,4 +142,22 @@ func HandleScanPhoto(mediaPath, dataPath string) jobs.JobHandler {
 		slog.Debug("finished processing photo item", "item_id", itemID)
 		return nil
 	}
+}
+
+// mergeKeywords combines IPTC Keywords + XMP Subject lists, deduping case-insensitively
+// while preserving the original casing of the first occurrence and the input order.
+func mergeKeywords(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, list := range lists {
+		for _, kw := range list {
+			key := strings.ToLower(kw)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, kw)
+		}
+	}
+	return out
 }

@@ -139,8 +139,14 @@ CREATE TABLE photo_metadata (
     focal_length_35mm_equiv     numeric(6,1),
     color_space                 text,
     description                 text,
+    keywords                    text[] NOT NULL DEFAULT '{}',
     variants_generated_at       timestamptz DEFAULT NULL,
-    exif_raw                    jsonb
+    exif_raw                    jsonb,
+    -- search_vector is maintained by a BEFORE INSERT/UPDATE trigger rather than
+    -- a GENERATED column because array_to_string() is STABLE (not IMMUTABLE)
+    -- when the array element type is collatable (text), and IMMUTABLE is
+    -- required for STORED generated columns.
+    search_vector               tsvector
 );
 
 CREATE INDEX idx_photo_metadata_created_at ON photo_metadata(created_at);
@@ -150,6 +156,20 @@ CREATE INDEX idx_photo_metadata_shutter_speed ON photo_metadata(shutter_speed);
 CREATE INDEX idx_photo_metadata_aperture ON photo_metadata(aperture);
 CREATE INDEX idx_photo_metadata_iso ON photo_metadata(iso);
 CREATE INDEX idx_photo_metadata_focal_length ON photo_metadata(focal_length_mm);
+CREATE INDEX idx_photo_metadata_search ON photo_metadata USING GIN(search_vector);
+
+CREATE OR REPLACE FUNCTION photo_metadata_search_vector_update() RETURNS TRIGGER AS $$
+BEGIN
+    NEW.search_vector :=
+        setweight(to_tsvector('english', array_to_string(NEW.keywords, ' ')), 'A') ||
+        setweight(to_tsvector('english', coalesce(NEW.description, '')), 'B');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER photo_metadata_search_vector_trigger
+BEFORE INSERT OR UPDATE OF description, keywords ON photo_metadata
+FOR EACH ROW EXECUTE FUNCTION photo_metadata_search_vector_update();
 
 CREATE TABLE artists (
     id                          bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -194,7 +214,6 @@ CREATE TABLE audio_metadata (
     artist_id                   bigint REFERENCES artists(id) ON DELETE SET NULL,
     album_artist_id             bigint REFERENCES artists(id) ON DELETE SET NULL,
     album_id                    bigint REFERENCES audio_albums(id) ON DELETE SET NULL,
-    title                       text,
     track_number                smallint,
     disc_number                 smallint DEFAULT 1,
     duration_seconds            numeric(8,2),

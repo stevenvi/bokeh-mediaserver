@@ -20,7 +20,7 @@ func TestPhotoUpsert(t *testing.T) {
 
 		err := repository.PhotoUpsert(bg(), db, itemID,
 			nil, nil, nil,
-			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		)
 		require.NoError(t, err)
 
@@ -74,7 +74,7 @@ func TestPhotoUpsert(t *testing.T) {
 		err := repository.PhotoUpsert(bg(), db, itemID,
 			&w, &h, &ts,
 			&make_, &model, &lens, &shutter, &aperture, &iso, &focalMM, &focal35mm,
-			&colorSpace, &desc, exifRaw,
+			&colorSpace, &desc, nil, exifRaw,
 		)
 		require.NoError(t, err)
 
@@ -129,12 +129,12 @@ func TestPhotoUpsert(t *testing.T) {
 
 		w1, h1 := 800, 600
 		require.NoError(t, repository.PhotoUpsert(bg(), db, itemID,
-			&w1, &h1, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			&w1, &h1, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		))
 
 		w2, h2 := 1600, 1200
 		require.NoError(t, repository.PhotoUpsert(bg(), db, itemID,
-			&w2, &h2, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			&w2, &h2, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		))
 
 		var gotWidth int
@@ -227,7 +227,7 @@ func TestPhotoExifRaw(t *testing.T) {
 		exifRaw := []byte(`{"Make":"Canon"}`)
 		w, h := 1920, 1080
 		err := repository.PhotoUpsert(bg(), db, itemID,
-			&w, &h, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, exifRaw,
+			&w, &h, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, exifRaw,
 		)
 		require.NoError(t, err)
 

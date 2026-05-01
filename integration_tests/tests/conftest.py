@@ -49,7 +49,7 @@ def reset_state(server_ready):
         conn.execute("""
             TRUNCATE jobs, photo_metadata, media_items,
                      collection_access, collections, devices
-            RESTART IDENTITY CASCADE
+            CASCADE
         """)
 
 # ── Shared fixtures ────────────────────────────────────────────────────────────

@@ -17,16 +17,20 @@ func PhotoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	iso *int,
 	focalLengthMM, focalLength35mmEquiv *float64,
 	colorSpace, description *string,
+	keywords []string,
 	exifRaw json.RawMessage,
 ) error {
+	if keywords == nil {
+		keywords = []string{}
+	}
 	_, err := db.Exec(ctx,
 		`INSERT INTO photo_metadata
 		     (media_item_id, width_px, height_px, created_at,
 		      camera_make, camera_model, lens_model,
 		      shutter_speed, aperture, iso,
 		      focal_length_mm, focal_length_35mm_equiv,
-		      color_space, description, exif_raw)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		      color_space, description, keywords, exif_raw)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 ON CONFLICT (media_item_id) DO UPDATE SET
 		     width_px                = EXCLUDED.width_px,
 		     height_px               = EXCLUDED.height_px,
@@ -41,6 +45,7 @@ func PhotoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 		     focal_length_35mm_equiv = EXCLUDED.focal_length_35mm_equiv,
 		     color_space             = EXCLUDED.color_space,
 		     description             = EXCLUDED.description,
+		     keywords                = EXCLUDED.keywords,
 		     exif_raw                = EXCLUDED.exif_raw,
 		     variants_generated_at   = NULL`,
 		itemID,
@@ -48,7 +53,7 @@ func PhotoUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 		cameraMake, cameraModel, lensModel,
 		shutterSpeed, aperture, iso,
 		focalLengthMM, focalLength35mmEquiv,
-		colorSpace, description, exifRaw,
+		colorSpace, description, keywords, exifRaw,
 	)
 	return err
 }

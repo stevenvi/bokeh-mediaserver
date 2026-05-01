@@ -11,7 +11,6 @@ import (
 // AudioTrackUpsert inserts or updates audio metadata for a media item.
 func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 	artistID, albumArtistID, albumID *int64,
-	title *string,
 	trackNumber, discNumber *int16,
 	durationSeconds *float64,
 	genre *string,
@@ -21,15 +20,14 @@ func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 ) error {
 	_, err := db.Exec(ctx,
 		`INSERT INTO audio_metadata
-		     (media_item_id, artist_id, album_artist_id, album_id, title,
+		     (media_item_id, artist_id, album_artist_id, album_id,
 		      track_number, disc_number, duration_seconds,
 		      genre, year, replay_gain_db, has_embedded_art, processed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
 		 ON CONFLICT (media_item_id) DO UPDATE SET
 		     artist_id        = EXCLUDED.artist_id,
 		     album_artist_id  = EXCLUDED.album_artist_id,
 		     album_id         = EXCLUDED.album_id,
-		     title            = EXCLUDED.title,
 		     track_number     = EXCLUDED.track_number,
 		     disc_number      = EXCLUDED.disc_number,
 		     duration_seconds = EXCLUDED.duration_seconds,
@@ -38,7 +36,7 @@ func AudioTrackUpsert(ctx context.Context, db utils.DBTX, itemID int64,
 		     replay_gain_db   = EXCLUDED.replay_gain_db,
 		     has_embedded_art = EXCLUDED.has_embedded_art,
 		     processed_at     = now()`,
-		itemID, artistID, albumArtistID, albumID, title,
+		itemID, artistID, albumArtistID, albumID,
 		trackNumber, discNumber, durationSeconds,
 		genre, year, replayGainDB, hasEmbeddedArt,
 	)

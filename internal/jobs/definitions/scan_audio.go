@@ -55,7 +55,6 @@ func HandleScanAudio(mediaPath, dataPath string) jobs.JobHandler {
 			base := filepath.Base(fsPath)
 			effectiveTitle = strings.TrimSuffix(base, filepath.Ext(base))
 		}
-		title = &effectiveTitle
 
 		effectiveArtist := "Unknown Artist"
 		if artist != nil && strings.TrimSpace(*artist) != "" {
@@ -165,7 +164,7 @@ func HandleScanAudio(mediaPath, dataPath string) jobs.JobHandler {
 		// Upsert audio metadata
 		if err := repository.AudioTrackUpsert(ctx, db, itemID,
 			artistIDPtr, albumArtistID, albumID,
-			title, trackNumber, discNumber,
+			trackNumber, discNumber,
 			durationSeconds, genre, year,
 			nil, // replay_gain_db — not extracted yet
 			hasPicture,
