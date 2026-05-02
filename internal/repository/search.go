@@ -98,6 +98,65 @@ func SearchVideos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 	return movies, homeMovies, nil
 }
 
+// ─── Photo collection search ────────────────────────────────────────────────
+
+// PhotoCollectionSearchHit is one row in the photo collection search response.
+// Date is the human-readable date label extracted from the collection name prefix (nil if none).
+// Name is the collection name with the date prefix stripped.
+type PhotoCollectionSearchHit struct {
+	Date           *string `json:"date,omitempty"`
+	Name           string  `json:"name"`
+	CollectionPath []int64 `json:"collection_path"`
+	ID             int64   `json:"id"`
+}
+
+// SearchPhotoCollections searches collection names within image:photo collections
+// the user can access. Ranks by ts_rank against to_tsvector('simple', name).
+// Each hit carries the full ancestry as collection_path (root → leaf, inclusive).
+func SearchPhotoCollections(ctx context.Context, db utils.DBTX, userID int64, p SearchParams) ([]PhotoCollectionSearchHit, error) {
+	rows, err := db.Query(ctx, `
+		SELECT c.id, c.name, cpath.path
+		FROM collections c
+		JOIN LATERAL (
+		    WITH RECURSIVE anc AS (
+		        SELECT c2.id, c2.parent_collection_id, ARRAY[c2.id]::bigint[] AS path
+		        FROM collections c2
+		        WHERE c2.id = c.id
+		        UNION ALL
+		        SELECT p.id, p.parent_collection_id, ARRAY[p.id] || anc.path
+		        FROM collections p
+		        JOIN anc ON p.id = anc.parent_collection_id
+		    )
+		    SELECT path FROM anc WHERE parent_collection_id IS NULL
+		) cpath ON true
+		WHERE c.type = $4
+		  AND c.missing_since IS NULL
+		  AND c.search_vector @@ websearch_to_tsquery('simple', $1)
+		  AND EXISTS (
+		      SELECT 1 FROM collection_access ca
+		      WHERE ca.collection_id = c.root_collection_id AND ca.user_id = $2
+		  )
+		ORDER BY ts_rank(c.search_vector, websearch_to_tsquery('simple', $1)) DESC, c.id ASC
+		LIMIT $3 OFFSET $5`,
+		p.Query, userID, p.Limit, string(constants.CollectionTypePhoto), p.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	hits, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PhotoCollectionSearchHit, error) {
+		var h PhotoCollectionSearchHit
+		err := row.Scan(&h.ID, &h.Name, &h.CollectionPath)
+		return h, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i := range hits {
+		hits[i].Name, hits[i].Date = utils.ExtractDatePrefix(hits[i].Name)
+	}
+	return hits, nil
+}
+
 // ─── Photo search ────────────────────────────────────────────────────────────
 
 // SearchPhotos returns photo items matching `p.Query` across all image:photo collections

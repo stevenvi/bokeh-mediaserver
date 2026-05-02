@@ -75,12 +75,16 @@ CREATE TABLE collections (
     manual_thumbnail            boolean NOT NULL DEFAULT false,
     last_scanned_at             timestamptz,
     missing_since               timestamptz,
-    created_at                  timestamptz NOT NULL DEFAULT now()
+    created_at                  timestamptz NOT NULL DEFAULT now(),
+    search_vector               tsvector GENERATED ALWAYS AS (
+                                    to_tsvector('simple', name)
+                                ) STORED
 );
 
 CREATE INDEX idx_collections_parent ON collections(parent_collection_id);
 CREATE INDEX idx_collections_root   ON collections(root_collection_id);
 CREATE INDEX idx_collections_enabled ON collections(id) WHERE is_enabled = true;
+CREATE INDEX idx_collections_search  ON collections USING GIN(search_vector);
 -- Sub-collections are uniquely identified by their path within a library.
 -- Root collections (relative_path IS NULL) are exempt via the partial index condition.
 CREATE UNIQUE INDEX idx_collections_root_path

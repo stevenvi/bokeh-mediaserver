@@ -81,6 +81,24 @@ func (h *searchHandler) searchPhotos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/v1/search/photos/collections
+func (h *searchHandler) searchPhotoCollections(w http.ResponseWriter, r *http.Request) {
+	p, ok := parseSearchParams(w, r)
+	if !ok {
+		return
+	}
+	collections, err := repository.SearchPhotoCollections(r.Context(), h.db, userIDFromRequest(r), p)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"collections": collections,
+		"offset":      p.Offset,
+		"limit":       p.Limit,
+	})
+}
+
 // GET /api/v1/search/audio/artists
 func (h *searchHandler) searchAudioArtists(w http.ResponseWriter, r *http.Request) {
 	p, ok := parseSearchParams(w, r)

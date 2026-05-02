@@ -143,6 +143,7 @@ func NewRouter(db *pgxpool.Pool, guard *DeviceGuard, dispatcher *jobs.Dispatcher
 
 		// Library-wide search
 		r.Get("/api/v1/search/photos", search.searchPhotos)
+		r.Get("/api/v1/search/photos/collections", search.searchPhotoCollections)
 		r.Get("/api/v1/search/videos", search.searchVideos)
 		r.Get("/api/v1/search/audio/artists", search.searchAudioArtists)
 		r.Get("/api/v1/search/audio/albums", search.searchAudioAlbums)
