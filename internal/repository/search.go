@@ -112,22 +112,10 @@ func SearchPhotos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 		       pm.shutter_speed, pm.aperture, pm.iso,
 		       pm.focal_length_mm, pm.focal_length_35mm_equiv,
 		       pm.variants_generated_at,
-		       cpath.path
+		       c.name
 		FROM media_items mi
 		JOIN photo_metadata pm ON pm.media_item_id = mi.id
 		JOIN collections c ON c.id = mi.collection_id
-		JOIN LATERAL (
-		    WITH RECURSIVE anc AS (
-		        SELECT c2.id, c2.parent_collection_id, ARRAY[c2.id]::bigint[] AS path
-		        FROM collections c2
-		        WHERE c2.id = c.id
-		        UNION ALL
-		        SELECT p.id, p.parent_collection_id, ARRAY[p.id] || anc.path
-		        FROM collections p
-		        JOIN anc ON p.id = anc.parent_collection_id
-		    )
-		    SELECT path FROM anc WHERE parent_collection_id IS NULL
-		) cpath ON true
 		WHERE (mi.search_vector @@ websearch_to_tsquery('english', $1)
 		    OR pm.search_vector @@ websearch_to_tsquery('english', $1))
 		  AND c.type = $4
@@ -155,7 +143,7 @@ func SearchPhotos(ctx context.Context, db utils.DBTX, userID int64, p SearchPara
 			&item.ShutterSpeed, &item.Aperture, &item.ISO,
 			&item.FocalLengthMM, &item.FocalLength35mmEquiv,
 			&item.VariantsGeneratedAt,
-			&item.CollectionPath,
+			&item.CollectionName,
 		)
 		return item, err
 	})

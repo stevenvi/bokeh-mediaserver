@@ -137,7 +137,7 @@ type PhotoItem struct {
 	FocalLength35mmEquiv *float64   `json:"focal_length_35mm_equiv,omitempty"`
 	WidthPx              *int       `json:"width_px,omitempty"`
 	HeightPx             *int       `json:"height_px,omitempty"`
-	CollectionPath       []int64    `json:"collection_path,omitempty"` // Populated only in the search codepath; omitted elsewhere.
+	CollectionName       *string    `json:"collection_name,omitempty"` // Populated only in the search codepath; omitted elsewhere.
 	Title                string     `json:"title"`
 	MimeType             string     `json:"mime_type"`
 	ID                   int64      `json:"id"`
